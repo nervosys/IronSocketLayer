@@ -1387,6 +1387,7 @@ impl ClientHs {
 }
 
 /// Check a pinned end-entity certificate: its key digest and its validity.
+/// `REQ-X509-007`.
 pub(crate) fn check_pinned(leaf: &[u8], pins: &[[u8; 32]], now: u64) -> Result<()> {
     let cert = x509::Certificate::parse(leaf)?;
     let d = HashAlg::Sha256.digest(cert.spki_der());

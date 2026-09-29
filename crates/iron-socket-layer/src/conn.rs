@@ -1621,6 +1621,99 @@ mod tests {
         }
     }
 
+    /// REQ-PHA-001: the client refuses a CertificateRequest with a context
+    /// during the handshake; after it, one it did not agree to by offering
+    /// post_handshake_auth, and one without a context to answer with.
+    #[test]
+    fn the_client_refuses_misplaced_certificate_requests() {
+        use crate::msgs::{CertificateRequest, EncryptedExtensions};
+        let cr = |context: Vec<u8>| {
+            CertificateRequest {
+                context,
+                sig_algs: alloc::vec![crate::enums::SignatureScheme::EcdsaSecp256r1Sha256],
+            }
+            .encode()
+            .unwrap()
+        };
+        // During the handshake.
+        let (mut c, _) = client_after_server_hello(|_| {});
+        deliver(
+            &mut c,
+            HandshakeType::EncryptedExtensions,
+            &EncryptedExtensions::default().encode().unwrap(),
+        )
+        .unwrap();
+        refuses(
+            deliver(
+                &mut c,
+                HandshakeType::CertificateRequest,
+                &cr(alloc::vec![1]),
+            ),
+            "handshake CertificateRequest must have an empty context",
+        );
+        // After it, from a client that did not offer post_handshake_auth.
+        let (mut c, _) = pair();
+        refuses(
+            deliver(
+                &mut c,
+                HandshakeType::CertificateRequest,
+                &cr(alloc::vec![1]),
+            ),
+            "CertificateRequest without post_handshake_auth",
+        );
+        // After it, with an empty context, to a client that did offer it.
+        let (cc, sc) = configs();
+        let mut cfg = (*cc).clone();
+        cfg.post_handshake_auth = true;
+        // A client offers post_handshake_auth only with an identity to answer
+        // with; any identity will do here.
+        cfg.identity = Some(sc.identities[0].clone());
+        let mut c = Connection::client(Arc::new(cfg), "s.test").unwrap();
+        let mut s = Connection::server(sc).unwrap();
+        for _ in 0..4 {
+            s.read_tls(&c.take_tls()).unwrap();
+            c.read_tls(&s.take_tls()).unwrap();
+        }
+        assert_eq!(c.state(), HandshakeState::Connected);
+        refuses(
+            deliver(
+                &mut c,
+                HandshakeType::CertificateRequest,
+                &cr(alloc::vec![]),
+            ),
+            "post-handshake CertificateRequest with an empty context",
+        );
+    }
+
+    /// A pinned key still needs a certificate inside its validity period:
+    /// pinning replaces the path, not the dates.
+    #[test]
+    fn a_pinned_certificate_must_be_current() {
+        let (_, sc) = configs();
+        let spki = x509::Certificate::parse(&sc.identities[0].chain[0])
+            .unwrap()
+            .spki_der()
+            .to_vec();
+        let mut cfg = ClientConfig::pinned(Profile::Default, &spki).unwrap();
+        cfg.common.clock = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 10 * 86_400
+        };
+        let mut c = Connection::client(Arc::new(cfg), "s.test").unwrap();
+        let mut s = Connection::server(sc).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        let e = c.read_tls(&s.take_tls()).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::CertificateExpired, "{e}");
+        assert!(
+            e.to_string()
+                .contains("pinned certificate outside its validity period"),
+            "{e}"
+        );
+    }
+
     /// REQ-MSG-006: the client refuses a server Certificate message with a
     /// context, with no certificate, or with a staple it did not request.
     #[test]
