@@ -766,6 +766,125 @@ mod tests {
         );
     }
 
+    /// A CA with its own key: under `name`, which may be the fixture CA's.
+    fn other_ca(f: &Fixture, name: &str) -> (Vec<u8>, SigningKey) {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
+        let cert = x509::self_signed(
+            &CertificateParams {
+                subject_cn: name,
+                dns_names: &[],
+                ip_addresses: &[],
+                not_before: f.now - 86_400,
+                not_after: f.now + 86_400,
+                is_ca: true,
+                path_len: Some(0),
+                usage: &[],
+                serial: [3; 16],
+            },
+            &key,
+            &mut rng,
+        )
+        .unwrap();
+        (cert, key)
+    }
+
+    /// REQ-OCSP-004: the CertID must name the leaf's issuer by its key as well
+    /// as its name. A CA that shares the issuer's name but not its key does not
+    /// speak for this certificate, even in a response the real issuer signed.
+    #[test]
+    fn a_cert_id_for_another_key_under_the_same_name_does_not_count() {
+        let f = fixture();
+        let (twin, _) = other_ca(&f, "OCSP Test CA");
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        // CertID hashes from the twin; signature from the real issuer.
+        let r = build_signed(
+            &f.leaf,
+            &twin,
+            &f.ca_key,
+            None,
+            CertStatus::Good,
+            f.now - 60,
+            f.now + 3600,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(
+            check(&f, &r, f.now).unwrap_err().kind(),
+            ErrorKind::BadCertificateStatus
+        );
+    }
+
+    /// REQ-OCSP-001: a delegated responder must be certified by the leaf's own
+    /// issuer; one certified by another CA is refused.
+    #[test]
+    fn a_responder_certified_by_another_ca_is_refused() {
+        let f = fixture();
+        let (other, other_key) = other_ca(&f, "Other CA");
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
+        let oc = Certificate::parse(&other).unwrap();
+        let mut seq = Vec::new();
+        push_tlv(&mut seq, T_OID, OID_KP_OCSP_SIGNING);
+        let mut v = Vec::new();
+        push_tlv(&mut v, T_SEQUENCE, &seq);
+        let mut eku = Vec::new();
+        super::super::push_ext(&mut eku, super::super::OID_EXT_EKU, false, &v);
+        let cert = super::super::build(
+            &CertificateParams {
+                subject_cn: "Stranger Responder",
+                dns_names: &[],
+                ip_addresses: &[],
+                not_before: f.now - 60,
+                not_after: f.now + 3600,
+                is_ca: false,
+                path_len: None,
+                usage: &[],
+                serial: [8; 16],
+            },
+            key.spki(),
+            oc.subject,
+            &super::super::key_identifier(oc.spki).unwrap(),
+            &other_key,
+            &mut rng,
+            &[eku],
+        )
+        .unwrap();
+        let r = build_signed(
+            &f.leaf,
+            &f.ca,
+            &key,
+            Some(&cert),
+            CertStatus::Good,
+            f.now - 60,
+            f.now + 3600,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(
+            check(&f, &r, f.now).unwrap_err().kind(),
+            ErrorKind::BadCertificateStatus
+        );
+        // The verifier tries every candidate signer and reports only that none
+        // was authorized, so the issuer rule itself is checked directly: the
+        // later signature check would also refuse this responder, and this
+        // pins which rule refuses first.
+        let ca = Certificate::parse(&f.ca).unwrap();
+        let e = responder_authorized(
+            &Certificate::parse(&cert).unwrap(),
+            ca.subject,
+            &PublicKey::from_spki(ca.spki).unwrap(),
+            f.now,
+            ALL,
+        )
+        .unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("responder not issued by the certificate's issuer"),
+            "{e}"
+        );
+    }
+
     fn responder(f: &Fixture, eku: Option<&[u8]>) -> (Vec<u8>, SigningKey) {
         let mut rng = ic_drbg::Rng::from_os().unwrap();
         let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
