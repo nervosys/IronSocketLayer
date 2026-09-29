@@ -945,4 +945,64 @@ mod tests {
             .sign(SignatureScheme::RsaPkcs1Sha256, b"m", &mut rng)
             .is_err());
     }
+
+    /// Malformed public and private keys are refused rather than truncated
+    /// or padded: ML-DSA keys of the wrong length, P-521 points that are
+    /// short or compressed, over-long EC scalars, and ML-DSA PKCS#8 in neither
+    /// the seed nor the seed-and-expanded form. `REQ-SIG-004`.
+    #[test]
+    fn malformed_keys_are_refused() {
+        for oid in [OID_ML_DSA_65, OID_ML_DSA_87] {
+            let mut alg = Vec::new();
+            push_tlv(&mut alg, der::OID, oid);
+            let spki = spki_from_parts(&alg, &[7u8; 100]).unwrap();
+            let e = PublicKey::from_spki(&spki).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::BadCertificate, "{e}");
+
+            // PKCS#8 whose key is an OCTET STRING: neither accepted form.
+            let mut inner = Vec::new();
+            push_tlv(&mut inner, der::OCTET_STRING, &[1u8; 32]);
+            let mut body = Vec::new();
+            push_tlv(&mut body, der::INTEGER, &[0]);
+            push_tlv(&mut body, der::SEQUENCE, &alg);
+            push_tlv(&mut body, der::OCTET_STRING, &inner);
+            let mut pkcs8 = Vec::new();
+            push_tlv(&mut pkcs8, der::SEQUENCE, &body);
+            let e = SigningKey::from_pkcs8_der(&pkcs8).err().unwrap();
+            assert!(
+                e.to_string()
+                    .contains("unrecognised ML-DSA private key form"),
+                "{e}"
+            );
+        }
+        let mut alg = Vec::new();
+        push_tlv(&mut alg, der::OID, ic_pkix::oid::EC_PUBLIC_KEY);
+        push_tlv(&mut alg, der::OID, OID_P521);
+        let mut point = alloc::vec![0x04u8; 133];
+        assert!(PublicKey::from_spki(&spki_from_parts(&alg, &point).unwrap()).is_ok());
+        point[0] = 0x02;
+        assert!(PublicKey::from_spki(&spki_from_parts(&alg, &point).unwrap()).is_err());
+        assert!(PublicKey::from_spki(&spki_from_parts(&alg, &[0x04; 132]).unwrap()).is_err());
+        assert_eq!(
+            SigningKey::ecdsa_p256(&[1u8; 33]).err().map(|e| e.kind()),
+            Some(ErrorKind::InvalidConfig)
+        );
+    }
+
+    /// Classical strength follows SP 800-57 for RSA moduli, and FIPS 204's
+    /// categories for ML-DSA.
+    #[test]
+    fn classical_strength_tiers() {
+        let rsa = |bytes: usize| PublicKey::Rsa {
+            modulus: alloc::vec![0xffu8; bytes].leak(),
+            exponent: 65537,
+        };
+        assert_eq!(rsa(128).classical_bits(), 0);
+        assert_eq!(rsa(256).classical_bits(), 112);
+        assert_eq!(rsa(384).classical_bits(), 128);
+        assert_eq!(rsa(960).classical_bits(), 192);
+        assert_eq!(rsa(1920).classical_bits(), 256);
+        assert_eq!(PublicKey::MlDsa65(&[]).classical_bits(), 192);
+        assert_eq!(PublicKey::MlDsa87(&[]).classical_bits(), 256);
+    }
 }
