@@ -805,7 +805,7 @@ impl Connection {
                 Transport::Quic { .. } => return Ok(()),
             };
             if self.core.peer_closed {
-                // Anything after close_notify is ignored (§6.1).
+                // Anything after close_notify is ignored (§6.1). `REQ-CONN-007`.
                 continue;
             }
             let ty = rec.content_type();
@@ -1436,6 +1436,93 @@ mod tests {
         // A plaintext application-data record before any keys.
         let err = c.read_tls(&[23, 3, 3, 0, 1, 0x41]).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::UnexpectedMessage);
+    }
+
+    /// Seal `content` as a protected record of `ty` from `c`'s side, as a
+    /// misbehaving peer could.
+    fn seal_raw(c: &mut Connection, ty: ContentType, content: &[u8]) -> Vec<u8> {
+        if let Transport::Tls {
+            write: Some(p),
+            outgoing,
+            ..
+        } = &mut c.core.transport
+        {
+            p.seal(ty, content, 0, outgoing).unwrap();
+        }
+        c.take_tls()
+    }
+
+    fn refused(r: Result<()>, kind: ErrorKind, msg: &str) {
+        let e = r.expect_err(msg);
+        assert_eq!(e.kind(), kind, "{e}");
+        assert!(e.to_string().contains(msg), "wanted {msg:?}, got {e}");
+    }
+
+    /// Record-layer refusals a peer can provoke, each identified by its own
+    /// message: REQ-CONN-001 (the failure latches), REQ-REC-004 (sizes).
+    #[test]
+    fn peer_record_misbehaviour_is_refused() {
+        // A plaintext alert of the wrong length, before any keys.
+        let (_, sc) = configs();
+        let mut s = Connection::server(sc.clone()).unwrap();
+        refused(
+            s.read_tls(&[21, 3, 3, 0, 3, 1, 0, 0]),
+            ErrorKind::Decode,
+            "alert must be two bytes",
+        );
+        // A plaintext record over 2^14 bytes, before any keys.
+        let mut s = Connection::server(sc).unwrap();
+        let mut big = alloc::vec![22, 3, 3];
+        big.extend_from_slice(&((MAX_PLAINTEXT + 1) as u16).to_be_bytes());
+        big.resize(5 + MAX_PLAINTEXT + 1, 0);
+        refused(
+            s.read_tls(&big),
+            ErrorKind::RecordOverflow,
+            "plaintext record exceeds 2^14",
+        );
+
+        // After the handshake: a plaintext record, an empty handshake
+        // fragment, and a KeyUpdate sharing its record with the start of
+        // another message.
+        let (_, mut s) = pair();
+        refused(
+            s.read_tls(&[22, 3, 3, 0, 1, 0]),
+            ErrorKind::UnexpectedMessage,
+            "plaintext record after keys were installed",
+        );
+        let (mut c, mut s) = pair();
+        let rec = seal_raw(&mut c, ContentType::Handshake, &[]);
+        refused(
+            s.read_tls(&rec),
+            ErrorKind::UnexpectedMessage,
+            "zero-length handshake fragment",
+        );
+        let (mut c, mut s) = pair();
+        let rec = seal_raw(&mut c, ContentType::Handshake, &[24, 0, 0, 1, 0, 4]);
+        refused(
+            s.read_tls(&rec),
+            ErrorKind::UnexpectedMessage,
+            "handshake message spans a key change",
+        );
+        // The failure latches: nothing further is accepted.
+        assert!(s.read_tls(&[]).is_err());
+    }
+
+    /// RFC 8446 §6.1: once close_notify arrives, anything after it is
+    /// ignored, even bytes that would otherwise be fatal.
+    #[test]
+    fn records_after_close_notify_are_ignored() {
+        let (mut c, mut s) = pair();
+        c.send(b"last").unwrap();
+        c.close();
+        s.read_tls(&c.take_tls()).unwrap();
+        assert!(s.peer_closed());
+        s.read_tls(&[23, 3, 3, 0, 4, 0xde, 0xad, 0xbe, 0xef])
+            .unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(s.recv(&mut buf), 4);
+        assert_eq!(&buf[..4], b"last");
+        assert_eq!(s.recv(&mut buf), 0);
     }
 }
 

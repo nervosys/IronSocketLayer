@@ -287,3 +287,26 @@ fn both_ends_export_the_same_keying_material() {
     assert_eq!(c.conn.version(), Version::V2);
     assert!(format!("{:?}", c.conn).starts_with("QuicConnection("));
 }
+
+/// A peer cannot make the TLS layer buffer unbounded CRYPTO data: past the
+/// largest handshake message allowed, it is an error.
+#[test]
+fn crypto_data_beyond_the_buffer_limit_is_refused() {
+    let pki = Pki::new(KeyKind::Ed25519, "server.test");
+    let sc = pki.server_config(Profile::Default).with_alpn(&[b"h3"]);
+    let limit = sc.common.max_handshake_message;
+    let mut s = QuicConnection::server(Arc::new(sc), b"\x03p", Version::V1).unwrap();
+    // A handshake header announcing a message larger than the limit, then
+    // more bytes than the buffer may hold.
+    let mut data = vec![1u8, 0xff, 0xff, 0xff];
+    data.resize(limit + 8, 0);
+    let e = s.read_handshake(Level::Initial, &data).unwrap_err();
+    assert!(
+        matches!(
+            e.kind(),
+            ErrorKind::IllegalParameter | ErrorKind::Decode | ErrorKind::UnexpectedMessage
+        ),
+        "{e}"
+    );
+    assert!(s.transport_error_code().is_some());
+}
