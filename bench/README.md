@@ -82,6 +82,23 @@ All three causes are in IronCrypto, not in this repository:
 Changes there should be made in IronCrypto with its own tests and self-tests;
 this harness will show their effect here without any change to the library.
 
+IronCrypto's assessment (2026-09-29, not yet verified here):
+
+* **HMAC** is the most tractable. A keyed HMAC state that can be cloned after
+  the ipad/opad blocks would let HKDF-Expand stop re-keying on every call. It
+  would be an additive API, in 0.2.x.
+* **AES-GCM**: IronCrypto already aggregates GHASH four blocks at a time and
+  leads RustCrypto. On this Zen 5 CPU ring very likely uses VAES and
+  VPCLMULQDQ on 256/512-bit registers, so closing the gap means a wide-vector
+  backend in ic-cipher.
+* **P-256**: ring uses hand-written assembly (nistz256 with a large
+  precomputed table). Matching it likely needs a P-256-specific field with
+  Solinas reduction, and possibly intrinsics. This is the largest of the three.
+
+IronCrypto 0.2.1 (within this workspace's `>=0.1.3, <0.3` range) speeds up
+P-256 public-key derivation and ECDH over the NIST curves, but not ECDSA sign
+or verify, so the handshake figures above should not move with it.
+
 ## Not measured
 
 * **wolfSSL.** It is not installed on this machine, and no figure for it is
