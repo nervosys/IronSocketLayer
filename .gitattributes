@@ -1,1 +1,6 @@
 * text=auto eol=lf
+
+# Test fixtures whose bytes matter: never convert line endings.
+*.der binary
+*.sig binary
+*.bin binary
