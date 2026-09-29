@@ -697,6 +697,7 @@ impl ServerHs {
             (true, true) => "ech:accepted",
             (true, false) => "ech:rejected",
         };
+        // REQ-MSG-006: a ClientHello must follow RFC 8446's rules.
         if !ch.versions.contains(&ProtocolVersion::Tls13) {
             return Err(Error::new(
                 ErrorKind::ProtocolVersion,

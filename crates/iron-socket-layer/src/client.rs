@@ -546,6 +546,7 @@ impl ClientHs {
         }
     }
 
+    /// A ServerHello must answer only what was offered. `REQ-MSG-006`.
     fn check_common_hello(&self, sh: &ServerHello) -> Result<CipherSuite> {
         match sh.selected_version {
             Some(ProtocolVersion::Tls13) => {}
