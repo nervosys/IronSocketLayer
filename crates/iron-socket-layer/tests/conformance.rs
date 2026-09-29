@@ -170,3 +170,87 @@ fn the_client_refuses_non_conforming_server_hellos() {
         "server selected a version not offered",
     );
 }
+
+/// The client refuses HelloRetryRequests that break RFC 8446 §4.1.4, and a
+/// ServerHello that changes the suite a retry chose.
+#[test]
+fn the_client_refuses_non_conforming_retries() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.groups = vec![NamedGroup::X25519, NamedGroup::Secp384r1];
+    cc.initial_key_shares = 1;
+    let cc = Arc::new(cc);
+    let mut sc = pki.server_config(Profile::Default);
+    sc.common.groups = vec![NamedGroup::Secp384r1];
+    let sc = Arc::new(sc);
+    // A client and server, and the retry the server answered with.
+    let exchange = || {
+        let mut c = Connection::client(cc.clone(), "server.test").unwrap();
+        let mut s = Connection::server(sc.clone()).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        let (ty, body) = first_message(&s.take_tls());
+        assert_eq!(ty, HandshakeType::ServerHello);
+        let hrr = ServerHello::decode(&body).unwrap();
+        assert!(hrr.is_retry());
+        (c, s, hrr)
+    };
+    let answer = |c: &mut Connection, sh: &ServerHello| {
+        c.read_tls(&record_of(
+            HandshakeType::ServerHello,
+            &sh.encode().unwrap(),
+        ))
+    };
+    let (mut c, _, hrr) = exchange();
+    answer(&mut c, &hrr).unwrap();
+
+    type Edit = fn(&mut ServerHello);
+    let cases: &[(Edit, &str)] = &[
+        (
+            |h| h.hrr_group = Some(NamedGroup::X25519),
+            "retry names a group already shared",
+        ),
+        (
+            |h| h.hrr_group = Some(NamedGroup::Secp521r1),
+            "retry names a group not offered",
+        ),
+        (
+            |h| {
+                h.hrr_group = None;
+                h.cookie = None;
+            },
+            "HelloRetryRequest would change nothing",
+        ),
+    ];
+    for (edit, want) in cases {
+        let (mut c, _, mut hrr) = exchange();
+        edit(&mut hrr);
+        refused(answer(&mut c, &hrr), want);
+    }
+
+    // A second retry, after the client has answered the first.
+    let (mut c, _, hrr) = exchange();
+    answer(&mut c, &hrr).unwrap();
+    let _second_hello = c.take_tls();
+    refused(answer(&mut c, &hrr), "second HelloRetryRequest");
+
+    // The real server's ServerHello, with the suite changed from the retry's.
+    let (mut c, mut s, hrr) = exchange();
+    answer(&mut c, &hrr).unwrap();
+    s.read_tls(&c.take_tls()).unwrap();
+    let flight = s.take_tls();
+    // Skip any ChangeCipherSpec record before the ServerHello.
+    let at = if flight[0] == 20 { 6 } else { 0 };
+    let (ty, body) = first_message(&flight[at..]);
+    assert_eq!(ty, HandshakeType::ServerHello);
+    let mut sh = ServerHello::decode(&body).unwrap();
+    let other = [
+        CipherSuite::TlsAes128GcmSha256,
+        CipherSuite::TlsAes256GcmSha384,
+        CipherSuite::TlsChaCha20Poly1305Sha256,
+    ]
+    .into_iter()
+    .find(|x| Some(*x) != hrr.suite)
+    .unwrap();
+    sh.suite = Some(other);
+    refused(answer(&mut c, &sh), "suite changed after HelloRetryRequest");
+}
