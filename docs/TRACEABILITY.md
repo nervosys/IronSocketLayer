@@ -1,0 +1,116 @@
+# Requirements traceability
+
+This matrix links every low-level requirement to the code that implements
+it and the verification that shows it holds. It is **checked by a test**:
+`crates/iron-socket-layer/tests/traceability.rs` fails if a `REQ-*` tag in the
+source is missing here, if a row names a requirement the source does not
+carry, or if a cited test function does not exist. The matrix cannot go
+stale without the build noticing.
+
+Verification methods follow DO-178C §6.4: **Test** (requirements-based test
+cases), **Analysis** (argued from the code's structure, with the argument
+stated), **Review** (inspection). See [DO-178C.md](DO-178C.md) for how these
+feed the life-cycle data.
+
+## High-level requirements
+
+| HLR | Requirement | Derived LLRs |
+|---|---|---|
+| HLR-001 | Implement the TLS 1.3 handshake and record protocol of RFC 8446 for client and server, full handshake with (EC)DHE/KEM key exchange and certificate authentication. | REQ-CODEC-*, REQ-MSG-*, REQ-KS-*, REQ-REC-*, REQ-CONN-* |
+| HLR-002 | Implement TLS for QUIC per RFC 9001, for QUIC versions 1 and 2 (RFC 9369). | REQ-QUIC-* |
+| HLR-003 | Offer post-quantum key exchange (ML-KEM-768, hybrid with X25519 or P-256) and ML-DSA-65 authentication. | REQ-KX-*, REQ-SIG-* |
+| HLR-004 | Authenticate peers by RFC 5280 path validation or SPKI pinning; never offer a mode without authentication. | REQ-X509-*, REQ-SIG-* |
+| HLR-005 | Under a FIPS profile, use only algorithms IronCrypto's module approves, with the module gate enforced, and report service indicators. | REQ-CFG-003 |
+| HLR-006 | Expose configuration as named profiles identical to the ontology's, and refuse rather than substitute when a profile is unavailable. | REQ-CFG-001, REQ-CFG-002, REQ-CFG-004 |
+| HLR-008 | Resume sessions from server-issued tickets with PSK plus a fresh (EC)DHE/KEM exchange, without weakening authentication or forward secrecy. | REQ-PSK-* |
+| HLR-009 | Check certificate revocation through stapled OCSP responses (RFC 6066, RFC 6960) and caller-supplied CRLs (RFC 5280 §5) under a caller-chosen policy, on both sides; staple for servers and issue CRLs for private CAs. | REQ-OCSP-*, REQ-CRL-* |
+| HLR-010 | Negotiate record_size_limit (RFC 8449) so constrained endpoints receive only records they can buffer. | REQ-RSL-* |
+| HLR-011 | Encrypt the ClientHello (ECH) with HPKE so the server name is not exposed to the network, for client and server, over TCP and QUIC. | REQ-ECH-*, REQ-HPKE-* |
+| HLR-012 | Let a server authenticate a client after the handshake, on demand (RFC 8446 §4.6.2), with the same verification as during the handshake. | REQ-PHA-* |
+| HLR-013 | Authenticate with external pre-shared keys where there is no PKI, without giving up forward secrecy or falling back to an unauthenticated handshake. | REQ-EPSK-* |
+| HLR-014 | Offer 0-RTT early data strictly opt-in over TLS/TCP and QUIC, with server-side anti-replay, and never lose or silently resend data the server refused. | REQ-0RTT-* |
+| HLR-007 | Perform all cryptography through IronCrypto; implement no primitive. | Review: `crypto/` is the only module naming IronCrypto types; no cipher, hash or curve arithmetic exists in this repository. |
+
+## Low-level requirements
+
+| ID | Requirement | Source | Method | Verified by |
+|---|---|---|---|---|
+| REQ-CODEC-001 | No input causes a panic in the wire decoder. | src/codec.rs | Test | src/codec.rs::reads_are_bounded; tests/robustness.rs::random_bytes_into_every_decoder_never_panic; src/msgs.rs::every_truncation_of_a_client_hello_fails_cleanly |
+| REQ-CODEC-002 | A length prefix bounds nested parsing. | src/codec.rs | Test | src/codec.rs::a_sub_reader_cannot_escape_its_prefix |
+| REQ-CODEC-003 | Trailing data after a structure is rejected. | src/codec.rs | Test | src/codec.rs::trailing_bytes_are_refused |
+| REQ-MSG-001 | Duplicate extensions are illegal_parameter. | src/msgs.rs | Test | src/msgs.rs::duplicate_extensions_are_illegal |
+| REQ-MSG-002 | pre_shared_key must be the last ClientHello extension. | src/msgs.rs | Test | src/msgs.rs::pre_shared_key_must_be_last |
+| REQ-MSG-003 | legacy_compression_methods must be exactly null. | src/msgs.rs | Test | src/msgs.rs::a_bad_compression_method_is_illegal |
+| REQ-MSG-004 | Every message length is bounds-checked. | src/msgs.rs | Test | src/msgs.rs::every_truncation_of_a_client_hello_fails_cleanly; src/msgs.rs::message_reassembly_waits_for_the_whole_body; tests/robustness.rs::random_bytes_into_every_decoder_never_panic |
+| REQ-KS-001 | HKDF-Expand-Label and the key schedule follow RFC 8446 §7.1. | src/crypto/mod.rs | Test | src/crypto/mod.rs::expand_label_matches_rfc9001_a5; src/quic.rs::initial_packet_key_and_iv_match_rfc9001_a1; tests/interop.rs::hybrid_post_quantum_with_cloudflare; tests/openssl_interop.rs::our_client_against_openssl_server_for_every_key_and_group |
+| REQ-KS-002 | Traffic secrets are zeroized when dropped. | src/key_schedule.rs | Analysis | Every secret is held in `crypto::Output`, whose `Drop` zeroizes its buffer through `ic_core::Zeroize`; secrets are never copied into other types except `SecretVec`, which also zeroizes on drop. |
+| REQ-KS-003 | Finished MACs are compared in constant time. | src/key_schedule.rs | Test | src/key_schedule.rs::finished_rejects_a_single_flipped_bit |
+| REQ-KX-001 | Peer key shares of the wrong length, form or value are refused. | src/crypto/kx.rs | Test | src/crypto/kx.rs::malformed_shares_are_rejected_not_panicked_on; src/crypto/kx.rs::a_compressed_point_is_refused |
+| REQ-KX-002 | An all-zero X25519 shared secret is refused (RFC 8446 §7.4.2). | src/crypto/kx.rs | Test | src/crypto/kx.rs::an_all_zero_x25519_secret_is_refused |
+| REQ-KX-003 | Ephemeral private keys are zeroized. | src/crypto/kx.rs | Analysis | Ephemeral scalars live in `SecretVec` and ML-KEM decapsulation keys in `Zeroizing<[u8; N]>`; both zeroize on drop, and `KeyShare::complete` consumes the share. |
+| REQ-REC-001 | A record sequence number never wraps; the key is exhausted first. | src/record.rs | Test | src/record.rs::sequence_exhaustion_refuses_before_wrapping |
+| REQ-REC-002 | Each record nonce is the IV XOR the sequence number. | src/record.rs | Test | src/crypto/mod.rs::nonce_xors_the_low_bytes; src/record.rs::a_replayed_record_fails_because_the_sequence_advanced |
+| REQ-REC-003 | The record header is the AEAD additional data. | src/record.rs | Test | src/record.rs::a_modified_header_fails_authentication |
+| REQ-REC-004 | Plaintext ≤ 2^14 and ciphertext ≤ 2^14 + 256 are enforced. | src/record.rs | Test | src/record.rs::oversized_and_malformed_records_are_refused |
+| REQ-REC-005 | An all-zero inner plaintext is unexpected_message. | src/record.rs | Test | src/record.rs::an_all_zero_inner_plaintext_is_unexpected |
+| REQ-REC-006 | AES-GCM keys are retired before 2^24 records. | src/record.rs | Test | src/record.rs::sequence_exhaustion_refuses_before_wrapping |
+| REQ-SIG-001 | A signature scheme must match its key type. | src/crypto/sign.rs | Test | src/crypto/sign.rs::a_scheme_that_does_not_fit_the_key_is_refused |
+| REQ-SIG-002 | PKCS#1 v1.5 and SHA-1 never sign a handshake. | src/crypto/sign.rs | Test | src/crypto/sign.rs::a_scheme_that_does_not_fit_the_key_is_refused; tests/handshake.rs::unimplemented_parameters_are_refused_by_validation |
+| REQ-SIG-003 | Private signing keys are zeroized. | src/crypto/sign.rs | Analysis | Scalars and ML-DSA keys are stored in `Zeroizing`; Ed25519 and RSA keys use IronCrypto types that zeroize in their own `Drop`. |
+| REQ-CONN-001 | A connection failure latches. | src/conn.rs | Test | tests/handshake.rs::a_tampered_record_is_fatal_and_latches |
+| REQ-CONN-002 | A handshake message may not span a key change. | src/conn.rs | Test | tests/handshake.rs::a_handshake_message_may_not_span_a_key_change |
+| REQ-CONN-003 | Application data flows only after the handshake completes. | src/conn.rs | Test | src/conn.rs::application_data_waits_for_the_handshake |
+| REQ-CONN-004 | A protected, misplaced or malformed ChangeCipherSpec is fatal. | src/conn.rs | Test | src/conn.rs::change_cipher_spec_is_only_tolerated_in_the_handshake; tests/handshake.rs::a_malformed_change_cipher_spec_is_fatal |
+| REQ-CONN-005 | Every local failure that maps to an alert sends it. | src/conn.rs | Test | tests/handshake.rs::a_tampered_record_is_fatal_and_latches; tests/handshake.rs::the_wrong_name_is_refused_by_the_client |
+| REQ-CONN-006 | Keys are updated before they reach their usage limit. | src/conn.rs | Test | src/conn.rs::a_key_near_its_limit_is_updated_before_use |
+| REQ-CFG-001 | Each profile equals its ontology entry. | src/config.rs | Test | tests/ontology_agreement.rs::config_profiles_are_the_ontology_profiles |
+| REQ-CFG-002 | Nothing unimplemented is ever offered. | src/config.rs | Test | tests/handshake.rs::unimplemented_parameters_are_refused_by_validation |
+| REQ-CFG-003 | FIPS profiles require the module in approved mode and pass every algorithm through `ic_fips::check`. | src/config.rs | Test | tests/fips.rs::the_fips_gate_refuses_then_admits_and_reports_indicators |
+| REQ-CFG-004 | An unavailable profile is an error, never a substitute. | src/config.rs | Test | tests/handshake.rs::cnsa2_is_unavailable_rather_than_substituted |
+| REQ-QUIC-001 | Initial secrets follow RFC 9001 §5.2 and RFC 9369 §3.3.1. | src/quic.rs | Test | src/quic.rs::initial_keys_match_rfc9001_appendix_a; src/quic.rs::initial_packet_key_and_iv_match_rfc9001_a1 |
+| REQ-QUIC-002 | Header protection masks 4 bits of a long header and 5 of a short one. | src/quic.rs | Test | src/quic.rs::a_short_header_masks_five_bits_and_a_long_header_four; src/crypto/mod.rs::chacha_header_protection_matches_rfc9001_a5 |
+| REQ-QUIC-003 | 1-RTT key update derives new packet keys and keeps header keys. | src/quic.rs | Test | tests/quic.rs::one_rtt_key_update_stays_in_step |
+| REQ-QUIC-004 | A handshake failure maps to QUIC error 0x0100 + alert. | src/quic.rs | Test | tests/quic.rs::crypto_data_at_the_wrong_level_is_fatal_and_maps_to_a_transport_error |
+| REQ-X509-001 | No certificate input causes a panic. | src/x509.rs | Test | src/x509.rs::garbage_never_panics; src/x509.rs::every_truncation_of_a_real_certificate_is_rejected |
+| REQ-X509-002 | Path search terminates on every input, cycles included. | src/x509.rs | Test | src/x509.rs::cross_signed_cycles_terminate |
+| REQ-X509-003 | Names match SANs only, with RFC 6125 wildcard rules; never the CN. | src/x509.rs | Test | src/x509.rs::wildcard_rules; src/x509.rs::names_come_from_sans_only |
+| REQ-X509-004 | Unknown critical extensions fail closed. | src/x509.rs | Test | src/x509.rs::unknown_critical_extensions_fail_closed |
+| REQ-X509-005 | Only policy-allowed schemes may sign a certificate link. | src/x509.rs | Test | src/x509.rs::schemes_outside_the_policy_are_refused |
+| REQ-PSK-001 | Only psk_dhe_ke is offered or accepted; resumption always runs a fresh key exchange. | src/resumption.rs | Test | tests/resumption.rs::only_psk_with_key_exchange_is_offered_or_accepted; tests/resumption.rs::a_ticket_resumes_without_certificates_and_keeps_post_quantum_key_exchange |
+| REQ-PSK-002 | A PSK binder is verified before the PSK is used; a wrong binder is decrypt_error. | src/resumption.rs | Test | tests/resumption.rs::a_binder_from_the_wrong_psk_is_a_decrypt_error; src/key_schedule.rs::binders_bind_the_psk_and_the_transcript; tests/resumption.rs::resumption_survives_a_hello_retry_request |
+| REQ-PSK-003 | Tickets are authenticated and expire; a forged or expired ticket gives a full handshake. | src/resumption.rs | Test | src/resumption.rs::tickets_seal_open_and_resist_tampering; tests/resumption.rs::a_forged_ticket_falls_back_to_a_full_handshake; tests/resumption.rs::an_expired_ticket_is_not_accepted |
+| REQ-PSK-004 | A client uses each ticket at most once. | src/resumption.rs | Test | src/resumption.rs::the_store_hands_each_ticket_out_once; tests/resumption.rs::tickets_are_single_use |
+| REQ-PSK-005 | A ticket resumes only for its server name and hash, and never satisfies a client-authentication requirement its session did not meet. | src/resumption.rs | Test | tests/resumption.rs::a_ticket_for_another_name_falls_back_to_a_full_handshake; tests/resumption.rs::client_authentication_carries_over_and_is_not_invented |
+| REQ-OCSP-001 | A staple is accepted only if signed by the leaf's issuer or by a current responder the issuer certified with id-kp-OCSPSigning. | src/x509_ocsp.rs | Test | src/x509_ocsp.rs::only_the_issuer_may_sign; src/x509_ocsp.rs::delegated_responders_need_the_ocsp_signing_purpose; tests/ocsp.rs::a_staple_from_another_issuer_fails |
+| REQ-OCSP-002 | A staple must be current: thisUpdate not in the future and nextUpdate not passed, within five minutes of skew. | src/x509_ocsp.rs | Test | src/x509_ocsp.rs::stale_and_future_responses_are_refused; tests/ocsp.rs::a_stale_staple_fails_even_when_stapling_is_optional |
+| REQ-OCSP-003 | A valid staple saying the certificate is revoked is fatal (certificate_revoked). | src/x509_ocsp.rs | Test | src/x509_ocsp.rs::a_revoked_certificate_is_fatal; tests/ocsp.rs::a_revoked_certificate_fails_the_handshake |
+| REQ-OCSP-004 | A staple counts only if one of its responses names the leaf (serial, and issuer hashes for SHA-2 CertIDs). | src/x509_ocsp.rs | Test | src/x509_ocsp.rs::a_response_for_another_certificate_does_not_count; src/x509_ocsp.rs::a_good_response_verifies |
+| REQ-OCSP-005 | Under RequireStaple the handshake fails without a staple saying good. | src/client.rs | Test | tests/ocsp.rs::require_staple_refuses_a_server_that_staples_nothing_or_unknown |
+| REQ-RSL-001 | A record_size_limit below 64 is illegal_parameter. | src/msgs.rs | Test | src/msgs.rs::record_size_limit_is_bounded_and_round_trips |
+| REQ-RSL-002 | A protected record over the negotiated limit is record_overflow. | src/conn.rs | Test | src/conn.rs::a_record_over_the_negotiated_limit_is_overflow |
+| REQ-RSL-003 | Records sent never exceed the limit the peer negotiated. | src/conn.rs | Test | tests/handshake.rs::record_size_limits_are_honoured_in_both_directions |
+| REQ-HPKE-001 | HPKE base mode follows RFC 9180's key schedule and nonce sequence. | src/crypto/hpke.rs | Test | src/crypto/hpke.rs::base_mode_matches_rfc9180_a1_1; tests/interop.rs::encrypted_client_hello_with_cloudflare |
+| REQ-HPKE-002 | An all-zero X25519 output is refused. | src/crypto/hpke.rs | Test | src/crypto/hpke.rs::a_low_order_key_is_refused |
+| REQ-HPKE-003 | An HPKE context never reuses a nonce. | src/crypto/hpke.rs | Test | src/crypto/hpke.rs::contexts_stay_in_step_and_detect_tampering |
+| REQ-ECH-001 | With ECH the real server name appears only inside the encrypted inner hello. | src/ech.rs | Test | tests/ech.rs::accepted_ech_hides_the_real_name; tests/ech.rs::ech_works_over_quic |
+| REQ-ECH-002 | ECH acceptance is decided by the confirmation value alone, compared in constant time. | src/ech.rs | Test | tests/ech.rs::accepted_ech_hides_the_real_name; tests/ech.rs::ech_survives_a_hello_retry_request; tests/interop.rs::encrypted_client_hello_with_cloudflare |
+| REQ-ECH-003 | On rejection the client authenticates the public name, aborts with ech_required and exposes the retry configurations. | src/ech.rs | Test | tests/ech.rs::rejected_ech_aborts_with_authenticated_retry_configs; tests/interop.rs::cloudflare_rejects_an_unknown_ech_key_and_its_retry_configs_work |
+| REQ-ECH-004 | An unusable ECH configuration is an error, never a plaintext fallback. | src/ech.rs | Test | src/ech.rs::unusable_configurations_are_refused; tests/ech.rs::an_unusable_ech_config_never_falls_back_to_plaintext |
+| REQ-ECH-005 | A reconstructed inner hello must match the client's bytes: zero padding, resolvable outer references. | src/ech.rs | Test | src/ech.rs::inner_reconstruction_expands_references_and_checks_padding |
+| REQ-CRL-001 | A CRL counts only if the certificate's issuer signed it (with cRLSign when key usage is present). | src/x509_crl.rs | Test | src/x509_crl.rs::only_the_issuer_speaks_for_its_certificates; tests/crl.rs::require_crl_without_a_crl_fails |
+| REQ-CRL-002 | A serial listed in any authentic CRL is revoked, for every certificate on the path. | src/x509_crl.rs | Test | src/x509_crl.rs::listed_is_revoked_and_unlisted_is_good_while_current; tests/crl.rs::a_revoked_agent_is_refused_by_a_mutual_tls_server; tests/crl.rs::a_revoked_intermediate_revokes_the_path |
+| REQ-CRL-003 | Only a current authentic CRL shows a certificate good; require_crl fails without one. | src/x509_crl.rs | Test | src/x509_crl.rs::listed_is_revoked_and_unlisted_is_good_while_current; tests/crl.rs::a_clean_path_is_reported_revocation_checked; tests/crl.rs::require_crl_without_a_crl_fails |
+| REQ-CRL-004 | Delta, partitioned and indirect CRLs, and unknown critical extensions, never show a certificate good. | src/x509_crl.rs | Test | src/x509_crl.rs::narrowed_scopes_are_not_evidence_of_good_standing |
+| REQ-PHA-001 | A client answers a post-handshake CertificateRequest only if it offered post_handshake_auth, never over QUIC; a server asks only such a client. | src/server.rs | Test | tests/post_handshake_auth.rs::a_client_that_did_not_offer_cannot_be_asked; tests/post_handshake_auth.rs::quic_never_offers_post_handshake_auth |
+| REQ-PHA-002 | The request carries a fresh non-empty context that the answer must echo. | src/server.rs | Test | tests/post_handshake_auth.rs::step_up_authentication_mid_session |
+| REQ-PHA-003 | CertificateVerify and Finished are verified over the handshake transcript plus the request, with the client's current application secret. | src/server.rs | Test | tests/post_handshake_auth.rs::step_up_authentication_mid_session; tests/post_handshake_auth.rs::a_revoked_agent_fails_step_up; tests/openssl_interop.rs::openssl_answers_our_post_handshake_certificate_request |
+| REQ-PHA-004 | A declined request grants no authentication. | src/server.rs | Test | tests/post_handshake_auth.rs::a_declined_request_grants_nothing |
+| REQ-EPSK-001 | External PSKs are used only with psk_dhe_ke; a fresh key exchange always runs. | src/config.rs | Test | tests/external_psk.rs::a_shared_key_authenticates_both_ends_without_certificates; tests/openssl_interop.rs::external_psk_with_openssl_both_ways |
+| REQ-EPSK-002 | External-PSK binders use the "ext binder" label and are verified before use; a wrong key is decrypt_error. | src/key_schedule.rs | Test | src/key_schedule.rs::external_and_resumption_binders_are_separated; tests/external_psk.rs::a_wrong_key_is_a_decrypt_error |
+| REQ-EPSK-003 | External PSKs are at least 256 bits and carry a 1..=1024-byte identity. | src/config.rs | Test | tests/external_psk.rs::weak_keys_and_bad_identities_are_refused |
+| REQ-EPSK-004 | A client with an external PSK and no trust anchors refuses a handshake that does not use the PSK. | src/config.rs | Test | tests/external_psk.rs::no_silent_fallback_when_the_psk_is_not_accepted |
+| REQ-0RTT-001 | 0-RTT is sent only when the application supplies data, the configuration permits it, the ticket allows it and its ALPN is offered, and never over QUIC; the server accepts it only on its own ticket, first identity, same suite and ALPN, and no retry. | src/client.rs | Test | tests/early_data.rs::early_data_is_delivered_in_the_first_flight; tests/early_data.rs::early_data_is_opt_in; tests/early_data.rs::a_hello_retry_request_ends_early_data |
+| REQ-0RTT-002 | A replayed or stale first flight gets no early data accepted. | src/server.rs | Test | tests/early_data.rs::a_replayed_first_flight_does_not_replay_its_early_data; tests/early_data.rs::a_stale_first_flight_is_refused_and_returned |
+| REQ-0RTT-003 | Accepted early data is bounded by max_early_data_size and ends with EndOfEarlyData before the client's Finished. | src/conn.rs | Test | tests/early_data.rs::early_data_is_delivered_in_the_first_flight |
+| REQ-0RTT-004 | Rejected early data is skipped within a bound, and the client gets it back. | src/conn.rs | Test | tests/early_data.rs::a_server_without_a_policy_skips_early_data; tests/early_data.rs::a_stale_first_flight_is_refused_and_returned |
+| REQ-0RTT-005 | QUIC 0-RTT uses only tickets carrying max_early_data_size 0xffffffff, exports the 0-RTT keys to the QUIC stack, and is refused if the server's transport parameters changed. | src/server.rs | Test | tests/early_data.rs::quic_0rtt_keys_are_exported_and_agree; tests/early_data.rs::changed_transport_parameters_reject_quic_0rtt; tests/early_data.rs::a_tcp_ticket_is_not_used_for_quic_0rtt; tests/early_data.rs::a_replayed_quic_hello_gets_no_0rtt |

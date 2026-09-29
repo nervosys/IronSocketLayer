@@ -1,0 +1,19 @@
+[package]
+name = "isl-ontology"
+description = "The IronSocketLayer ontology: TLS 1.3 and QUIC protocol knowledge as closed-vocabulary data for agents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["tls", "quic", "ontology", "agentic", "knowledge-graph"]
+categories = ["cryptography", "network-programming", "no-std"]
+publish.workspace = true
+
+[features]
+default = ["std"]
+# `std` adds the exporters (JSON, JSON-LD, Turtle, Markdown), which build strings.
+std = []
+
+[dependencies]

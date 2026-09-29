@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: IronSocketLayer
+      # IronCrypto is a path dependency at ../AgenticCrypto.
+      - uses: actions/checkout@v4
+        with:
+          repository: nervosys/IronCrypto
+          path: AgenticCrypto
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: thumbv7em-none-eabihf
+      - name: test
+        working-directory: IronSocketLayer
+        run: cargo test --workspace
+      - name: clippy
+        working-directory: IronSocketLayer
+        run: cargo clippy --workspace --all-targets
+      - name: no_std (Cortex-M)
+        working-directory: IronSocketLayer
+        run: cargo build -p iron-socket-layer --no-default-features --target thumbv7em-none-eabihf
+      - name: benchmark harness compiles
+        working-directory: IronSocketLayer
+        run: cargo check --manifest-path bench/Cargo.toml
+      - name: interoperability with public servers
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: IronSocketLayer
+        run: cargo test -p iron-socket-layer --test interop -- --ignored

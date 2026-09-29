@@ -1,0 +1,23 @@
+[package]
+name = "isl-cli"
+description = "isl: the IronSocketLayer command line and MCP server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "isl"
+path = "src/main.rs"
+
+[dependencies]
+iron-socket-layer = { workspace = true, features = ["std"] }
+isl-ontology = { workspace = true, features = ["std"] }
+ic-json = { workspace = true }
+ic-ontology = { workspace = true, features = ["std"] }
+ic-fips = { workspace = true, features = ["std"] }
+ic-pkix = { workspace = true, features = ["std"] }
+ic-core = { workspace = true, features = ["std"] }

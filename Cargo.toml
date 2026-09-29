@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/isl-ontology",
+    "crates/iron-socket-layer",
+    "crates/isl-cli",
+]
+
+# Not a member, deliberately: `bench/` compares against rustls, and keeping it
+# out of the workspace keeps rustls and ring out of the library's dependency
+# graph, exactly as IronCrypto does with its own bench.
+exclude = ["bench"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/nervosys/IronSocketLayer"
+authors = ["Nervosys"]
+keywords = ["tls", "quic", "agentic", "post-quantum", "fips"]
+categories = ["cryptography", "network-programming", "no-std"]
+# Encryption source code is export-controlled (ECCN 5D002); see
+# docs/CERTIFICATION.md. Nothing is published until the notification is sent.
+publish = false
+
+[workspace.dependencies]
+isl-ontology = { path = "crates/isl-ontology", version = "0.1.0", default-features = false }
+iron-socket-layer = { path = "crates/iron-socket-layer", version = "0.1.0", default-features = false }
+
+# IronCrypto supplies every cryptographic primitive. Nothing in this workspace
+# implements a cipher, hash, MAC, KDF, key agreement, KEM or signature itself.
+ic-core = { path = "../AgenticCrypto/crates/ic-core", version = ">=0.1.3, <0.3", default-features = false }
+ic-hash = { path = "../AgenticCrypto/crates/ic-hash", version = ">=0.1.3, <0.3", default-features = false }
+ic-mac = { path = "../AgenticCrypto/crates/ic-mac", version = ">=0.1.3, <0.3", default-features = false }
+ic-kdf = { path = "../AgenticCrypto/crates/ic-kdf", version = ">=0.1.3, <0.3", default-features = false }
+ic-cipher = { path = "../AgenticCrypto/crates/ic-cipher", version = ">=0.1.3, <0.3", default-features = false }
+ic-drbg = { path = "../AgenticCrypto/crates/ic-drbg", version = ">=0.1.3, <0.3", default-features = false }
+ic-ec = { path = "../AgenticCrypto/crates/ic-ec", version = ">=0.1.3, <0.3", default-features = false }
+ic-rsa = { path = "../AgenticCrypto/crates/ic-rsa", version = ">=0.1.3, <0.3", default-features = false }
+ic-pkix = { path = "../AgenticCrypto/crates/ic-pkix", version = ">=0.1.3, <0.3", default-features = false }
+ic-mlkem = { path = "../AgenticCrypto/crates/ic-mlkem", version = ">=0.1.3, <0.3", default-features = false }
+ic-mldsa = { path = "../AgenticCrypto/crates/ic-mldsa", version = ">=0.1.3, <0.3", default-features = false }
+ic-fips = { path = "../AgenticCrypto/crates/ic-fips", version = ">=0.1.3, <0.3", default-features = false }
+ic-ontology = { path = "../AgenticCrypto/crates/ic-ontology", version = ">=0.1.3, <0.3", default-features = false }
+ic-json = { path = "../AgenticCrypto/crates/ic-json", version = ">=0.1.3, <0.3" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+
+[profile.dev.package."*"]
+opt-level = 2

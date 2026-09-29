@@ -1,0 +1,814 @@
+//! Signatures: producing `CertificateVerify`, and checking it and certificates.
+//!
+//! # Formats
+//!
+//! TLS carries ECDSA signatures as a DER `Ecdsa-Sig-Value`; IronCrypto works in
+//! fixed-width `r ‖ s`. `ic_pkix::ecdsa_signature` converts in both
+//! directions. IronCrypto's signers hash internally, so messages are passed
+//! unhashed — handing them a digest would sign the hash of the hash.
+//!
+//! RSA-PSS uses a salt the length of the digest, which is what TLS 1.3
+//! requires (RFC 8446 §4.2.3) and what `ic_rsa::pss` produces.
+//!
+//! Requirement trace: `REQ-SIG-001` (the scheme must match the key type),
+//! `REQ-SIG-002` (PKCS#1 v1.5 and SHA-1 never sign a handshake),
+//! `REQ-SIG-003` (private keys are zeroized).
+
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
+use ic_core::traits::{RandomSource, SignatureScheme as _};
+use ic_core::{Zeroize, Zeroizing};
+use ic_mldsa::sign as mldsa;
+use ic_pkix::der::{self, Reader};
+
+use super::SecretVec;
+use crate::enums::SignatureScheme;
+use crate::error::{Error, ErrorKind, Result};
+
+/// OID content bytes for id-ml-dsa-65, 2.16.840.1.101.3.4.3.18.
+pub const OID_ML_DSA_65: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12];
+/// OID content bytes for secp521r1, 1.3.132.0.35.
+pub const OID_P521: &[u8] = &[0x2b, 0x81, 0x04, 0x00, 0x23];
+
+/// Every scheme this build can verify, in the default preference order.
+pub const VERIFY_SCHEMES: &[SignatureScheme] = &[
+    SignatureScheme::MlDsa65,
+    SignatureScheme::Ed25519,
+    SignatureScheme::EcdsaSecp256r1Sha256,
+    SignatureScheme::EcdsaSecp384r1Sha384,
+    SignatureScheme::EcdsaSecp521r1Sha512,
+    SignatureScheme::RsaPssRsaeSha256,
+    SignatureScheme::RsaPssRsaeSha384,
+    SignatureScheme::RsaPssRsaeSha512,
+    SignatureScheme::RsaPkcs1Sha256,
+    SignatureScheme::RsaPkcs1Sha384,
+    SignatureScheme::RsaPkcs1Sha512,
+];
+
+/// IronCrypto ontology identifier of the primitive a scheme uses.
+pub fn ic_id(scheme: SignatureScheme) -> Option<&'static str> {
+    Some(match scheme {
+        SignatureScheme::EcdsaSecp256r1Sha256 => "ecdsa-p256-sha256",
+        SignatureScheme::EcdsaSecp384r1Sha384 => "ecdsa-p384-sha384",
+        SignatureScheme::EcdsaSecp521r1Sha512 => "ecdsa-p521-sha512",
+        SignatureScheme::Ed25519 => "ed25519",
+        SignatureScheme::RsaPssRsaeSha256 => "rsa-pss-sha256",
+        SignatureScheme::RsaPssRsaeSha384 => "rsa-pss-sha384",
+        SignatureScheme::RsaPssRsaeSha512 => "rsa-pss-sha512",
+        SignatureScheme::RsaPkcs1Sha256 => "rsa-pkcs1-sha256",
+        SignatureScheme::RsaPkcs1Sha384 => "rsa-pkcs1-sha384",
+        SignatureScheme::RsaPkcs1Sha512 => "rsa-pkcs1-sha512",
+        SignatureScheme::MlDsa65 => "ml-dsa-65",
+        _ => return None,
+    })
+}
+
+/// A parsed public key, borrowing from its `SubjectPublicKeyInfo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicKey<'a> {
+    /// P-256, SEC1 uncompressed.
+    EcP256(&'a [u8]),
+    /// P-384, SEC1 uncompressed.
+    EcP384(&'a [u8]),
+    /// P-521, SEC1 uncompressed.
+    EcP521(&'a [u8]),
+    /// Ed25519, 32 bytes.
+    Ed25519(&'a [u8]),
+    /// RSA modulus and exponent.
+    Rsa {
+        /// Big-endian modulus.
+        modulus: &'a [u8],
+        /// Public exponent.
+        exponent: u64,
+    },
+    /// ML-DSA-65, 1952 bytes.
+    MlDsa65(&'a [u8]),
+}
+
+impl<'a> PublicKey<'a> {
+    /// Parse a DER `SubjectPublicKeyInfo`.
+    ///
+    /// P-256, P-384, Ed25519 and RSA go through `ic_pkix`; P-521 and ML-DSA-65,
+    /// which it does not name, are read here with its DER reader.
+    pub fn from_spki(spki: &'a [u8]) -> Result<Self> {
+        let bad = |_| Error::new(ErrorKind::BadCertificate, "malformed SubjectPublicKeyInfo");
+        // ic_pkix refuses curves it does not name (P-521) with an error rather
+        // than `Unsupported`, so any failure falls through to the reader below,
+        // which is the stricter of the two for the forms it accepts.
+        match ic_pkix::PublicKeyInfo::from_der(spki) {
+            Ok(ic_pkix::PublicKeyInfo::Rsa { modulus, exponent }) => {
+                return Ok(Self::Rsa { modulus, exponent })
+            }
+            Ok(ic_pkix::PublicKeyInfo::Ec { algorithm, point }) => {
+                return match algorithm {
+                    ic_pkix::KeyAlgorithm::EcP256 => Ok(Self::EcP256(point)),
+                    ic_pkix::KeyAlgorithm::EcP384 => Ok(Self::EcP384(point)),
+                    ic_pkix::KeyAlgorithm::EcP521 => Ok(Self::EcP521(point)),
+                    _ => Err(Error::new(
+                        ErrorKind::UnsupportedCertificate,
+                        "unsupported curve",
+                    )),
+                }
+            }
+            Ok(ic_pkix::PublicKeyInfo::Ed25519(k)) => return Ok(Self::Ed25519(k)),
+            _ => {}
+        }
+        // Not one ic_pkix names: read the AlgorithmIdentifier ourselves.
+        let mut outer = Reader::new(spki);
+        let mut seq = outer.sequence().map_err(bad)?;
+        outer.finish().map_err(bad)?;
+        let mut alg = seq.sequence().map_err(bad)?;
+        let oid = alg.oid().map_err(bad)?;
+        let key = seq.bit_string().map_err(bad)?;
+        seq.finish().map_err(bad)?;
+        if oid == OID_ML_DSA_65 {
+            // Parameters MUST be absent for ML-DSA.
+            alg.finish().map_err(bad)?;
+            if key.len() != mldsa::PUBLIC_KEY_LEN {
+                return Err(Error::new(
+                    ErrorKind::BadCertificate,
+                    "ml-dsa-65 public key length",
+                ));
+            }
+            return Ok(Self::MlDsa65(key));
+        }
+        if oid == ic_pkix::oid::EC_PUBLIC_KEY {
+            let curve = alg.oid().map_err(bad)?;
+            alg.finish().map_err(bad)?;
+            if curve == OID_P521 {
+                if key.len() != 133 || key[0] != 0x04 {
+                    return Err(Error::new(
+                        ErrorKind::BadCertificate,
+                        "P-521 point encoding",
+                    ));
+                }
+                return Ok(Self::EcP521(key));
+            }
+        }
+        Err(Error::new(
+            ErrorKind::UnsupportedCertificate,
+            "unsupported public key algorithm",
+        ))
+    }
+
+    /// Whether `scheme` is usable with this key. `REQ-SIG-001`.
+    pub fn matches(&self, scheme: SignatureScheme) -> bool {
+        use SignatureScheme as S;
+        matches!(
+            (self, scheme),
+            (Self::EcP256(_), S::EcdsaSecp256r1Sha256)
+                | (Self::EcP384(_), S::EcdsaSecp384r1Sha384)
+                | (Self::EcP521(_), S::EcdsaSecp521r1Sha512)
+                | (Self::Ed25519(_), S::Ed25519)
+                | (Self::MlDsa65(_), S::MlDsa65)
+                | (
+                    Self::Rsa { .. },
+                    S::RsaPssRsaeSha256
+                        | S::RsaPssRsaeSha384
+                        | S::RsaPssRsaeSha512
+                        | S::RsaPkcs1Sha256
+                        | S::RsaPkcs1Sha384
+                        | S::RsaPkcs1Sha512
+                )
+        )
+    }
+
+    /// A short identifier for reports.
+    pub fn kind_id(&self) -> &'static str {
+        match self {
+            Self::EcP256(_) => "key:ecdsa-p256",
+            Self::EcP384(_) => "key:ecdsa-p384",
+            Self::EcP521(_) => "key:ecdsa-p521",
+            Self::Ed25519(_) => "key:ed25519",
+            Self::Rsa { .. } => "key:rsa",
+            Self::MlDsa65(_) => "key:ml-dsa-65",
+        }
+    }
+
+    /// Security strength in bits against a classical adversary.
+    pub fn classical_bits(&self) -> u16 {
+        match self {
+            Self::EcP256(_) | Self::Ed25519(_) => 128,
+            Self::EcP384(_) => 192,
+            Self::EcP521(_) | Self::MlDsa65(_) => 256,
+            Self::Rsa { modulus, .. } => match modulus.len() * 8 {
+                n if n >= 15360 => 256,
+                n if n >= 7680 => 192,
+                n if n >= 3072 => 128,
+                n if n >= 2048 => 112,
+                _ => 0,
+            },
+        }
+    }
+}
+
+/// Verify `signature` over `message` with `key` under `scheme`.
+///
+/// `signature` is in TLS/X.509 form: DER for ECDSA, raw for everything else.
+pub fn verify(
+    scheme: SignatureScheme,
+    key: &PublicKey<'_>,
+    message: &[u8],
+    signature: &[u8],
+) -> Result<()> {
+    if !key.matches(scheme) {
+        return Err(Error::new(
+            ErrorKind::IllegalParameter,
+            "signature scheme does not match the key",
+        ));
+    }
+    let fail = |_| Error::new(ErrorKind::DecryptError, "signature did not verify");
+    match (scheme, *key) {
+        (SignatureScheme::EcdsaSecp256r1Sha256, PublicKey::EcP256(pk)) => {
+            let mut fixed = [0u8; 64];
+            ic_pkix::ecdsa_signature::from_der(signature, &mut fixed).map_err(fail)?;
+            ic_ec::EcdsaP256Sha256::verify(pk, message, &fixed).map_err(fail)
+        }
+        (SignatureScheme::EcdsaSecp384r1Sha384, PublicKey::EcP384(pk)) => {
+            let mut fixed = [0u8; 96];
+            ic_pkix::ecdsa_signature::from_der(signature, &mut fixed).map_err(fail)?;
+            ic_ec::EcdsaP384Sha384::verify(pk, message, &fixed).map_err(fail)
+        }
+        (SignatureScheme::EcdsaSecp521r1Sha512, PublicKey::EcP521(pk)) => {
+            let mut fixed = [0u8; 132];
+            ic_pkix::ecdsa_signature::from_der(signature, &mut fixed).map_err(fail)?;
+            ic_ec::p521::EcdsaP521Sha512::verify(pk, message, &fixed).map_err(fail)
+        }
+        (SignatureScheme::Ed25519, PublicKey::Ed25519(pk)) => {
+            ic_ec::Ed25519::verify(pk, message, signature).map_err(fail)
+        }
+        (SignatureScheme::MlDsa65, PublicKey::MlDsa65(pk)) => {
+            let pk: &[u8; mldsa::PUBLIC_KEY_LEN] = pk.try_into().map_err(|_| {
+                Error::new(ErrorKind::BadCertificate, "ml-dsa-65 public key length")
+            })?;
+            let sig: &[u8; mldsa::SIGNATURE_LEN] = signature
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::DecryptError, "ml-dsa-65 signature length"))?;
+            if mldsa::verify(pk, message, b"", sig) {
+                Ok(())
+            } else {
+                Err(Error::new(
+                    ErrorKind::DecryptError,
+                    "signature did not verify",
+                ))
+            }
+        }
+        (s, PublicKey::Rsa { modulus, exponent }) => {
+            let key = ic_rsa::RsaPublicKey::from_components(modulus, exponent).map_err(|_| {
+                Error::new(
+                    ErrorKind::UnsupportedCertificate,
+                    "rsa key outside 2048..4096 bits",
+                )
+            })?;
+            let r = match s {
+                SignatureScheme::RsaPssRsaeSha256 => {
+                    ic_rsa::PssSha256::verify(&key, message, signature)
+                }
+                SignatureScheme::RsaPssRsaeSha384 => {
+                    ic_rsa::PssSha384::verify(&key, message, signature)
+                }
+                SignatureScheme::RsaPssRsaeSha512 => {
+                    ic_rsa::PssSha512::verify(&key, message, signature)
+                }
+                SignatureScheme::RsaPkcs1Sha256 => {
+                    ic_rsa::Pkcs1Sha256::verify(&key, message, signature)
+                }
+                SignatureScheme::RsaPkcs1Sha384 => {
+                    ic_rsa::Pkcs1Sha384::verify(&key, message, signature)
+                }
+                SignatureScheme::RsaPkcs1Sha512 => {
+                    ic_rsa::Pkcs1Sha512::verify(&key, message, signature)
+                }
+                _ => return Err(Error::new(ErrorKind::IllegalParameter, "scheme")),
+            };
+            r.map_err(fail)
+        }
+        _ => Err(Error::new(
+            ErrorKind::IllegalParameter,
+            "signature scheme does not match the key",
+        )),
+    }
+}
+
+enum KeyImpl {
+    P256(Zeroizing<[u8; 32]>),
+    P384(Zeroizing<[u8; 48]>),
+    P521(Zeroizing<[u8; 66]>),
+    Ed25519(Box<ic_ec::Ed25519Key>),
+    Rsa(Box<ic_rsa::RsaPrivateKey>),
+    MlDsa65(Box<Zeroizing<[u8; mldsa::SECRET_KEY_LEN]>>),
+}
+
+/// A private key that can sign handshakes. `REQ-SIG-003`: key bytes are
+/// zeroized on drop.
+pub struct SigningKey {
+    inner: KeyImpl,
+    /// DER `SubjectPublicKeyInfo` of the matching public key.
+    spki: Vec<u8>,
+}
+
+impl core::fmt::Debug for SigningKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "SigningKey({})", self.kind_id())
+    }
+}
+
+fn copy_fixed<const N: usize>(src: &[u8]) -> Result<Zeroizing<[u8; N]>> {
+    if src.len() > N {
+        return Err(Error::new(
+            ErrorKind::InvalidConfig,
+            "private scalar too long",
+        ));
+    }
+    // Left-pad: some encoders drop leading zero bytes from the scalar.
+    let mut out = Zeroizing::new([0u8; N]);
+    out.get_mut()[N - src.len()..].copy_from_slice(src);
+    Ok(out)
+}
+
+fn ec_spki(curve_oid: &[u8], point: &[u8]) -> Result<Vec<u8>> {
+    let mut alg = Vec::new();
+    push_tlv(&mut alg, der::OID, ic_pkix::oid::EC_PUBLIC_KEY);
+    push_tlv(&mut alg, der::OID, curve_oid);
+    spki_from_parts(&alg, point)
+}
+
+/// Build `SEQUENCE { SEQUENCE { alg }, BIT STRING key }`.
+fn spki_from_parts(alg_body: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    push_tlv(&mut body, der::SEQUENCE, alg_body);
+    let mut bits = Vec::with_capacity(key.len() + 1);
+    bits.push(0);
+    bits.extend_from_slice(key);
+    push_tlv(&mut body, der::BIT_STRING, &bits);
+    let mut out = Vec::new();
+    push_tlv(&mut out, der::SEQUENCE, &body);
+    Ok(out)
+}
+
+/// Append a DER TLV with a definite length.
+pub fn push_tlv(out: &mut Vec<u8>, tag: u8, body: &[u8]) {
+    out.push(tag);
+    let n = body.len();
+    if n < 0x80 {
+        out.push(n as u8);
+    } else if n <= 0xff {
+        out.extend_from_slice(&[0x81, n as u8]);
+    } else if n <= 0xffff {
+        out.extend_from_slice(&[0x82, (n >> 8) as u8, n as u8]);
+    } else {
+        out.extend_from_slice(&[0x83, (n >> 16) as u8, (n >> 8) as u8, n as u8]);
+    }
+    out.extend_from_slice(body);
+}
+
+impl SigningKey {
+    /// Load a PKCS#8 `PrivateKeyInfo` (DER).
+    ///
+    /// Accepts P-256, P-384, P-521, Ed25519, RSA (2048–4096 bits), and
+    /// ML-DSA-65 in the seed form of draft-ietf-lamps-dilithium-certificates.
+    pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self> {
+        // As for SPKI: ic_pkix errors on curves it does not name (P-521)
+        // instead of reporting them unsupported, so an error falls through to
+        // the reader for the forms it cannot handle.
+        let parsed = match ic_pkix::PrivateKeyInfo::from_der(der_bytes) {
+            Ok(p) => p,
+            Err(_) => return Self::from_pkcs8_fallback(der_bytes),
+        };
+        match parsed {
+            ic_pkix::PrivateKeyInfo::Ec {
+                algorithm,
+                private_key,
+                ..
+            } => match algorithm {
+                ic_pkix::KeyAlgorithm::EcP256 => Self::ecdsa_p256(private_key),
+                ic_pkix::KeyAlgorithm::EcP384 => Self::ecdsa_p384(private_key),
+                ic_pkix::KeyAlgorithm::EcP521 => Self::ecdsa_p521(private_key),
+                _ => Err(Error::new(ErrorKind::InvalidConfig, "unsupported curve")),
+            },
+            ic_pkix::PrivateKeyInfo::Ed25519(seed) => Self::ed25519(seed),
+            ic_pkix::PrivateKeyInfo::Rsa {
+                prime1,
+                prime2,
+                public_exponent,
+                ..
+            } => {
+                // From the primes, so a file whose CRT values disagree with them
+                // cannot produce a faulty signature that leaks the factorization.
+                let key = ic_rsa::RsaPrivateKey::from_primes(prime1, prime2, public_exponent)
+                    .map_err(|_| Error::new(ErrorKind::InvalidConfig, "rsa key rejected"))?;
+                Self::rsa(key)
+            }
+            ic_pkix::PrivateKeyInfo::X25519(_) => Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "an X25519 key agrees keys; it cannot sign",
+            )),
+            ic_pkix::PrivateKeyInfo::Unsupported { .. } => Self::from_pkcs8_fallback(der_bytes),
+        }
+    }
+
+    /// Load a PEM `PRIVATE KEY` (PKCS#8) block.
+    pub fn from_pem(text: &str) -> Result<Self> {
+        let mut der_buf = Zeroizing::new([0u8; 8192]);
+        let n = ic_pkix::pem::decode(
+            ic_pkix::pem::PRIVATE_KEY,
+            text.as_bytes(),
+            der_buf.get_mut(),
+        )
+        .map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidConfig,
+                "no PEM PRIVATE KEY block (PKCS#8 expected)",
+            )
+        })?;
+        Self::from_pkcs8_der(&der_buf.get()[..n])
+    }
+
+    /// PKCS#8 forms `ic_pkix` does not name: P-521 and ML-DSA-65.
+    fn from_pkcs8_fallback(der_bytes: &[u8]) -> Result<Self> {
+        let bad = |_| Error::new(ErrorKind::InvalidConfig, "malformed PKCS#8 private key");
+        let mut outer = Reader::new(der_bytes);
+        let mut seq = outer.sequence().map_err(bad)?;
+        seq.expect_version(0).map_err(bad)?;
+        let mut alg = seq.sequence().map_err(bad)?;
+        let oid = alg.oid().map_err(bad)?;
+        let key = seq.octet_string().map_err(bad)?;
+        if oid == OID_ML_DSA_65 {
+            // Seed form: [0] IMPLICIT OCTET STRING (SIZE (32)), i.e. 0x80 0x20.
+            if key.len() == 34 && key[0] == 0x80 && key[1] == 0x20 {
+                let mut seed = Zeroizing::new([0u8; 32]);
+                seed.get_mut().copy_from_slice(&key[2..]);
+                return Self::mldsa65_from_seed(seed.get());
+            }
+            // Both form: SEQUENCE { seed OCTET STRING (32), expandedKey OCTET STRING }.
+            // OpenSSL 3.5 writes this by default. The key is rebuilt from the
+            // seed and the expanded copy must match it, so a file whose two
+            // halves disagree is refused rather than half-trusted.
+            if key.first() == Some(&der::SEQUENCE) {
+                let mut inner = Reader::new(key);
+                let mut both = inner.sequence().map_err(bad)?;
+                inner.finish().map_err(bad)?;
+                let seed_bytes = both.octet_string().map_err(bad)?;
+                let expanded = both.octet_string().map_err(bad)?;
+                both.finish().map_err(bad)?;
+                let seed: &[u8; 32] = seed_bytes.try_into().map_err(|_| {
+                    Error::new(ErrorKind::InvalidConfig, "ML-DSA-65 seed must be 32 bytes")
+                })?;
+                let key = Self::mldsa65_from_seed(seed)?;
+                if let KeyImpl::MlDsa65(sk) = &key.inner {
+                    if !ic_core::ct::verify(&sk.get()[..], expanded) {
+                        return Err(Error::new(
+                            ErrorKind::InvalidConfig,
+                            "ML-DSA-65 expanded key does not match its seed",
+                        ));
+                    }
+                }
+                return Ok(key);
+            }
+            return Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "unrecognised ML-DSA-65 private key form",
+            ));
+        }
+        if oid == ic_pkix::oid::EC_PUBLIC_KEY && alg.oid().map_err(bad)? == OID_P521 {
+            // ECPrivateKey ::= SEQUENCE { version 1, privateKey OCTET STRING, ... }
+            let mut ec = Reader::new(key);
+            let mut body = ec.sequence().map_err(bad)?;
+            body.expect_version(1).map_err(bad)?;
+            let scalar = body.octet_string().map_err(bad)?;
+            return Self::ecdsa_p521(scalar);
+        }
+        Err(Error::new(
+            ErrorKind::InvalidConfig,
+            "unsupported private key algorithm",
+        ))
+    }
+
+    /// An ECDSA P-256 key from its 32-byte scalar.
+    pub fn ecdsa_p256(scalar: &[u8]) -> Result<Self> {
+        let sk = copy_fixed::<32>(scalar)?;
+        let mut pk = [0u8; 65];
+        ic_ec::EcdsaP256Sha256::public_key(sk.get(), &mut pk)
+            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "invalid P-256 scalar"))?;
+        Ok(Self {
+            spki: ec_spki(ic_pkix::oid::P256, &pk)?,
+            inner: KeyImpl::P256(sk),
+        })
+    }
+
+    /// An ECDSA P-384 key from its 48-byte scalar.
+    pub fn ecdsa_p384(scalar: &[u8]) -> Result<Self> {
+        let sk = copy_fixed::<48>(scalar)?;
+        let mut pk = [0u8; 97];
+        ic_ec::EcdsaP384Sha384::public_key(sk.get(), &mut pk)
+            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "invalid P-384 scalar"))?;
+        Ok(Self {
+            spki: ec_spki(ic_pkix::oid::P384, &pk)?,
+            inner: KeyImpl::P384(sk),
+        })
+    }
+
+    /// An ECDSA P-521 key from its 66-byte scalar.
+    pub fn ecdsa_p521(scalar: &[u8]) -> Result<Self> {
+        let sk = copy_fixed::<66>(scalar)?;
+        let mut pk = [0u8; 133];
+        ic_ec::p521::EcdsaP521Sha512::public_key(sk.get(), &mut pk)
+            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "invalid P-521 scalar"))?;
+        Ok(Self {
+            spki: ec_spki(OID_P521, &pk)?,
+            inner: KeyImpl::P521(sk),
+        })
+    }
+
+    /// An Ed25519 key from its 32-byte seed.
+    pub fn ed25519(seed: &[u8]) -> Result<Self> {
+        let key = ic_ec::Ed25519Key::from_seed(seed)
+            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "invalid Ed25519 seed"))?;
+        let mut alg = Vec::new();
+        push_tlv(&mut alg, der::OID, ic_pkix::oid::ED25519);
+        let spki = spki_from_parts(&alg, key.public_key())?;
+        Ok(Self {
+            spki,
+            inner: KeyImpl::Ed25519(Box::new(key)),
+        })
+    }
+
+    /// An RSA key.
+    pub fn rsa(key: ic_rsa::RsaPrivateKey) -> Result<Self> {
+        let size = key.size();
+        let mut modulus = alloc::vec![0u8; size];
+        key.public_key().modulus_bytes(&mut modulus)?;
+        let mut rsa_pub = alloc::vec![0u8; size + 32];
+        let n = ic_pkix::write_rsa_public_key(&modulus, key.public_key().exponent(), &mut rsa_pub)?;
+        let mut alg = Vec::new();
+        push_tlv(&mut alg, der::OID, ic_pkix::oid::RSA_ENCRYPTION);
+        push_tlv(&mut alg, der::NULL, &[]);
+        // ic_pkix's writer builds from the end of the buffer, and `finish`
+        // then moves the result to the front.
+        let spki = spki_from_parts(&alg, &rsa_pub[..n])?;
+        Ok(Self {
+            spki,
+            inner: KeyImpl::Rsa(Box::new(key)),
+        })
+    }
+
+    /// An ML-DSA-65 key from its 32-byte seed (FIPS 204 `ξ`).
+    pub fn mldsa65_from_seed(seed: &[u8; 32]) -> Result<Self> {
+        let mut pk = Box::new([0u8; mldsa::PUBLIC_KEY_LEN]);
+        let mut sk = Box::new(Zeroizing::new([0u8; mldsa::SECRET_KEY_LEN]));
+        if !mldsa::keygen(seed, &mut pk, sk.get_mut()) {
+            return Err(Error::new(
+                ErrorKind::Crypto,
+                "ml-dsa-65 pairwise consistency test failed",
+            ));
+        }
+        let mut alg = Vec::new();
+        push_tlv(&mut alg, der::OID, OID_ML_DSA_65);
+        let spki = spki_from_parts(&alg, &pk[..])?;
+        Ok(Self {
+            spki,
+            inner: KeyImpl::MlDsa65(sk),
+        })
+    }
+
+    /// Generate a fresh key of the given kind. Used by tests and by agents
+    /// provisioning ephemeral identities.
+    pub fn generate(kind: KeyKind, rng: &mut dyn RandomSource) -> Result<Self> {
+        let mut seed = SecretVec::new(alloc::vec![0u8; 66]);
+        for _ in 0..64 {
+            super::fill_random(rng, seed.get_mut())?;
+            let s = seed.get();
+            let r = match kind {
+                KeyKind::EcdsaP256 => Self::ecdsa_p256(&s[..32]),
+                KeyKind::EcdsaP384 => Self::ecdsa_p384(&s[..48]),
+                KeyKind::EcdsaP521 => {
+                    let mut k = [0u8; 66];
+                    k.copy_from_slice(&s[..66]);
+                    k[0] &= 0x01;
+                    let r = Self::ecdsa_p521(&k);
+                    k.zeroize();
+                    r
+                }
+                KeyKind::Ed25519 => Self::ed25519(&s[..32]),
+                KeyKind::MlDsa65 => {
+                    let mut k = [0u8; 32];
+                    k.copy_from_slice(&s[..32]);
+                    let r = Self::mldsa65_from_seed(&k);
+                    k.zeroize();
+                    r
+                }
+            };
+            if let Ok(key) = r {
+                return Ok(key);
+            }
+        }
+        Err(Error::new(ErrorKind::Entropy, "could not generate a key"))
+    }
+
+    /// DER `SubjectPublicKeyInfo` of the public half.
+    pub fn spki(&self) -> &[u8] {
+        &self.spki
+    }
+
+    /// A short identifier for reports.
+    pub fn kind_id(&self) -> &'static str {
+        match &self.inner {
+            KeyImpl::P256(_) => "key:ecdsa-p256",
+            KeyImpl::P384(_) => "key:ecdsa-p384",
+            KeyImpl::P521(_) => "key:ecdsa-p521",
+            KeyImpl::Ed25519(_) => "key:ed25519",
+            KeyImpl::Rsa(_) => "key:rsa",
+            KeyImpl::MlDsa65(_) => "key:ml-dsa-65",
+        }
+    }
+
+    /// Schemes this key can sign a handshake with, most preferred first.
+    /// `REQ-SIG-002`: never PKCS#1 v1.5.
+    pub fn schemes(&self) -> &'static [SignatureScheme] {
+        use SignatureScheme as S;
+        match &self.inner {
+            KeyImpl::P256(_) => &[S::EcdsaSecp256r1Sha256],
+            KeyImpl::P384(_) => &[S::EcdsaSecp384r1Sha384],
+            KeyImpl::P521(_) => &[S::EcdsaSecp521r1Sha512],
+            KeyImpl::Ed25519(_) => &[S::Ed25519],
+            KeyImpl::Rsa(_) => &[
+                S::RsaPssRsaeSha256,
+                S::RsaPssRsaeSha384,
+                S::RsaPssRsaeSha512,
+            ],
+            KeyImpl::MlDsa65(_) => &[S::MlDsa65],
+        }
+    }
+
+    /// The first scheme this key supports that the peer offered and `allowed`
+    /// permits, in this key's preference order.
+    pub fn choose_scheme(
+        &self,
+        offered: &[SignatureScheme],
+        allowed: &[SignatureScheme],
+    ) -> Option<SignatureScheme> {
+        self.schemes()
+            .iter()
+            .copied()
+            .find(|s| offered.contains(s) && allowed.contains(s))
+    }
+
+    /// Sign `message` under `scheme`, producing TLS wire form.
+    pub fn sign(
+        &self,
+        scheme: SignatureScheme,
+        message: &[u8],
+        rng: &mut dyn RandomSource,
+    ) -> Result<Vec<u8>> {
+        if !self.schemes().contains(&scheme) {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "scheme not supported by this key",
+            ));
+        }
+        let ecdsa_der = |fixed: &[u8]| -> Result<Vec<u8>> {
+            let mut der_buf = alloc::vec![0u8; ic_pkix::ecdsa_signature::max_der_len(fixed.len())];
+            let n = ic_pkix::ecdsa_signature::to_der(fixed, &mut der_buf)?;
+            der_buf.truncate(n);
+            Ok(der_buf)
+        };
+        match &self.inner {
+            KeyImpl::P256(sk) => {
+                let mut sig = [0u8; 64];
+                ic_ec::EcdsaP256Sha256::sign(sk.get(), message, &mut sig)?;
+                ecdsa_der(&sig)
+            }
+            KeyImpl::P384(sk) => {
+                let mut sig = [0u8; 96];
+                ic_ec::EcdsaP384Sha384::sign(sk.get(), message, &mut sig)?;
+                ecdsa_der(&sig)
+            }
+            KeyImpl::P521(sk) => {
+                let mut sig = [0u8; 132];
+                ic_ec::p521::EcdsaP521Sha512::sign(sk.get(), message, &mut sig)?;
+                ecdsa_der(&sig)
+            }
+            KeyImpl::Ed25519(k) => {
+                let mut sig = alloc::vec![0u8; 64];
+                k.sign(message, &mut sig)?;
+                Ok(sig)
+            }
+            KeyImpl::Rsa(k) => {
+                let mut sig = alloc::vec![0u8; k.size()];
+                let mut rng = RngRef(rng);
+                match scheme {
+                    SignatureScheme::RsaPssRsaeSha256 => {
+                        ic_rsa::PssSha256::sign(k, message, &mut rng, &mut sig)?
+                    }
+                    SignatureScheme::RsaPssRsaeSha384 => {
+                        ic_rsa::PssSha384::sign(k, message, &mut rng, &mut sig)?
+                    }
+                    SignatureScheme::RsaPssRsaeSha512 => {
+                        ic_rsa::PssSha512::sign(k, message, &mut rng, &mut sig)?
+                    }
+                    _ => return Err(Error::new(ErrorKind::Internal, "rsa scheme")),
+                }
+                Ok(sig)
+            }
+            KeyImpl::MlDsa65(sk) => {
+                // Hedged signing: fresh randomness per FIPS 204 §3.4.
+                let mut rnd = Zeroizing::new([0u8; 32]);
+                super::fill_random(rng, rnd.get_mut())?;
+                let mut sig = Box::new([0u8; mldsa::SIGNATURE_LEN]);
+                if !mldsa::sign(sk.get(), message, b"", rnd.get(), &mut sig) {
+                    return Err(Error::new(ErrorKind::Crypto, "ml-dsa-65 signing failed"));
+                }
+                Ok(sig.to_vec())
+            }
+        }
+    }
+}
+
+struct RngRef<'a>(&'a mut dyn RandomSource);
+
+impl RandomSource for RngRef<'_> {
+    fn fill(&mut self, out: &mut [u8]) -> ic_core::Result<()> {
+        self.0.fill(out)
+    }
+}
+
+/// Key types [`SigningKey::generate`] can create.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    /// ECDSA P-256.
+    EcdsaP256,
+    /// ECDSA P-384.
+    EcdsaP384,
+    /// ECDSA P-521.
+    EcdsaP521,
+    /// Ed25519.
+    Ed25519,
+    /// ML-DSA-65.
+    MlDsa65,
+}
+
+impl KeyKind {
+    /// Every kind.
+    pub const ALL: &'static [KeyKind] = &[
+        Self::EcdsaP256,
+        Self::EcdsaP384,
+        Self::EcdsaP521,
+        Self::Ed25519,
+        Self::MlDsa65,
+    ];
+
+    /// Stable identifier.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::EcdsaP256 => "key:ecdsa-p256",
+            Self::EcdsaP384 => "key:ecdsa-p384",
+            Self::EcdsaP521 => "key:ecdsa-p521",
+            Self::Ed25519 => "key:ed25519",
+            Self::MlDsa65 => "key:ml-dsa-65",
+        }
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_key_kind_signs_and_its_spki_verifies() {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        for &kind in KeyKind::ALL {
+            let key = SigningKey::generate(kind, &mut rng).unwrap();
+            let pk = PublicKey::from_spki(key.spki()).unwrap();
+            assert_eq!(pk.kind_id(), kind.id());
+            for &scheme in key.schemes() {
+                let sig = key.sign(scheme, b"transcript", &mut rng).unwrap();
+                verify(scheme, &pk, b"transcript", &sig).unwrap();
+                assert_eq!(
+                    verify(scheme, &pk, b"transcripT", &sig).unwrap_err().kind(),
+                    ErrorKind::DecryptError,
+                    "{kind:?} accepted a signature over another message"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_scheme_that_does_not_fit_the_key_is_refused() {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
+        let pk = PublicKey::from_spki(key.spki()).unwrap();
+        let sig = key
+            .sign(SignatureScheme::EcdsaSecp256r1Sha256, b"m", &mut rng)
+            .unwrap();
+        assert_eq!(
+            verify(SignatureScheme::EcdsaSecp384r1Sha384, &pk, b"m", &sig)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::IllegalParameter
+        );
+        assert!(key
+            .sign(SignatureScheme::RsaPkcs1Sha256, b"m", &mut rng)
+            .is_err());
+    }
+}
