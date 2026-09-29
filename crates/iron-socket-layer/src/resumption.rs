@@ -159,7 +159,8 @@ pub trait TicketStore: Send + Sync + core::fmt::Debug {
     fn take(&self, server_name: &str, now: u64) -> Option<StoredTicket>;
 }
 
-/// An in-memory [`TicketStore`], bounded, newest ticket first.
+/// An in-memory [`TicketStore`], bounded in total and per server, evicting
+/// the oldest ticket first. `REQ-PSK-006`.
 #[cfg(feature = "std")]
 #[derive(Debug, Default)]
 pub struct MemoryTicketStore {
@@ -499,5 +500,46 @@ mod tests {
         }
         assert_eq!(store.len(), MemoryTicketStore::PER_SERVER);
         assert_eq!(t.obfuscated_age(1002), 2000u32.wrapping_add(7));
+    }
+
+    /// REQ-PSK-006: the store is bounded in total as well as per server, and
+    /// evicts the oldest ticket, so servers cannot grow it without limit.
+    #[test]
+    fn the_store_is_bounded_in_total_and_evicts_the_oldest() {
+        let store = MemoryTicketStore::default();
+        let ticket = |i: usize| StoredTicket {
+            server_name: alloc::format!("s{i}.test"),
+            suite: CipherSuite::TlsAes128GcmSha256,
+            ticket: alloc::vec![1; 8],
+            psk: Output::zeros(32),
+            age_add: 0,
+            lifetime: 100,
+            received_at: 1000,
+            max_early_data: 0,
+            alpn: None,
+            quic_params: None,
+            peer: PeerSummary::default(),
+        };
+        for i in 0..=MemoryTicketStore::CAPACITY {
+            store.put(ticket(i));
+        }
+        assert_eq!(store.len(), MemoryTicketStore::CAPACITY);
+        assert!(store.take("s0.test", 1000).is_none(), "the oldest was kept");
+        assert!(store.take("s1.test", 1000).is_some());
+        let last = alloc::format!("s{}.test", MemoryTicketStore::CAPACITY);
+        assert!(store.take(&last, 1000).is_some());
+    }
+
+    /// REQ-PSK-006: a ticket sealed in another state format does not decode,
+    /// so it gives a full handshake rather than a misread session.
+    #[test]
+    fn a_ticket_state_in_another_format_is_refused() {
+        let mut plain = state().encode().unwrap();
+        assert_eq!(TicketState::decode(&plain).unwrap(), state());
+        for v in [0u8, STATE_VERSION - 1, STATE_VERSION + 1] {
+            plain[0] = v;
+            let e = TicketState::decode(&plain).unwrap_err();
+            assert!(e.to_string().contains("ticket state version"), "{v}: {e}");
+        }
     }
 }

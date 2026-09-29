@@ -193,7 +193,9 @@ fn parse_single(body: &[u8]) -> Result<Single<'_>> {
 ///
 /// Returns `Ok` for `Good` and `Unknown`; a revoked certificate is
 /// [`ErrorKind::CertificateRevoked`]; anything invalid, stale or unrelated is
-/// [`ErrorKind::BadCertificateStatus`].
+/// [`ErrorKind::BadCertificateStatus`]. Only a successful, basic response
+/// signed under one of `allowed_schemes` is considered (`REQ-OCSP-006`); a
+/// scheme outside them is [`ErrorKind::PolicyViolation`].
 pub fn verify_response(
     response_der: &[u8],
     leaf_der: &[u8],
@@ -619,6 +621,44 @@ mod tests {
         assert!(v.cert_id_hashes_checked && !v.delegated);
         let r = make(&f, CertStatus::Unknown, f.now - 60, f.now + 3600);
         assert_eq!(check(&f, &r, f.now).unwrap().status, CertStatus::Unknown);
+    }
+
+    /// REQ-OCSP-006: only a successful, basic response signed under a scheme
+    /// the caller allows is considered at all.
+    #[test]
+    fn unsuccessful_non_basic_and_disallowed_responses_are_refused() {
+        let f = fixture();
+        // malformedRequest, internalError, tryLater, sigRequired, unauthorized.
+        for status in [1u8, 2, 3, 5, 6] {
+            let e = check(&f, &[0x30, 0x03, T_ENUMERATED, 0x01, status], f.now).unwrap_err();
+            assert!(
+                e.to_string().contains("responseStatus is not successful"),
+                "{status}: {e}"
+            );
+        }
+        let good = make(&f, CertStatus::Good, f.now - 60, f.now + 3600);
+        // The same response with a response type other than id-pkix-ocsp-basic.
+        let at = good
+            .windows(OID_OCSP_BASIC.len())
+            .position(|w| w == OID_OCSP_BASIC)
+            .unwrap();
+        let mut other = good.clone();
+        other[at + OID_OCSP_BASIC.len() - 1] = 0x02;
+        let e = check(&f, &other, f.now).unwrap_err();
+        assert!(e.to_string().contains("not a basic OCSP response"), "{e}");
+        // Validly signed, but with a scheme the caller does not allow.
+        let ca = Certificate::parse(&f.ca).unwrap();
+        let e = verify_response(
+            &good,
+            &f.leaf,
+            ca.subject,
+            ca.spki,
+            f.now,
+            &[SignatureScheme::Ed25519],
+        )
+        .unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::PolicyViolation, "{e}");
+        assert!(check(&f, &good, f.now).is_ok());
     }
 
     /// REQ-OCSP-003.

@@ -527,4 +527,133 @@ mod tests {
             assert!(scan_extensions(&list, false).unwrap().is_some());
         }
     }
+
+    /// One extension, optionally critical, with a placeholder value.
+    fn ext(oid: &[u8], critical: bool) -> Vec<u8> {
+        let mut e = Vec::new();
+        push_tlv(&mut e, T_OID, oid);
+        if critical {
+            push_tlv(&mut e, T_BOOLEAN, &[0xff]);
+        }
+        push_tlv(&mut e, T_OCTET_STRING, &[0x05, 0x00]);
+        let mut one = Vec::new();
+        push_tlv(&mut one, T_SEQUENCE, &e);
+        one
+    }
+
+    fn ext_list(exts: &[Vec<u8>]) -> Vec<u8> {
+        let mut list = Vec::new();
+        push_tlv(&mut list, T_SEQUENCE, &exts.concat());
+        list
+    }
+
+    /// A CRL assembled field by field, for the parser's refusals. It is not
+    /// validly signed: `parse` reads structure, and signatures are checked
+    /// later, so each refusal here is the parser's own.
+    fn assemble(
+        version: &[u8],
+        inner_alg: &[u8],
+        outer_alg: &[u8],
+        entry_exts: Option<&[u8]>,
+        crl_exts: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let now = 1_800_000_000;
+        let mut tbs = Vec::new();
+        push_tlv(&mut tbs, T_INTEGER, version);
+        tbs.extend_from_slice(inner_alg);
+        tbs.extend_from_slice(&[0x30, 0x00]); // issuer: an empty Name
+        encode_time(&mut tbs, now).unwrap();
+        encode_time(&mut tbs, now + 3600).unwrap();
+        let mut entry = Vec::new();
+        push_tlv(&mut entry, T_INTEGER, &[0x2a]);
+        encode_time(&mut entry, now - 60).unwrap();
+        if let Some(e) = entry_exts {
+            entry.extend_from_slice(e);
+        }
+        let mut entries = Vec::new();
+        push_tlv(&mut entries, T_SEQUENCE, &entry);
+        push_tlv(&mut tbs, T_SEQUENCE, &entries);
+        if let Some(e) = crl_exts {
+            push_tlv(&mut tbs, T_CTX0, e);
+        }
+        let mut body = Vec::new();
+        push_tlv(&mut body, T_SEQUENCE, &tbs);
+        body.extend_from_slice(outer_alg);
+        push_tlv(&mut body, T_BIT_STRING, &[0, 1, 2, 3]);
+        let mut out = Vec::new();
+        push_tlv(&mut out, T_SEQUENCE, &body);
+        out
+    }
+
+    /// REQ-CRL-004: every scope-narrowing extension, and any unknown
+    /// critical one, is flagged where it appears (on the CRL or on an entry),
+    /// through the parser. Known and non-critical unknown extensions are not.
+    #[test]
+    fn every_narrowing_or_unknown_critical_extension_is_flagged() {
+        let alg = alg_id(SignatureScheme::EcdsaSecp384r1Sha384).unwrap();
+        let unknown: &[u8] = &[0x2a, 0x03, 0x04];
+        let on_crl = |exts: &[Vec<u8>]| {
+            parse(&assemble(&[1], &alg, &alg, None, Some(&ext_list(exts))))
+                .unwrap()
+                .unsupported
+        };
+        let on_entry = |exts: &[Vec<u8>]| {
+            parse(&assemble(&[1], &alg, &alg, Some(&ext_list(exts)), None))
+                .unwrap()
+                .unsupported
+        };
+        assert_eq!(
+            on_crl(&[ext(OID_DELTA_CRL, true)]),
+            Some("delta CRLs are not supported")
+        );
+        assert!(on_crl(&[ext(OID_IDP, true)])
+            .unwrap()
+            .contains("partitioned"));
+        assert_eq!(
+            on_crl(&[ext(unknown, true)]),
+            Some("unknown critical CRL extension")
+        );
+        assert_eq!(on_crl(&[ext(unknown, false)]), None);
+        assert_eq!(
+            on_crl(&[ext(OID_CRL_NUMBER, false), ext(OID_AKI, false)]),
+            None
+        );
+        assert_eq!(
+            on_entry(&[ext(OID_CERT_ISSUER, true)]),
+            Some("indirect CRLs are not supported")
+        );
+        assert_eq!(
+            on_entry(&[ext(unknown, true)]),
+            Some("unknown critical CRL extension")
+        );
+        assert_eq!(
+            on_entry(&[ext(OID_REASON_CODE, false), ext(OID_INVALIDITY_DATE, false)]),
+            None
+        );
+        // An entry-level-only extension on the CRL itself is unknown there.
+        assert_eq!(
+            on_crl(&[ext(OID_CERT_ISSUER, true)]),
+            Some("unknown critical CRL extension")
+        );
+    }
+
+    /// The parser refuses a CRL whose version is not v2, whose inner and
+    /// outer signature algorithms differ, or whose entry extensions are not a
+    /// SEQUENCE.
+    #[test]
+    fn malformed_crls_are_refused_by_the_parser() {
+        let p384 = alg_id(SignatureScheme::EcdsaSecp384r1Sha384).unwrap();
+        let p256 = alg_id(SignatureScheme::EcdsaSecp256r1Sha256).unwrap();
+        let msg = |der: Vec<u8>| parse(&der).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(parse(&assemble(&[1], &p384, &p384, None, None)).is_ok());
+        assert!(msg(assemble(&[2], &p384, &p384, None, None)).contains("unknown CRL version"));
+        assert!(
+            msg(assemble(&[1], &p256, &p384, None, None)).contains("signature algorithm differs")
+        );
+        let not_a_sequence = [0x04, 0x01, 0x00];
+        assert!(
+            msg(assemble(&[1], &p384, &p384, Some(&not_a_sequence), None))
+                .contains("malformed CRL entry extensions")
+        );
+    }
 }
