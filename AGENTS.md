@@ -14,7 +14,7 @@ $ isl recommend <intent> [--fips] [--post-quantum] [--mutual] --json
 Intents: `intent:https-client`, `intent:api-server`,
 `intent:agent-to-agent-mtls`, `intent:mcp-transport`, `intent:quic-client`,
 `intent:quic-server`, `intent:fips-regulated`,
-`intent:harvest-now-decrypt-later`, `intent:avionics-dal-a`,
+`intent:harvest-now-decrypt-later`, `intent:national-security-system`, `intent:avionics-dal-a`,
 `intent:embedded-constrained`.
 
 Then build the profile it names: `ClientConfig::new(Profile::PostQuantum, roots)`.
