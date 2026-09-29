@@ -100,6 +100,10 @@ $ cargo build -p iron-socket-layer --no-default-features --target thumbv7em-none
 $ cargo test -p iron-socket-layer --test openssl_interop -- --ignored --test-threads=1   # if openssl >= 3.5 is present
 ```
 
+If you changed a parser or the state machine, fuzz it too (see
+`fuzz/README.md`). A crash input goes into a regression test in
+`tests/robustness.rs` along with the fix.
+
 ## Never claim certification
 
 Neither this library nor IronCrypto is FIPS 140-3 validated or DO-178C

@@ -1,0 +1,67 @@
+[package]
+name = "isl-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "libFuzzer targets for IronSocketLayer's peer-facing parsers. Not part of the library."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+iron-socket-layer = { path = "../crates/iron-socket-layer" }
+ic-drbg = { path = "../../AgenticCrypto/crates/ic-drbg" }
+ic-core = { path = "../../AgenticCrypto/crates/ic-core" }
+
+[lib]
+path = "src/lib.rs"
+
+# Writes seed inputs recorded from real handshakes into corpus/.
+[[bin]]
+name = "seed-corpus"
+path = "src/seed.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "messages"
+path = "fuzz_targets/messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "records"
+path = "fuzz_targets/records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pki"
+path = "fuzz_targets/pki.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_server"
+path = "fuzz_targets/tls_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_client"
+path = "fuzz_targets/tls_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quic_server"
+path = "fuzz_targets/quic_server.rs"
+test = false
+doc = false
+bench = false

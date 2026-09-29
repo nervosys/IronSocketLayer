@@ -8,8 +8,9 @@ members = [
 
 # Not a member, deliberately: `bench/` compares against rustls, and keeping it
 # out of the workspace keeps rustls and ring out of the library's dependency
-# graph, exactly as IronCrypto does with its own bench.
-exclude = ["bench"]
+# graph, exactly as IronCrypto does with its own bench. `fuzz/` is excluded
+# for the same reason (libfuzzer-sys).
+exclude = ["bench", "fuzz"]
 
 [workspace.package]
 version = "0.1.0"

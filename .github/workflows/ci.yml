@@ -40,3 +40,28 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         working-directory: IronSocketLayer
         run: cargo test -p iron-socket-layer --test interop -- --ignored
+
+  fuzz:
+    # A short run of every target: enough to catch a parser change that
+    # crashes on the seed corpus or close to it. Long campaigns run elsewhere.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: IronSocketLayer
+      - uses: actions/checkout@v4
+        with:
+          repository: nervosys/IronCrypto
+          path: AgenticCrypto
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: seed corpus
+        working-directory: IronSocketLayer/fuzz
+        run: cargo run --bin seed-corpus
+      - name: fuzz each target for 60 seconds
+        working-directory: IronSocketLayer
+        run: |
+          for t in messages records pki tls_server tls_client quic_server; do
+            cargo +nightly fuzz run --fuzz-dir fuzz -O "$t" -- -max_total_time=60 -timeout=10
+          done

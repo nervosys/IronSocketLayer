@@ -206,6 +206,7 @@ does differently for agentic workloads is set out, with its gaps, in
 | `crates/isl-ontology` | The ontology: static, `no_std`, zero dependencies; exporters behind `std` |
 | `crates/isl-cli` | `isl`: command line and MCP server |
 | `bench/` | Handshake and throughput comparison with rustls; outside the workspace |
+| `fuzz/` | libFuzzer targets for every peer-facing parser; outside the workspace |
 
 ```console
 $ cargo test --workspace

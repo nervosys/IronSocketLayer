@@ -95,6 +95,14 @@ IronCrypto's assessment (2026-09-29, not yet verified here):
   precomputed table). Matching it likely needs a P-256-specific field with
   Solinas reduction, and possibly intrinsics. This is the largest of the three.
 
+**Update:** IronCrypto fixed the HMAC cause at f295fe3 (on master, not yet
+released). SHA-256 sent blocks assembled in its internal buffer, which
+includes every final padding block, through the portable rounds instead of
+SHA-NI. After the fix this harness measures a 200-byte HMAC-SHA256 at about
+0.28 µs, against 0.20 µs for ring (previously 0.75 µs). No change was needed
+here. The tables above predate the fix and will be updated after a run on a
+quiet machine.
+
 IronCrypto 0.2.1 (within this workspace's `>=0.1.3, <0.3` range) speeds up
 P-256 public-key derivation and ECDH over the NIST curves, but not ECDSA sign
 or verify, so the handshake figures above should not move with it.

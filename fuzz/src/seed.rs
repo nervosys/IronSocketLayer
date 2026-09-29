@@ -1,0 +1,158 @@
+//! Write seed inputs for every target into `corpus/<target>/`, recorded from
+//! real, successful handshakes between the fixture client and server. With
+//! the fixed clock and DRBG these are the exact bytes the targets would see.
+//!
+//! `cargo run --bin seed-corpus` from `fuzz/`.
+
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+
+use iron_socket_layer::config::ClientConfig;
+use iron_socket_layer::quic::{QuicConnection, Version};
+use iron_socket_layer::x509::{crl, ocsp};
+use iron_socket_layer::{Connection, Level};
+use isl_fuzz::*;
+
+fn write(target: &str, name: &str, bytes: &[u8]) {
+    let dir = Path::new("corpus").join(target);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(name), bytes).unwrap();
+}
+
+fn with_sel(sel: u8, body: &[u8]) -> Vec<u8> {
+    let mut v = vec![sel];
+    v.extend_from_slice(body);
+    v
+}
+
+/// Run a TLS handshake, returning each side's flights in order.
+fn tls(cc: Arc<ClientConfig>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let mut c = Connection::client(cc, NAME).unwrap();
+    let mut s = Connection::server(server_config()).unwrap();
+    let (mut from_c, mut from_s) = (vec![], vec![]);
+    for _ in 0..6 {
+        let x = c.take_tls();
+        if !x.is_empty() {
+            s.read_tls(&x).unwrap();
+            from_c.push(x);
+        }
+        let y = s.take_tls();
+        if !y.is_empty() {
+            c.read_tls(&y).unwrap();
+            from_s.push(y);
+        }
+    }
+    assert!(!c.is_handshaking() && !s.is_handshaking());
+    (from_c, from_s)
+}
+
+fn refs(v: &[Vec<u8>]) -> Vec<&[u8]> {
+    v.iter().map(|x| x.as_slice()).collect()
+}
+
+fn main() {
+    let p = pki();
+
+    // TLS: the default client (ECH, ALPN) and an external-PSK client.
+    let (c1, s1) = tls(client_config());
+    write("tls_server", "ech-full", &frame_chunks(&refs(&c1)));
+    write(
+        "tls_server",
+        "ech-clienthello",
+        &frame_chunks(&refs(&c1[..1])),
+    );
+    write(
+        "tls_client",
+        "ech-server-flights",
+        &frame_chunks(&refs(&s1)),
+    );
+
+    let mut pc = (*client_config()).clone();
+    pc.external_psk = Some(psk());
+    pc.ech_configs = None;
+    let (c2, _) = tls(Arc::new(pc));
+    write("tls_server", "external-psk", &frame_chunks(&refs(&c2)));
+
+    // Handshake messages: the ClientHello body (record header and handshake
+    // header stripped), and the record stream itself.
+    let ch = &c1[0];
+    write("messages", "clienthello", &with_sel(0, &ch[9..]));
+    write("messages", "framing", &with_sel(8, &ch[5..]));
+    write("records", "clienthello", ch);
+    write("records", "server-flights", &s1.concat());
+
+    // QUIC: the Initial CRYPTO data, then the client's Handshake flight.
+    const PARAMS: &[u8] = &[0x04, 0x04, 0x80, 0x10, 0x00, 0x00, 0x08, 0x01, 0x64];
+    for (label, version, sel) in [("v1", Version::V1, 0x04u8), ("v2", Version::V2, 0x84)] {
+        let mut qc = QuicConnection::client(client_config(), NAME, PARAMS, version).unwrap();
+        let mut qs = QuicConnection::server(server_config(), PARAMS, version).unwrap();
+        let mut client_data = vec![];
+        for _ in 0..4 {
+            while let Some((level, d)) = qc.write_handshake() {
+                qs.read_handshake(level, &d).unwrap();
+                client_data.push((level, d));
+            }
+            while let Some((level, d)) = qs.write_handshake() {
+                qc.read_handshake(level, &d).unwrap();
+            }
+            while let Ok(Some(_)) = qc.next_key_change() {}
+            while let Ok(Some(_)) = qs.next_key_change() {}
+        }
+        assert!(!qc.is_handshaking());
+        assert_eq!(client_data[0].0, Level::Initial);
+        let parts: Vec<&[u8]> = client_data.iter().map(|(_, d)| d.as_slice()).collect();
+        write("quic_server", label, &with_sel(sel, &frame_chunks(&parts)));
+    }
+
+    // PKI inputs.
+    let mut r = fixed_rng().unwrap();
+    write("pki", "leaf", &with_sel(0, &p.leaf));
+    write("pki", "leaf-chain", &with_sel(1, &p.leaf));
+    write("pki", "ca-as-intermediate", &with_sel(1, &p.ca_cert));
+    let crl = crl::build(
+        &p.ca_cert,
+        &p.ca_key,
+        &[(&[9u8; 16], NOW - 60)],
+        NOW - 3600,
+        NOW + 3600,
+        1,
+        &mut *r,
+    )
+    .unwrap();
+    write("pki", "crl", &with_sel(2, &crl));
+    let resp = ocsp::build_response(
+        &p.leaf,
+        &p.ca_cert,
+        &p.ca_key,
+        ocsp::CertStatus::Good,
+        NOW - 60,
+        NOW + 3600,
+        &mut *r,
+    )
+    .unwrap();
+    write("pki", "ocsp", &with_sel(3, &resp));
+    write("pki", "ech-configs", &with_sel(4, p.ech.config_list()));
+    // The seeds are only useful if replaying them reproduces the handshake:
+    // check that, along the targets' own code path.
+    let replay = |mut conn: Connection, seed: &[u8]| {
+        let _ = conn.take_tls();
+        for chunk in chunks(seed) {
+            conn.read_tls(chunk).unwrap();
+            let _ = conn.take_tls();
+        }
+        assert!(
+            !conn.is_handshaking(),
+            "seed did not reproduce the handshake"
+        );
+    };
+    replay(
+        Connection::server(server_config()).unwrap(),
+        &frame_chunks(&refs(&c1)),
+    );
+    replay(
+        Connection::client(client_config(), NAME).unwrap(),
+        &frame_chunks(&refs(&s1)),
+    );
+    println!("corpus written; TLS seeds replay to completed handshakes");
+}
