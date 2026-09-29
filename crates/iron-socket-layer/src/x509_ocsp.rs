@@ -476,11 +476,39 @@ fn build_signed(
         digest(OID_SHA256, issuer.subject).ok_or(Error::new(ErrorKind::Internal, "hash"))?;
     let key_hash = digest(OID_SHA256, spki_key_bits(issuer.spki)?)
         .ok_or(Error::new(ErrorKind::Internal, "hash"))?;
+    build_signed_with_cert_id(
+        &name_hash,
+        &key_hash,
+        leaf.serial,
+        responder_name,
+        signer,
+        responder_cert,
+        status,
+        this_update,
+        next_update,
+        rng,
+    )
+}
 
+/// Assemble and sign a response for the given CertID parts. Split out so
+/// tests can build responses whose CertID does not match the issuer.
+#[allow(clippy::too_many_arguments)]
+fn build_signed_with_cert_id(
+    name_hash: &[u8],
+    key_hash: &[u8],
+    serial: &[u8],
+    responder_name: &[u8],
+    signer: &SigningKey,
+    responder_cert: Option<&[u8]>,
+    status: CertStatus,
+    this_update: u64,
+    next_update: u64,
+    rng: &mut dyn RandomSource,
+) -> Result<Vec<u8>> {
     let mut cert_id = hash_alg_id(OID_SHA256);
-    push_tlv(&mut cert_id, T_OCTET_STRING, &name_hash);
-    push_tlv(&mut cert_id, T_OCTET_STRING, &key_hash);
-    push_tlv(&mut cert_id, T_INTEGER, leaf.serial);
+    push_tlv(&mut cert_id, T_OCTET_STRING, name_hash);
+    push_tlv(&mut cert_id, T_OCTET_STRING, key_hash);
+    push_tlv(&mut cert_id, T_INTEGER, serial);
     let mut single = Vec::new();
     push_tlv(&mut single, T_SEQUENCE, &cert_id);
     match status {
@@ -811,6 +839,42 @@ mod tests {
         .unwrap();
         assert_eq!(
             check(&f, &r, f.now).unwrap_err().kind(),
+            ErrorKind::BadCertificateStatus
+        );
+    }
+
+    /// REQ-OCSP-004: the CertID must name the leaf's issuer by name as well
+    /// as key. A response the real issuer signed, whose issuer name hash is
+    /// wrong, does not cover the certificate.
+    #[test]
+    fn a_cert_id_with_another_issuer_name_does_not_count() {
+        let f = fixture();
+        let ca = Certificate::parse(&f.ca).unwrap();
+        let leaf = Certificate::parse(&f.leaf).unwrap();
+        let mut name_hash = digest(OID_SHA256, ca.subject).unwrap();
+        let key_hash = digest(OID_SHA256, spki_key_bits(ca.spki).unwrap()).unwrap();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let build = |name_hash: &[u8], rng: &mut ic_drbg::Rng| {
+            build_signed_with_cert_id(
+                name_hash,
+                &key_hash,
+                leaf.serial,
+                ca.subject,
+                &f.ca_key,
+                None,
+                CertStatus::Good,
+                f.now - 60,
+                f.now + 3600,
+                rng,
+            )
+            .unwrap()
+        };
+        assert!(check(&f, &build(&name_hash, &mut rng), f.now).is_ok());
+        name_hash[0] ^= 1;
+        assert_eq!(
+            check(&f, &build(&name_hash, &mut rng), f.now)
+                .unwrap_err()
+                .kind(),
             ErrorKind::BadCertificateStatus
         );
     }
