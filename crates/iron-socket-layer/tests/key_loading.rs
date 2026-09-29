@@ -31,6 +31,7 @@ const KEYS: &[(&str, SignatureScheme)] = &[
     ("ed25519", SignatureScheme::Ed25519),
     ("rsa2048", SignatureScheme::RsaPssRsaeSha256),
     ("mldsa65-seed", SignatureScheme::MlDsa65),
+    ("mldsa87-seed", SignatureScheme::MlDsa87),
 ];
 
 #[test]
@@ -70,24 +71,35 @@ fn der_and_pem_load_the_same_key() {
 }
 
 #[test]
-fn ml_dsa_65_seed_and_both_forms_are_the_same_key() {
-    let seed = SigningKey::from_pem(&pem("mldsa65-seed.pem")).unwrap();
-    let both = SigningKey::from_pem(&pem("mldsa65-both.pem")).unwrap();
-    assert_eq!(seed.spki(), both.spki());
-    assert_eq!(both.spki(), &fixture("mldsa65-both.spki.der")[..]);
+fn ml_dsa_seed_and_both_forms_are_the_same_key() {
+    for set in ["mldsa65", "mldsa87"] {
+        let seed = SigningKey::from_pem(&pem(&format!("{set}-seed.pem"))).unwrap();
+        let both = SigningKey::from_pem(&pem(&format!("{set}-both.pem"))).unwrap();
+        assert_eq!(seed.spki(), both.spki(), "{set}");
+        assert_eq!(
+            both.spki(),
+            &fixture(&format!("{set}-both.spki.der"))[..],
+            "{set}"
+        );
+    }
 }
 
 #[test]
-fn an_ml_dsa_65_file_whose_halves_disagree_is_refused() {
-    let text = pem("mldsa65-both.pem");
-    let b64: String = text.lines().filter(|l| !l.starts_with("-----")).collect();
-    let mut der = decode_base64(&b64);
-    // The expanded key is the last field: change its final byte.
-    let last = der.len() - 1;
-    der[last] ^= 1;
-    let err = SigningKey::from_pkcs8_der(&der).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidConfig, "{err}");
-    assert!(err.to_string().contains("does not match its seed"), "{err}");
+fn an_ml_dsa_file_whose_halves_disagree_is_refused() {
+    for set in ["mldsa65", "mldsa87"] {
+        let text = pem(&format!("{set}-both.pem"));
+        let b64: String = text.lines().filter(|l| !l.starts_with("-----")).collect();
+        let mut der = decode_base64(&b64);
+        // The expanded key is the last field: change its final byte.
+        let last = der.len() - 1;
+        der[last] ^= 1;
+        let err = SigningKey::from_pkcs8_der(&der).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidConfig, "{set}: {err}");
+        assert!(
+            err.to_string().contains("does not match its seed"),
+            "{set}: {err}"
+        );
+    }
 }
 
 #[test]

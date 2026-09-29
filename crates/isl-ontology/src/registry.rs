@@ -710,12 +710,17 @@ pub static REGISTRY: &[Entry] = &[
         kind: Kind::SignatureScheme,
         code: 0x0906,
         summary: "ML-DSA-87 (FIPS 204, category 5); the CNSA 2.0 signature.",
-        status: ImplStatus::NamedOnly,
-        status_reason: "IronCrypto does not implement ML-DSA-87. Do not substitute ML-DSA-65 where CNSA 2.0 is required.",
         fips: FipsStatus::Approved,
         post_quantum: true,
         strength: Strength { classical: 256, quantum: 256 },
-        standards: &["draft-ietf-tls-mldsa", "FIPS 204", "CNSA 2.0"],
+        standards: &["draft-ietf-tls-mldsa", "FIPS 204", "CNSA 2.0", "draft-ietf-lamps-dilithium-certificates"],
+        constraints: &[MLDSA_CTX, advisory(
+            "size",
+            "Budget for 4627-byte signatures and 2592-byte public keys.",
+            "Chains of ML-DSA-87 certificates can exceed the QUIC anti-amplification budget and add round trips.",
+        )],
+        edges: &[built("ic:ml-dsa-87")],
+        notes: "Do not substitute ML-DSA-65 where CNSA 2.0 is required.",
         ..Entry::BASE
     },
     // --- extensions -----------------------------------------------------------

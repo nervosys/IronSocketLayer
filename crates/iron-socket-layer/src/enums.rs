@@ -207,7 +207,7 @@ wire_enum! {
         MlDsa44 = 0x0904 => "sigscheme:mldsa44",
         /// ML-DSA-65.
         MlDsa65 = 0x0905 => "sigscheme:mldsa65",
-        /// ML-DSA-87. Named, not implemented.
+        /// ML-DSA-87.
         MlDsa87 = 0x0906 => "sigscheme:mldsa87",
     }
 }
@@ -335,6 +335,11 @@ wire_enum! {
 }
 
 impl SignatureScheme {
+    /// Whether the scheme resists a quantum adversary (ML-DSA).
+    pub const fn is_post_quantum(self) -> bool {
+        matches!(self, Self::MlDsa44 | Self::MlDsa65 | Self::MlDsa87)
+    }
+
     /// Whether RFC 8446 permits this scheme in `CertificateVerify`.
     ///
     /// PKCS#1 v1.5 and SHA-1 schemes may appear in certificates but never sign

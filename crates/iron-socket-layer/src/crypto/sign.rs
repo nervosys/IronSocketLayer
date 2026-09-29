@@ -19,7 +19,6 @@ use alloc::vec::Vec;
 
 use ic_core::traits::{RandomSource, SignatureScheme as _};
 use ic_core::{Zeroize, Zeroizing};
-use ic_mldsa::sign as mldsa;
 use ic_pkix::der::{self, Reader};
 
 use super::SecretVec;
@@ -28,12 +27,137 @@ use crate::error::{Error, ErrorKind, Result};
 
 /// OID content bytes for id-ml-dsa-65, 2.16.840.1.101.3.4.3.18.
 pub const OID_ML_DSA_65: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12];
+/// OID content bytes for id-ml-dsa-87, 2.16.840.1.101.3.4.3.19.
+pub const OID_ML_DSA_87: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13];
+
+/// An ML-DSA parameter set (FIPS 204).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MlDsa {
+    /// Category 3.
+    P65,
+    /// Category 5, required by CNSA 2.0.
+    P87,
+}
+
+/// Run `$body` with `$m` bound to the parameter set's IronCrypto module.
+macro_rules! with_mldsa {
+    ($p:expr, $m:ident, $body:expr) => {
+        match $p {
+            MlDsa::P65 => {
+                use ic_mldsa::sign as $m;
+                $body
+            }
+            MlDsa::P87 => {
+                use ic_mldsa::sign87 as $m;
+                $body
+            }
+        }
+    };
+}
+
+impl MlDsa {
+    fn from_oid(oid: &[u8]) -> Option<Self> {
+        if oid == OID_ML_DSA_65 {
+            Some(Self::P65)
+        } else if oid == OID_ML_DSA_87 {
+            Some(Self::P87)
+        } else {
+            None
+        }
+    }
+
+    fn oid(self) -> &'static [u8] {
+        match self {
+            Self::P65 => OID_ML_DSA_65,
+            Self::P87 => OID_ML_DSA_87,
+        }
+    }
+
+    fn scheme(self) -> SignatureScheme {
+        match self {
+            Self::P65 => SignatureScheme::MlDsa65,
+            Self::P87 => SignatureScheme::MlDsa87,
+        }
+    }
+
+    fn kind_id(self) -> &'static str {
+        match self {
+            Self::P65 => "key:ml-dsa-65",
+            Self::P87 => "key:ml-dsa-87",
+        }
+    }
+
+    fn public_len(self) -> usize {
+        with_mldsa!(self, m, m::PUBLIC_KEY_LEN)
+    }
+
+    /// Key pair from the 32-byte seed `ξ` (FIPS 204): SPKI key bytes and the
+    /// expanded secret key.
+    fn keygen(self, seed: &[u8; 32]) -> Result<(Vec<u8>, SecretVec)> {
+        with_mldsa!(self, m, {
+            let mut pk = alloc::vec![0u8; m::PUBLIC_KEY_LEN];
+            let mut sk = SecretVec::new(alloc::vec![0u8; m::SECRET_KEY_LEN]);
+            let pk_arr: &mut [u8; m::PUBLIC_KEY_LEN] = pk
+                .as_mut_slice()
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::Internal, "ml-dsa pk length"))?;
+            let sk_arr: &mut [u8; m::SECRET_KEY_LEN] = sk
+                .get_mut()
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::Internal, "ml-dsa sk length"))?;
+            if !m::keygen(seed, pk_arr, sk_arr) {
+                return Err(Error::new(
+                    ErrorKind::Crypto,
+                    "ml-dsa pairwise consistency test failed",
+                ));
+            }
+            Ok((pk, sk))
+        })
+    }
+
+    fn sign(self, sk: &[u8], message: &[u8], rnd: &[u8; 32]) -> Result<Vec<u8>> {
+        with_mldsa!(self, m, {
+            let sk: &[u8; m::SECRET_KEY_LEN] = sk
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::Internal, "ml-dsa sk length"))?;
+            let mut sig = alloc::vec![0u8; m::SIGNATURE_LEN];
+            let sig_arr: &mut [u8; m::SIGNATURE_LEN] = sig
+                .as_mut_slice()
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::Internal, "ml-dsa signature length"))?;
+            if !m::sign(sk, message, b"", rnd, sig_arr) {
+                return Err(Error::new(ErrorKind::Crypto, "ml-dsa signing failed"));
+            }
+            Ok(sig)
+        })
+    }
+
+    fn verify(self, pk: &[u8], message: &[u8], signature: &[u8]) -> Result<()> {
+        with_mldsa!(self, m, {
+            let pk: &[u8; m::PUBLIC_KEY_LEN] = pk
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::BadCertificate, "ml-dsa public key length"))?;
+            let sig: &[u8; m::SIGNATURE_LEN] = signature
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::DecryptError, "ml-dsa signature length"))?;
+            if m::verify(pk, message, b"", sig) {
+                Ok(())
+            } else {
+                Err(Error::new(
+                    ErrorKind::DecryptError,
+                    "signature did not verify",
+                ))
+            }
+        })
+    }
+}
 /// OID content bytes for secp521r1, 1.3.132.0.35.
 pub const OID_P521: &[u8] = &[0x2b, 0x81, 0x04, 0x00, 0x23];
 
 /// Every scheme this build can verify, in the default preference order.
 pub const VERIFY_SCHEMES: &[SignatureScheme] = &[
     SignatureScheme::MlDsa65,
+    SignatureScheme::MlDsa87,
     SignatureScheme::Ed25519,
     SignatureScheme::EcdsaSecp256r1Sha256,
     SignatureScheme::EcdsaSecp384r1Sha384,
@@ -60,6 +184,7 @@ pub fn ic_id(scheme: SignatureScheme) -> Option<&'static str> {
         SignatureScheme::RsaPkcs1Sha384 => "rsa-pkcs1-sha384",
         SignatureScheme::RsaPkcs1Sha512 => "rsa-pkcs1-sha512",
         SignatureScheme::MlDsa65 => "ml-dsa-65",
+        SignatureScheme::MlDsa87 => "ml-dsa-87",
         _ => return None,
     })
 }
@@ -84,12 +209,14 @@ pub enum PublicKey<'a> {
     },
     /// ML-DSA-65, 1952 bytes.
     MlDsa65(&'a [u8]),
+    /// ML-DSA-87, 2592 bytes.
+    MlDsa87(&'a [u8]),
 }
 
 impl<'a> PublicKey<'a> {
     /// Parse a DER `SubjectPublicKeyInfo`.
     ///
-    /// P-256, P-384, Ed25519 and RSA go through `ic_pkix`; P-521 and ML-DSA-65,
+    /// P-256, P-384, Ed25519 and RSA go through `ic_pkix`; P-521 and ML-DSA,
     /// which it does not name, are read here with its DER reader.
     pub fn from_spki(spki: &'a [u8]) -> Result<Self> {
         let bad = |_| Error::new(ErrorKind::BadCertificate, "malformed SubjectPublicKeyInfo");
@@ -122,16 +249,19 @@ impl<'a> PublicKey<'a> {
         let oid = alg.oid().map_err(bad)?;
         let key = seq.bit_string().map_err(bad)?;
         seq.finish().map_err(bad)?;
-        if oid == OID_ML_DSA_65 {
+        if let Some(p) = MlDsa::from_oid(oid) {
             // Parameters MUST be absent for ML-DSA.
             alg.finish().map_err(bad)?;
-            if key.len() != mldsa::PUBLIC_KEY_LEN {
+            if key.len() != p.public_len() {
                 return Err(Error::new(
                     ErrorKind::BadCertificate,
-                    "ml-dsa-65 public key length",
+                    "ml-dsa public key length",
                 ));
             }
-            return Ok(Self::MlDsa65(key));
+            return Ok(match p {
+                MlDsa::P65 => Self::MlDsa65(key),
+                MlDsa::P87 => Self::MlDsa87(key),
+            });
         }
         if oid == ic_pkix::oid::EC_PUBLIC_KEY {
             let curve = alg.oid().map_err(bad)?;
@@ -162,6 +292,7 @@ impl<'a> PublicKey<'a> {
                 | (Self::EcP521(_), S::EcdsaSecp521r1Sha512)
                 | (Self::Ed25519(_), S::Ed25519)
                 | (Self::MlDsa65(_), S::MlDsa65)
+                | (Self::MlDsa87(_), S::MlDsa87)
                 | (
                     Self::Rsa { .. },
                     S::RsaPssRsaeSha256
@@ -183,15 +314,17 @@ impl<'a> PublicKey<'a> {
             Self::Ed25519(_) => "key:ed25519",
             Self::Rsa { .. } => "key:rsa",
             Self::MlDsa65(_) => "key:ml-dsa-65",
+            Self::MlDsa87(_) => "key:ml-dsa-87",
         }
     }
 
-    /// Security strength in bits against a classical adversary.
+    /// Security strength in bits against a classical adversary. ML-DSA-65 is
+    /// NIST category 3 (AES-192) and ML-DSA-87 category 5 (AES-256).
     pub fn classical_bits(&self) -> u16 {
         match self {
             Self::EcP256(_) | Self::Ed25519(_) => 128,
-            Self::EcP384(_) => 192,
-            Self::EcP521(_) | Self::MlDsa65(_) => 256,
+            Self::EcP384(_) | Self::MlDsa65(_) => 192,
+            Self::EcP521(_) | Self::MlDsa87(_) => 256,
             Self::Rsa { modulus, .. } => match modulus.len() * 8 {
                 n if n >= 15360 => 256,
                 n if n >= 7680 => 192,
@@ -239,20 +372,10 @@ pub fn verify(
             ic_ec::Ed25519::verify(pk, message, signature).map_err(fail)
         }
         (SignatureScheme::MlDsa65, PublicKey::MlDsa65(pk)) => {
-            let pk: &[u8; mldsa::PUBLIC_KEY_LEN] = pk.try_into().map_err(|_| {
-                Error::new(ErrorKind::BadCertificate, "ml-dsa-65 public key length")
-            })?;
-            let sig: &[u8; mldsa::SIGNATURE_LEN] = signature
-                .try_into()
-                .map_err(|_| Error::new(ErrorKind::DecryptError, "ml-dsa-65 signature length"))?;
-            if mldsa::verify(pk, message, b"", sig) {
-                Ok(())
-            } else {
-                Err(Error::new(
-                    ErrorKind::DecryptError,
-                    "signature did not verify",
-                ))
-            }
+            MlDsa::P65.verify(pk, message, signature)
+        }
+        (SignatureScheme::MlDsa87, PublicKey::MlDsa87(pk)) => {
+            MlDsa::P87.verify(pk, message, signature)
         }
         (s, PublicKey::Rsa { modulus, exponent }) => {
             let key = ic_rsa::RsaPublicKey::from_components(modulus, exponent).map_err(|_| {
@@ -297,7 +420,8 @@ enum KeyImpl {
     P521(Zeroizing<[u8; 66]>),
     Ed25519(Box<ic_ec::Ed25519Key>),
     Rsa(Box<ic_rsa::RsaPrivateKey>),
-    MlDsa65(Box<Zeroizing<[u8; mldsa::SECRET_KEY_LEN]>>),
+    /// The expanded secret key; `SecretVec` zeroizes it.
+    MlDsa(MlDsa, SecretVec),
 }
 
 /// A private key that can sign handshakes. `REQ-SIG-003`: key bytes are
@@ -426,7 +550,7 @@ impl SigningKey {
         Self::from_pkcs8_der(&der_buf.get()[..n])
     }
 
-    /// PKCS#8 forms `ic_pkix` does not name: P-521 and ML-DSA-65.
+    /// PKCS#8 forms `ic_pkix` does not name: P-521, ML-DSA-65 and ML-DSA-87.
     fn from_pkcs8_fallback(der_bytes: &[u8]) -> Result<Self> {
         let bad = |_| Error::new(ErrorKind::InvalidConfig, "malformed PKCS#8 private key");
         let mut outer = Reader::new(der_bytes);
@@ -435,12 +559,12 @@ impl SigningKey {
         let mut alg = seq.sequence().map_err(bad)?;
         let oid = alg.oid().map_err(bad)?;
         let key = seq.octet_string().map_err(bad)?;
-        if oid == OID_ML_DSA_65 {
+        if let Some(p) = MlDsa::from_oid(oid) {
             // Seed form: [0] IMPLICIT OCTET STRING (SIZE (32)), i.e. 0x80 0x20.
             if key.len() == 34 && key[0] == 0x80 && key[1] == 0x20 {
                 let mut seed = Zeroizing::new([0u8; 32]);
                 seed.get_mut().copy_from_slice(&key[2..]);
-                return Self::mldsa65_from_seed(seed.get());
+                return Self::mldsa_from_seed(p, seed.get());
             }
             // Both form: SEQUENCE { seed OCTET STRING (32), expandedKey OCTET STRING }.
             // OpenSSL 3.5 writes this by default. The key is rebuilt from the
@@ -454,14 +578,14 @@ impl SigningKey {
                 let expanded = both.octet_string().map_err(bad)?;
                 both.finish().map_err(bad)?;
                 let seed: &[u8; 32] = seed_bytes.try_into().map_err(|_| {
-                    Error::new(ErrorKind::InvalidConfig, "ML-DSA-65 seed must be 32 bytes")
+                    Error::new(ErrorKind::InvalidConfig, "ML-DSA seed must be 32 bytes")
                 })?;
-                let key = Self::mldsa65_from_seed(seed)?;
-                if let KeyImpl::MlDsa65(sk) = &key.inner {
-                    if !ic_core::ct::verify(&sk.get()[..], expanded) {
+                let key = Self::mldsa_from_seed(p, seed)?;
+                if let KeyImpl::MlDsa(_, sk) = &key.inner {
+                    if !ic_core::ct::verify(sk.get(), expanded) {
                         return Err(Error::new(
                             ErrorKind::InvalidConfig,
-                            "ML-DSA-65 expanded key does not match its seed",
+                            "ML-DSA expanded key does not match its seed",
                         ));
                     }
                 }
@@ -469,7 +593,7 @@ impl SigningKey {
             }
             return Err(Error::new(
                 ErrorKind::InvalidConfig,
-                "unrecognised ML-DSA-65 private key form",
+                "unrecognised ML-DSA private key form",
             ));
         }
         if oid == ic_pkix::oid::EC_PUBLIC_KEY && alg.oid().map_err(bad)? == OID_P521 {
@@ -556,20 +680,22 @@ impl SigningKey {
 
     /// An ML-DSA-65 key from its 32-byte seed (FIPS 204 `ξ`).
     pub fn mldsa65_from_seed(seed: &[u8; 32]) -> Result<Self> {
-        let mut pk = Box::new([0u8; mldsa::PUBLIC_KEY_LEN]);
-        let mut sk = Box::new(Zeroizing::new([0u8; mldsa::SECRET_KEY_LEN]));
-        if !mldsa::keygen(seed, &mut pk, sk.get_mut()) {
-            return Err(Error::new(
-                ErrorKind::Crypto,
-                "ml-dsa-65 pairwise consistency test failed",
-            ));
-        }
+        Self::mldsa_from_seed(MlDsa::P65, seed)
+    }
+
+    /// An ML-DSA-87 key from its 32-byte seed (FIPS 204 `ξ`).
+    pub fn mldsa87_from_seed(seed: &[u8; 32]) -> Result<Self> {
+        Self::mldsa_from_seed(MlDsa::P87, seed)
+    }
+
+    fn mldsa_from_seed(p: MlDsa, seed: &[u8; 32]) -> Result<Self> {
+        let (pk, sk) = p.keygen(seed)?;
         let mut alg = Vec::new();
-        push_tlv(&mut alg, der::OID, OID_ML_DSA_65);
-        let spki = spki_from_parts(&alg, &pk[..])?;
+        push_tlv(&mut alg, der::OID, p.oid());
+        let spki = spki_from_parts(&alg, &pk)?;
         Ok(Self {
             spki,
-            inner: KeyImpl::MlDsa65(sk),
+            inner: KeyImpl::MlDsa(p, sk),
         })
     }
 
@@ -592,10 +718,15 @@ impl SigningKey {
                     r
                 }
                 KeyKind::Ed25519 => Self::ed25519(&s[..32]),
-                KeyKind::MlDsa65 => {
+                KeyKind::MlDsa65 | KeyKind::MlDsa87 => {
+                    let p = if kind == KeyKind::MlDsa65 {
+                        MlDsa::P65
+                    } else {
+                        MlDsa::P87
+                    };
                     let mut k = [0u8; 32];
                     k.copy_from_slice(&s[..32]);
-                    let r = Self::mldsa65_from_seed(&k);
+                    let r = Self::mldsa_from_seed(p, &k);
                     k.zeroize();
                     r
                 }
@@ -620,7 +751,7 @@ impl SigningKey {
             KeyImpl::P521(_) => "key:ecdsa-p521",
             KeyImpl::Ed25519(_) => "key:ed25519",
             KeyImpl::Rsa(_) => "key:rsa",
-            KeyImpl::MlDsa65(_) => "key:ml-dsa-65",
+            KeyImpl::MlDsa(p, _) => p.kind_id(),
         }
     }
 
@@ -638,7 +769,8 @@ impl SigningKey {
                 S::RsaPssRsaeSha384,
                 S::RsaPssRsaeSha512,
             ],
-            KeyImpl::MlDsa65(_) => &[S::MlDsa65],
+            KeyImpl::MlDsa(MlDsa::P65, _) => &[S::MlDsa65],
+            KeyImpl::MlDsa(MlDsa::P87, _) => &[S::MlDsa87],
         }
     }
 
@@ -712,15 +844,12 @@ impl SigningKey {
                 }
                 Ok(sig)
             }
-            KeyImpl::MlDsa65(sk) => {
+            KeyImpl::MlDsa(p, sk) => {
                 // Hedged signing: fresh randomness per FIPS 204 §3.4.
                 let mut rnd = Zeroizing::new([0u8; 32]);
                 super::fill_random(rng, rnd.get_mut())?;
-                let mut sig = Box::new([0u8; mldsa::SIGNATURE_LEN]);
-                if !mldsa::sign(sk.get(), message, b"", rnd.get(), &mut sig) {
-                    return Err(Error::new(ErrorKind::Crypto, "ml-dsa-65 signing failed"));
-                }
-                Ok(sig.to_vec())
+                debug_assert_eq!(p.scheme(), scheme);
+                p.sign(sk.get(), message, rnd.get())
             }
         }
     }
@@ -747,6 +876,8 @@ pub enum KeyKind {
     Ed25519,
     /// ML-DSA-65.
     MlDsa65,
+    /// ML-DSA-87.
+    MlDsa87,
 }
 
 impl KeyKind {
@@ -757,6 +888,7 @@ impl KeyKind {
         Self::EcdsaP521,
         Self::Ed25519,
         Self::MlDsa65,
+        Self::MlDsa87,
     ];
 
     /// Stable identifier.
@@ -767,6 +899,7 @@ impl KeyKind {
             Self::EcdsaP521 => "key:ecdsa-p521",
             Self::Ed25519 => "key:ed25519",
             Self::MlDsa65 => "key:ml-dsa-65",
+            Self::MlDsa87 => "key:ml-dsa-87",
         }
     }
 }

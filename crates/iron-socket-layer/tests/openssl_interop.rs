@@ -60,6 +60,7 @@ const KEYS: &[(&str, &[&str])] = &[
     ("ed25519", &["-newkey", "ed25519"]),
     ("rsa-2048", &["-newkey", "rsa:2048"]),
     ("ml-dsa-65", &["-newkey", "ML-DSA-65"]),
+    ("ml-dsa-87", &["-newkey", "ML-DSA-87"]),
 ];
 
 fn workdir(name: &str) -> PathBuf {
@@ -641,6 +642,42 @@ fn crl_to_pem(der: &[u8]) -> String {
     let mut buf = vec![0u8; ic_pkix::pem::encoded_len("X509 CRL", der.len())];
     let n = ic_pkix::pem::encode("X509 CRL", der, &mut buf).unwrap();
     String::from_utf8(buf[..n].to_vec()).unwrap()
+}
+
+/// OpenSSL accepts certificates we sign with ML-DSA-65 and ML-DSA-87: an
+/// all-ML-DSA chain from our CA, as CNSA 2.0 needs.
+#[test]
+#[ignore = "needs openssl 3.5+ on PATH"]
+fn openssl_verifies_our_ml_dsa_certificate_chains() {
+    for kind in [KeyKind::MlDsa65, KeyKind::MlDsa87] {
+        let pki = Pki::with_kinds(kind, kind, "server.test");
+        let dir = workdir(&format!("chain-{}", kind.id().replace(':', "-")));
+        std::fs::write(dir.join("ca.pem"), der_to_pem(&pki.ca_cert)).unwrap();
+        std::fs::write(dir.join("leaf.pem"), der_to_pem(&pki.server_chain[0])).unwrap();
+        let out = openssl(
+            &["verify", "-x509_strict", "-CAfile", "ca.pem", "leaf.pem"],
+            &dir,
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.status.success() && text.contains("leaf.pem: OK"),
+            "{kind:?}: {text}"
+        );
+        let dump = openssl(&["x509", "-in", "leaf.pem", "-noout", "-text"], &dir);
+        let name = if kind == KeyKind::MlDsa65 {
+            "ML-DSA-65"
+        } else {
+            "ML-DSA-87"
+        };
+        assert!(
+            String::from_utf8_lossy(&dump.stdout).contains(&format!("Signature Algorithm: {name}")),
+            "{kind:?}"
+        );
+    }
 }
 
 #[test]

@@ -31,23 +31,21 @@ iron-socket-layer = { path = "crates/iron-socket-layer", version = "0.1.0", defa
 
 # IronCrypto supplies every cryptographic primitive. Nothing in this workspace
 # implements a cipher, hash, MAC, KDF, key agreement, KEM or signature itself.
-ic-core = { path = "../AgenticCrypto/crates/ic-core", version = ">=0.1.3, <0.3", default-features = false }
-ic-hash = { path = "../AgenticCrypto/crates/ic-hash", version = ">=0.1.3, <0.3", default-features = false }
-ic-mac = { path = "../AgenticCrypto/crates/ic-mac", version = ">=0.1.3, <0.3", default-features = false }
-ic-kdf = { path = "../AgenticCrypto/crates/ic-kdf", version = ">=0.1.3, <0.3", default-features = false }
-ic-cipher = { path = "../AgenticCrypto/crates/ic-cipher", version = ">=0.1.3, <0.3", default-features = false }
-ic-drbg = { path = "../AgenticCrypto/crates/ic-drbg", version = ">=0.1.3, <0.3", default-features = false }
-ic-ec = { path = "../AgenticCrypto/crates/ic-ec", version = ">=0.1.3, <0.3", default-features = false }
-ic-rsa = { path = "../AgenticCrypto/crates/ic-rsa", version = ">=0.1.3, <0.3", default-features = false }
-ic-pkix = { path = "../AgenticCrypto/crates/ic-pkix", version = ">=0.1.3, <0.3", default-features = false }
-# ML-KEM-1024 (MLKEM1024, SecP384r1MLKEM1024) is on IronCrypto's master after
-# 0.2.2 and in no published release yet: until one ships, this workspace builds
-# from the path only. Raise the minimum to that release when it exists.
-ic-mlkem = { path = "../AgenticCrypto/crates/ic-mlkem", version = ">=0.1.3, <0.3", default-features = false }
-ic-mldsa = { path = "../AgenticCrypto/crates/ic-mldsa", version = ">=0.1.3, <0.3", default-features = false }
-ic-fips = { path = "../AgenticCrypto/crates/ic-fips", version = ">=0.1.3, <0.3", default-features = false }
-ic-ontology = { path = "../AgenticCrypto/crates/ic-ontology", version = ">=0.1.3, <0.3", default-features = false }
-ic-json = { path = "../AgenticCrypto/crates/ic-json", version = ">=0.1.3, <0.3" }
+# 0.2.3 is the first IronCrypto release with ML-KEM-1024 and ML-DSA-87 (CNSA 2.0).
+ic-core = { path = "../AgenticCrypto/crates/ic-core", version = ">=0.2.3, <0.3", default-features = false }
+ic-hash = { path = "../AgenticCrypto/crates/ic-hash", version = ">=0.2.3, <0.3", default-features = false }
+ic-mac = { path = "../AgenticCrypto/crates/ic-mac", version = ">=0.2.3, <0.3", default-features = false }
+ic-kdf = { path = "../AgenticCrypto/crates/ic-kdf", version = ">=0.2.3, <0.3", default-features = false }
+ic-cipher = { path = "../AgenticCrypto/crates/ic-cipher", version = ">=0.2.3, <0.3", default-features = false }
+ic-drbg = { path = "../AgenticCrypto/crates/ic-drbg", version = ">=0.2.3, <0.3", default-features = false }
+ic-ec = { path = "../AgenticCrypto/crates/ic-ec", version = ">=0.2.3, <0.3", default-features = false }
+ic-rsa = { path = "../AgenticCrypto/crates/ic-rsa", version = ">=0.2.3, <0.3", default-features = false }
+ic-pkix = { path = "../AgenticCrypto/crates/ic-pkix", version = ">=0.2.3, <0.3", default-features = false }
+ic-mlkem = { path = "../AgenticCrypto/crates/ic-mlkem", version = ">=0.2.3, <0.3", default-features = false }
+ic-mldsa = { path = "../AgenticCrypto/crates/ic-mldsa", version = ">=0.2.3, <0.3", default-features = false }
+ic-fips = { path = "../AgenticCrypto/crates/ic-fips", version = ">=0.2.3, <0.3", default-features = false }
+ic-ontology = { path = "../AgenticCrypto/crates/ic-ontology", version = ">=0.2.3, <0.3", default-features = false }
+ic-json = { path = "../AgenticCrypto/crates/ic-json", version = ">=0.2.3, <0.3" }
 
 [profile.release]
 opt-level = 3

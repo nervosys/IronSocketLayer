@@ -206,10 +206,9 @@ pub fn recommend(intent_id: &str, policy: &Policy) -> Result<Recommendation, NoR
         rationale = base.rationale;
     } else if fips && pq {
         // The only approved profile whose every group is post-quantum is
-        // CNSA 2.0, which still waits on ML-DSA-87; the others also accept
-        // classical groups.
-        let cnsa2 = profiles::get("profile:cnsa-2").ok_or(NoRecommendation::UnknownIntent)?;
-        return Err(NoRecommendation::Unavailable { profile: cnsa2.id, reason: "FIPS and post-quantum-only together need an approved profile whose every group is post-quantum. profile:fips-140-3 also accepts classical groups, and profile:cnsa-2 is not available until ML-DSA-87 is (its ML-KEM-1024 is implemented). Do not substitute: either accept profile:fips-140-3 with SecP256r1MLKEM768 preferred but not required, or use a validated module that implements CNSA 2.0." });
+        // CNSA 2.0; profile:fips-140-3 also accepts classical groups.
+        chosen = profiles::get("profile:cnsa-2").ok_or(NoRecommendation::UnknownIntent)?;
+        rationale = "FIPS and post-quantum-only together need an approved profile whose every group is post-quantum. Only profile:cnsa-2 is (ML-KEM-1024, ML-DSA-87, AES-256); profile:fips-140-3 also accepts classical groups. The peer must present an ML-DSA-87 certificate chain.";
     } else if fips {
         chosen = profiles::get("profile:fips-140-3").ok_or(NoRecommendation::UnknownIntent)?;
         rationale = "A FIPS requirement was stated, so the intent's usual profile is replaced by profile:fips-140-3, which offers approved algorithms only.";
@@ -244,6 +243,8 @@ pub fn recommend(intent_id: &str, policy: &Policy) -> Result<Recommendation, NoR
             "Narrower than needed: a single parameter set chosen to reduce certification scope, which costs interoperability."
         } else if p.id == "profile:cnsa-1" {
             "Classical only and a single parameter set; chosen only where CNSA 1.0 is mandated."
+        } else if p.id == "profile:cnsa-2" {
+            "A single category-5 parameter set that needs ML-DSA-87 certificates on the peer; chosen where CNSA 2.0 is mandated, or FIPS and post-quantum-only are both required."
         } else {
             "Meets the requirements but is less suited to this intent than the chosen profile."
         };
@@ -296,19 +297,18 @@ mod tests {
         }
     }
 
+    /// FIPS and post-quantum-only together are met only by CNSA 2.0; nothing
+    /// weaker is offered in its place.
     #[test]
-    fn fips_and_post_quantum_together_is_unavailable_not_substituted() {
+    fn fips_and_post_quantum_together_recommends_cnsa2() {
         let pol = Policy {
             require_fips: true,
             require_post_quantum: true,
             require_mutual_auth: false,
         };
-        match recommend("intent:https-client", &pol) {
-            Err(NoRecommendation::Unavailable { profile, .. }) => {
-                assert_eq!(profile, "profile:cnsa-2")
-            }
-            other => panic!("expected unavailable, got {other:?}"),
-        }
+        let r = recommend("intent:https-client", &pol).unwrap();
+        assert_eq!(r.profile.id, "profile:cnsa-2");
+        assert!(r.profile.fips_gate && pq_first(r.profile));
     }
 
     #[test]

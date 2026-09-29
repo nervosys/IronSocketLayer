@@ -42,7 +42,7 @@ use alloc::vec::Vec;
 
 use ic_core::traits::RandomSource;
 
-use crate::crypto::sign::{self, push_tlv, PublicKey, SigningKey, OID_ML_DSA_65};
+use crate::crypto::sign::{self, push_tlv, PublicKey, SigningKey, OID_ML_DSA_65, OID_ML_DSA_87};
 use crate::crypto::HashAlg;
 use crate::enums::SignatureScheme;
 use crate::error::{Error, ErrorKind, Result};
@@ -937,6 +937,7 @@ fn scheme_from_alg(alg: &[u8]) -> Result<SignatureScheme> {
         OID_ECDSA_SHA1 => SignatureScheme::EcdsaSha1,
         OID_ED25519 => SignatureScheme::Ed25519,
         o if o == OID_ML_DSA_65 => SignatureScheme::MlDsa65,
+        o if o == OID_ML_DSA_87 => SignatureScheme::MlDsa87,
         OID_RSA_SHA256 | OID_RSA_SHA384 | OID_RSA_SHA512 | OID_RSA_SHA1 => {
             r.optional_null()?;
             match oid {
@@ -1008,6 +1009,7 @@ fn alg_id(scheme: SignatureScheme) -> Result<Vec<u8>> {
         SignatureScheme::EcdsaSecp521r1Sha512 => push_tlv(&mut body, T_OID, OID_ECDSA_SHA512),
         SignatureScheme::Ed25519 => push_tlv(&mut body, T_OID, OID_ED25519),
         SignatureScheme::MlDsa65 => push_tlv(&mut body, T_OID, OID_ML_DSA_65),
+        SignatureScheme::MlDsa87 => push_tlv(&mut body, T_OID, OID_ML_DSA_87),
         SignatureScheme::RsaPssRsaeSha256
         | SignatureScheme::RsaPssRsaeSha384
         | SignatureScheme::RsaPssRsaeSha512 => {

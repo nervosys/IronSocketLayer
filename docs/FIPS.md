@@ -60,11 +60,18 @@ here calls something approved that IronCrypto does not permit.
 | TLS_CHACHA20_POLY1305_SHA256 | no | not approved |
 | SecP256r1MLKEM768 | yes, preferred | both components approved (SP 800-56A ECDH, FIPS 203 ML-KEM) |
 | P-256, P-384, P-521 ECDHE | yes | SP 800-56A |
+| MLKEM1024, SecP384r1MLKEM1024 | no (approved; `profile:cnsa-2` uses MLKEM1024) | FIPS 203; not offered here because the shares exceed 1.5 KB |
 | X25519MLKEM768 | no | X25519 is not approved in IronCrypto's registry (see below) |
 | X25519 | no | not approved |
-| ECDSA P-256/384/521, RSA-PSS, ML-DSA-65 | yes | FIPS 186-5, FIPS 204 |
+| ECDSA P-256/384/521, RSA-PSS, ML-DSA-65, ML-DSA-87 | yes | FIPS 186-5, FIPS 204 |
 | RSA PKCS#1 v1.5 | certificates only | never signs a TLS 1.3 handshake |
 | Ed25519 | no | not approved in IronCrypto's registry |
+
+**`profile:cnsa-2`** is also gated: ML-KEM-1024 only, ML-DSA-87 on the
+handshake and on every certificate of the path, and TLS_AES_256_GCM_SHA384.
+All three are approved in IronCrypto's registry and self-tested at start-up.
+As with every profile here, that is conformance to an algorithm set, not a
+validation.
 
 **X25519MLKEM768.** Because its ML-KEM secret comes first in the
 concatenation, SP 800-56C rev. 2 can be read to permit it in approved mode with

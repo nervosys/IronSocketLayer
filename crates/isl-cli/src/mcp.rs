@@ -499,8 +499,9 @@ mod tests {
         );
         assert_eq!(
             body(&r).get("status").and_then(|v| v.as_str()),
-            Some("unavailable")
+            Some("recommended")
         );
+        assert!(body(&r).to_string().contains("profile:cnsa-2"));
 
         let r = call(
             "explain_error",

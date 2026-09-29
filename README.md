@@ -55,16 +55,17 @@ pins the peer's public key instead, which is stricter and easier to provision.
 | QUIC | TLS for QUIC (RFC 9001), QUIC v1 and v2 (RFC 9369): CRYPTO-frame levels, transport parameters, Initial / Handshake / 1-RTT packet protection, header protection, 1-RTT key update |
 | Cipher suites | TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256 |
 | Key exchange | **X25519MLKEM768**, **SecP256r1MLKEM768**, **ML-KEM-768**, X25519, P-256, P-384, P-521; **SecP384r1MLKEM1024** and **ML-KEM-1024** on request (not offered by default: their shares exceed 1.5 KB) |
-| Signatures | **ML-DSA-65**, ECDSA P-256/P-384/P-521, Ed25519, RSA-PSS (2048–4096), RSA PKCS#1 v1.5 in certificates only |
+| Signatures | **ML-DSA-65**, **ML-DSA-87**, ECDSA P-256/P-384/P-521, Ed25519, RSA-PSS (2048–4096), RSA PKCS#1 v1.5 in certificates only |
 | PKI | RFC 5280 path building and validation, name constraints (dNSName, iPAddress), EKU, RFC 6125 name matching with no CN fallback, SPKI pinning, a certificate builder for ephemeral agent identities, PKCS#8 and PEM loading (including OpenSSL's ML-DSA key format) |
 | Revocation | **CRLs** (RFC 5280 §5), checked along the whole path on both sides from a caller-filled `CrlStore`, with `require_crl` to demand coverage, and `x509::crl::build` so a private CA can revoke an agent. OCSP stapling (RFC 6066, RFC 6960): client policy `Off`, `IfStapled` (default) or `RequireStaple`; staples must be signed by the issuer or its certified delegate and be current; a revoked certificate is always fatal. Servers staple a supplied response, and `x509::ocsp::build_response` mints one for a private CA. |
 | Constrained links | `record_size_limit` (RFC 8449) in both directions |
 | Privacy | **Encrypted Client Hello** (draft-ietf-tls-esni, HPKE per RFC 9180), client and server, over TCP and QUIC, including HelloRetryRequest and `retry_configs`. Configured ECH is used or the connection fails; the real name is never sent in the clear as a fallback. `isl probe --ech` fetches the host's configuration over DNS-over-HTTPS. |
-| Profiles | `default`, `post-quantum`, `fips-140-3`, `cnsa-1`, `cnsa-2` (reported unavailable), `dal-a` |
+| Profiles | `default`, `post-quantum`, `fips-140-3`, `cnsa-1`, `cnsa-2` (ML-KEM-1024, ML-DSA-87, AES-256), `dal-a` |
 | Targets | `std`; `no_std + alloc` (builds for `thumbv7em-none-eabihf`) |
 
-Planned and marked so in the ontology: ML-DSA-87, which needs IronCrypto
-support and is what `cnsa-2` still waits on. TLS 1.2 is excluded by design.
+Named in the ontology but not implemented: ML-DSA-44, ML-KEM-512 and the
+other groups and schemes marked so there. TLS 1.2 is excluded by design.
+ML-KEM-1024 and ML-DSA-87 need IronCrypto 0.2.3 or later.
 
 ## Evidence that it interoperates
 

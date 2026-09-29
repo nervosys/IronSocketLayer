@@ -21,9 +21,10 @@ Then build the profile it names: `ClientConfig::new(Profile::PostQuantum, roots)
 
 ## When the answer is "unavailable", stop
 
-`profile:cnsa-2` is unavailable in this build: it needs ML-DSA-87
-(ML-KEM-1024 is implemented). If `recommend` returns `unavailable` or `impossible`, report it to
-the user. **Do not substitute another profile.** Falling back is the downgrade
+Every profile is available in this build, including `profile:cnsa-2`
+(ML-KEM-1024, ML-DSA-87, AES-256, with the FIPS gate on). A build without an
+algorithm a profile needs reports it unavailable instead. If `recommend`
+returns `unavailable` or `impossible`, report it to the user. **Do not substitute another profile.** Falling back is the downgrade
 attack, performed by the agent itself.
 
 ## Never disable verification

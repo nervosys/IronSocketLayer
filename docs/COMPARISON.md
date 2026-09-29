@@ -39,7 +39,7 @@ wolfSSL's assembly-optimised wolfCrypt should be expected to be ahead as well.
 | **Maturity** | Long deployment history, a CVE process, extensive third-party review. | New code. Interop against Cloudflare, Google, GitHub and OpenSSL 3.5 is tested, but there is no field history. |
 | **Footprint and hardware** | Tuned for very small targets, with hardware crypto acceleration across many vendors. | Not yet measured for size. Uses IronCrypto's AES-NI and CLMUL paths on x86-64 (its ARMv8 backend is not yet enabled by default); `alloc` required. |
 | **Speed** | Assembly-optimised wolfCrypt (not measured here). | Measured only against rustls/ring, and slower: IronCrypto's AES-GCM is about 6× and its P-256 3–4× slower than ring's. The record layer itself reaches about 95% of the cipher's ceiling. |
-| **Parameter sets** | ML-KEM-512/768/1024, ML-DSA-44/65/87. | ML-KEM-768 and ML-DSA-65 only, so CNSA 2.0 is unavailable. |
+| **Parameter sets** | ML-KEM-512/768/1024, ML-DSA-44/65/87. | ML-KEM-768/1024 and ML-DSA-65/87, which is enough for CNSA 2.0 (`profile:cnsa-2`). The 512 and 44 sets are not offered. |
 
 ## Choosing
 

@@ -83,6 +83,7 @@ pub const DEFAULT_SIGSCHEMES: &[&str] = &[
     "sigscheme:rsa-pss-rsae-sha384",
     "sigscheme:rsa-pss-rsae-sha512",
     "sigscheme:mldsa65",
+    "sigscheme:mldsa87",
     "sigscheme:rsa-pkcs1-sha256",
     "sigscheme:rsa-pkcs1-sha384",
     "sigscheme:rsa-pkcs1-sha512",
@@ -103,6 +104,7 @@ pub const POST_QUANTUM_GROUPS: &[&str] = &[
 /// `profile:post-quantum` signature schemes, ML-DSA first.
 pub const POST_QUANTUM_SIGSCHEMES: &[&str] = &[
     "sigscheme:mldsa65",
+    "sigscheme:mldsa87",
     "sigscheme:ecdsa-secp256r1-sha256",
     "sigscheme:ed25519",
     "sigscheme:ecdsa-secp384r1-sha384",
@@ -136,6 +138,7 @@ pub const FIPS_SIGSCHEMES: &[&str] = &[
     "sigscheme:rsa-pss-rsae-sha384",
     "sigscheme:rsa-pss-rsae-sha512",
     "sigscheme:mldsa65",
+    "sigscheme:mldsa87",
     "sigscheme:rsa-pkcs1-sha256",
     "sigscheme:rsa-pkcs1-sha384",
     "sigscheme:rsa-pkcs1-sha512",
@@ -151,11 +154,12 @@ pub const CNSA1_SIGSCHEMES: &[&str] = &[
     "sigscheme:rsa-pss-rsae-sha384",
 ];
 
-/// `profile:cnsa-2` suites (unavailable profile; listed for explanation only).
+/// `profile:cnsa-2` suites.
 pub const CNSA2_SUITES: &[&str] = &["suite:tls-aes-256-gcm-sha384"];
-/// `profile:cnsa-2` groups: ML-KEM-1024 (implemented; the profile waits on ML-DSA-87).
+/// `profile:cnsa-2` groups: pure ML-KEM-1024.
 pub const CNSA2_GROUPS: &[&str] = &["group:mlkem1024"];
-/// `profile:cnsa-2` signature schemes: ML-DSA-87, not implemented.
+/// `profile:cnsa-2` signature schemes: ML-DSA-87, in the handshake and in
+/// every certificate on the path.
 pub const CNSA2_SIGSCHEMES: &[&str] = &["sigscheme:mldsa87"];
 
 /// `profile:dal-a` suites.
@@ -237,8 +241,8 @@ pub static PROFILES: &[Profile] = &[
         id: "profile:cnsa-2",
         name: "CNSA 2.0",
         summary: "The NSA CNSA 2.0 suite: ML-KEM-1024 and ML-DSA-87 with AES-256.",
-        status: ProfileStatus::Unavailable,
-        status_reason: "IronCrypto does not implement ML-DSA-87 (ML-KEM-1024 is available). Do not substitute ML-DSA-65 or ML-KEM-768: they do not meet CNSA 2.0.",
+        status: ProfileStatus::Available,
+        status_reason: "",
         suites: CNSA2_SUITES,
         groups: CNSA2_GROUPS,
         sigschemes: CNSA2_SIGSCHEMES,
@@ -246,8 +250,8 @@ pub static PROFILES: &[Profile] = &[
         fips_gate: true,
         post_quantum_required: true,
         min_rsa_bits: 3072,
-        rationale: "Listed so that an agent asked for CNSA 2.0 gets a plain 'unavailable' rather than a near miss.",
-        notes: "",
+        rationale: "CNSA 2.0 fixes one post-quantum parameter set at category 5 for National Security Systems: every group and every signature on the path is post-quantum, and every algorithm is FIPS-approved. The peer needs an ML-DSA-87 certificate chain. Do not substitute ML-KEM-768 or ML-DSA-65: they do not meet CNSA 2.0.",
+        notes: NOT_VALIDATED,
     },
     Profile {
         id: "profile:dal-a",

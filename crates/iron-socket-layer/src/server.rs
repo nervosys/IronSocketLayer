@@ -430,11 +430,10 @@ impl ServerHs {
                 };
                 let report = x509::verify_chain(leaf, &inter, roots, &opts)?;
                 conn::note_crl(core, report.crl_checked);
-                Ok(!report.schemes.is_empty()
-                    && report
-                        .schemes
-                        .iter()
-                        .all(|s| *s == SignatureScheme::MlDsa65))
+                Ok(
+                    !report.schemes.is_empty()
+                        && report.schemes.iter().all(|s| s.is_post_quantum()),
+                )
             }
             PeerVerification::PinnedSpki { sha256, .. } => {
                 crate::client::check_pinned(leaf, sha256, now)?;
@@ -1122,10 +1121,7 @@ impl ServerHs {
                 let report = x509::verify_chain(leaf, &inter, roots, &opts)?;
                 conn::note_crl(core, report.crl_checked);
                 self.client_pq_chain = !report.schemes.is_empty()
-                    && report
-                        .schemes
-                        .iter()
-                        .all(|s| *s == SignatureScheme::MlDsa65);
+                    && report.schemes.iter().all(|s| s.is_post_quantum());
                 core.report.peer_chain_min_bits = Some(report.min_classical_bits);
             }
             PeerVerification::PinnedSpki { sha256, .. } => {
@@ -1157,7 +1153,7 @@ impl ServerHs {
         let th = core.transcript.current()?;
         let input = msgs::certificate_verify_input(false, th.as_bytes());
         sign::verify(cv.scheme, &key, &input, &cv.signature)?;
-        self.client_pq_chain &= cv.scheme == SignatureScheme::MlDsa65;
+        self.client_pq_chain &= cv.scheme.is_post_quantum();
         self.client_authenticated = true;
         core.report.peer_signature_scheme = Some(cv.scheme);
         core.transcript.add(msg);
@@ -1186,7 +1182,10 @@ impl ServerHs {
             self.verification(),
             Some(PeerVerification::PinnedSpki { .. })
         ) && self.client_authenticated;
-        let local_pq = core.report.local_signature_scheme == Some(SignatureScheme::MlDsa65);
+        let local_pq = core
+            .report
+            .local_signature_scheme
+            .is_some_and(|s| s.is_post_quantum());
         let pq_auth = match &self.resumed {
             Some(st) => st.post_quantum_authentication,
             None => local_pq && (!self.client_authenticated || self.client_pq_chain),

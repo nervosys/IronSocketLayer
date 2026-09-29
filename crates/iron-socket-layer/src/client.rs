@@ -994,8 +994,8 @@ impl ClientHs {
                 self.name_check(leaf)?;
                 self.check_revocation(core, cert.ocsp.as_deref(), leaf, &chain, now)?;
                 conn::note_crl(core, chain.crl_checked);
-                self.pq_chain = !chain.schemes.is_empty()
-                    && chain.schemes.iter().all(|s| *s == SignatureScheme::MlDsa65);
+                self.pq_chain =
+                    !chain.schemes.is_empty() && chain.schemes.iter().all(|s| s.is_post_quantum());
                 core.report.peer_chain_min_bits = Some(chain.min_classical_bits);
             }
             PeerVerification::PinnedSpki {
@@ -1101,7 +1101,7 @@ impl ClientHs {
         let input = msgs::certificate_verify_input(true, th.as_bytes());
         sign::verify(cv.scheme, &key, &input, &cv.signature)?;
         // PQ authentication needs the handshake signature *and* the chain to be ML-DSA.
-        self.pq_chain &= cv.scheme == SignatureScheme::MlDsa65;
+        self.pq_chain &= cv.scheme.is_post_quantum();
         core.report.peer_signature_scheme = Some(cv.scheme);
         core.transcript.add(msg);
         core.set_state(S::WaitFinished);
@@ -1212,8 +1212,11 @@ impl ClientHs {
         // Post-quantum authentication holds only if every signature in the
         // session -- the server's chain and CertificateVerify, and ours if we
         // authenticated -- is ML-DSA.
-        let local_pq =
-            !mutual || core.report.local_signature_scheme == Some(SignatureScheme::MlDsa65);
+        let local_pq = !mutual
+            || core
+                .report
+                .local_signature_scheme
+                .is_some_and(|s| s.is_post_quantum());
         let pq_auth = self.pq_chain && local_pq;
         self.peer = PeerSummary {
             key: core.report.peer_key,

@@ -44,8 +44,7 @@ pub enum Profile {
     Fips140_3,
     /// CNSA 1.0: P-384 and AES-256.
     Cnsa1,
-    /// CNSA 2.0: needs ML-DSA-87, which this build lacks (ML-KEM-1024 is
-    /// implemented).
+    /// CNSA 2.0: ML-KEM-1024, ML-DSA-87 and AES-256, nothing else.
     /// Building it fails; an agent must not substitute another profile.
     Cnsa2,
     /// A deliberately narrow profile for DO-178C DAL-A programmes: one suite,
@@ -96,8 +95,7 @@ impl Profile {
                 C::TlsAes128GcmSha256,
             ],
             Self::Fips140_3 => &[C::TlsAes256GcmSha384, C::TlsAes128GcmSha256],
-            Self::Cnsa1 | Self::DalA => &[C::TlsAes256GcmSha384],
-            Self::Cnsa2 => &[],
+            Self::Cnsa1 | Self::Cnsa2 | Self::DalA => &[C::TlsAes256GcmSha384],
         }
     }
 
@@ -114,7 +112,7 @@ impl Profile {
                 G::Secp521r1,
             ],
             Self::Cnsa1 | Self::DalA => &[G::Secp384r1],
-            Self::Cnsa2 => &[],
+            Self::Cnsa2 => &[G::MlKem1024],
         }
     }
 
@@ -131,12 +129,14 @@ impl Profile {
                 S::RsaPssRsaeSha384,
                 S::RsaPssRsaeSha512,
                 S::MlDsa65,
+                S::MlDsa87,
                 S::RsaPkcs1Sha256,
                 S::RsaPkcs1Sha384,
                 S::RsaPkcs1Sha512,
             ],
             Self::PostQuantum => &[
                 S::MlDsa65,
+                S::MlDsa87,
                 S::EcdsaSecp256r1Sha256,
                 S::Ed25519,
                 S::EcdsaSecp384r1Sha384,
@@ -156,13 +156,14 @@ impl Profile {
                 S::RsaPssRsaeSha384,
                 S::RsaPssRsaeSha512,
                 S::MlDsa65,
+                S::MlDsa87,
                 S::RsaPkcs1Sha256,
                 S::RsaPkcs1Sha384,
                 S::RsaPkcs1Sha512,
             ],
             Self::Cnsa1 => &[S::EcdsaSecp384r1Sha384, S::RsaPssRsaeSha384],
             Self::DalA => &[S::EcdsaSecp384r1Sha384],
-            Self::Cnsa2 => &[],
+            Self::Cnsa2 => &[S::MlDsa87],
         }
     }
 
@@ -190,8 +191,13 @@ impl Profile {
     }
 
     /// Whether this build can provide the profile at all. `REQ-CFG-004`.
+    ///
+    /// Every profile is available in this build. The check stays so that a
+    /// build without an algorithm a profile needs refuses it rather than
+    /// substituting, as this build did for CNSA 2.0 before IronCrypto had
+    /// ML-DSA-87.
     pub const fn available(self) -> bool {
-        !matches!(self, Self::Cnsa2)
+        true
     }
 
     /// How many key shares a client sends in its first flight. Two for the
@@ -489,7 +495,7 @@ impl Common {
             // REQ-CFG-004.
             return Err(Error::new(
                 ErrorKind::InvalidConfig,
-                "profile unavailable in this build (CNSA 2.0 needs ML-DSA-87); do not substitute",
+                "profile unavailable in this build; do not substitute",
             ));
         }
         Ok(Self {

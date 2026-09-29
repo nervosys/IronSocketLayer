@@ -257,12 +257,27 @@ mod tests {
     }
 
     #[test]
-    fn recommend_reports_unavailable_as_an_answer() {
+    fn recommend_answers_fips_and_post_quantum_with_cnsa2() {
         let r = recommend("intent:https-client", true, true, false).unwrap();
+        assert_eq!(
+            r.get("status").and_then(|v| v.as_str()),
+            Some("recommended")
+        );
+        assert!(r.to_string().contains("profile:cnsa-2"), "{r}");
+        // A refusal is an answer, not an error, with the instruction not to
+        // substitute. No profile is unavailable in this build, so the
+        // rendering is checked on a constructed refusal.
+        let refusal: Result<isl_ontology::select::Recommendation, _> =
+            Err(isl_ontology::select::NoRecommendation::Unavailable {
+                profile: "profile:example",
+                reason: "needs an algorithm this build lacks",
+            });
+        let r = json_of(&export::recommendation_to_json(&refusal)).unwrap();
         assert_eq!(
             r.get("status").and_then(|v| v.as_str()),
             Some("unavailable")
         );
+        assert!(r.to_string().contains("Do not substitute"));
         let r = recommend("intent:agent-to-agent-mtls", false, false, false).unwrap();
         assert_eq!(
             r.get("status").and_then(|v| v.as_str()),

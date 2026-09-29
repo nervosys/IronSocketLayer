@@ -73,8 +73,10 @@ fn every_key_kind_authenticates_the_server() {
         .unwrap_or_else(|e| panic!("{kind:?}: {e:?}"));
         let scheme = c.report().peer_signature_scheme.unwrap();
         assert!(scheme.allowed_in_handshake());
-        if kind == KeyKind::MlDsa65 {
-            assert_eq!(scheme, SignatureScheme::MlDsa65);
+        match kind {
+            KeyKind::MlDsa65 => assert_eq!(scheme, SignatureScheme::MlDsa65),
+            KeyKind::MlDsa87 => assert_eq!(scheme, SignatureScheme::MlDsa87),
+            _ => {}
         }
         // The CA signs with ECDSA P-384, so no chain here is post-quantum end to end.
         assert!(!c.report().has(Property::PostQuantumAuthentication));
@@ -92,7 +94,8 @@ fn post_quantum_authentication_needs_the_whole_chain_to_be_ml_dsa() {
     .unwrap();
     assert!(c.report().has(Property::PostQuantumAuthentication));
     assert!(c.report().has(Property::PostQuantumKeyExchange));
-    assert_eq!(c.report().peer_chain_min_bits, Some(256));
+    // ML-DSA-65 is NIST category 3, comparable to AES-192.
+    assert_eq!(c.report().peer_chain_min_bits, Some(192));
 }
 
 #[test]
@@ -387,13 +390,12 @@ fn the_post_quantum_profile_refuses_a_classical_only_peer() {
 }
 
 #[test]
-fn cnsa2_is_unavailable_rather_than_substituted() {
-    let err = ClientConfig::new(
-        Profile::Cnsa2,
-        Pki::new(KeyKind::EcdsaP384, "x.test").roots(),
-    )
-    .unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidConfig);
+fn every_profile_is_available_in_this_build() {
+    // REQ-CFG-004's refusal applies only to a build that lacks an algorithm a
+    // profile needs; this build lacks none (CNSA 2.0 was the last).
+    for p in Profile::ALL {
+        assert!(p.available(), "{p:?}");
+    }
 }
 
 #[test]
@@ -515,7 +517,7 @@ fn unimplemented_parameters_are_refused_by_validation() {
     c.common.groups = vec![NamedGroup::X448];
     assert_eq!(c.validate().unwrap_err().kind(), ErrorKind::InvalidConfig);
     let mut c = pki.client_config(Profile::Default);
-    c.common.schemes = vec![SignatureScheme::MlDsa87];
+    c.common.schemes = vec![SignatureScheme::MlDsa44];
     assert_eq!(c.validate().unwrap_err().kind(), ErrorKind::InvalidConfig);
     let mut c = pki.client_config(Profile::Default);
     c.common.schemes = vec![SignatureScheme::RsaPkcs1Sha256];

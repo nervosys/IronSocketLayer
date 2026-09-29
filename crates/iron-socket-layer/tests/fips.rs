@@ -110,4 +110,47 @@ fn the_fips_gate_refuses_then_admits_and_reports_indicators() {
         s.report().peer_subject_cn.as_deref(),
         Some("flight-computer-2")
     );
+
+    // 6. CNSA 2.0: ML-KEM-1024, ML-DSA-87 on every signature, AES-256.
+    let pki = Pki::with_kinds(KeyKind::MlDsa87, KeyKind::MlDsa87, "nss.test");
+    let (c, s) = connect(
+        Arc::new(pki.client_config(Profile::Cnsa2)),
+        Arc::new(pki.server_config(Profile::Cnsa2)),
+        "nss.test",
+    )
+    .unwrap();
+    for r in [c.report(), s.report()] {
+        assert_eq!(r.group, Some(NamedGroup::MlKem1024));
+        assert_eq!(
+            r.suite,
+            Some(iron_socket_layer::enums::CipherSuite::TlsAes256GcmSha384)
+        );
+        assert!(r.has(Property::PostQuantumKeyExchange));
+        assert!(r.has(Property::FipsApprovedAlgorithms), "{}", r.to_json());
+        assert_eq!(r.profile, "profile:cnsa-2");
+    }
+    let r = c.report();
+    assert_eq!(r.peer_signature_scheme, Some(SignatureScheme::MlDsa87));
+    assert!(
+        r.has(Property::PostQuantumAuthentication),
+        "{}",
+        r.to_json()
+    );
+    assert_eq!(r.peer_chain_min_bits, Some(256));
+    assert!(r
+        .fips_indicators
+        .entries
+        .iter()
+        .any(|(alg, _)| *alg == "ml-dsa-87"));
+
+    // A server with an ML-DSA-65 chain is refused, not accepted as a near miss.
+    let near = Pki::with_kinds(KeyKind::MlDsa65, KeyKind::MlDsa65, "nss.test");
+    let mut roots = near.roots();
+    roots.add_der(&pki.ca_cert).unwrap();
+    let mut cc = pki.client_config(Profile::Cnsa2);
+    cc.verification = PeerVerification::Roots(roots);
+    let mut sc = near.server_config(Profile::Fips140_3);
+    sc.common.groups = vec![NamedGroup::MlKem1024];
+    sc.common.suites = vec![iron_socket_layer::enums::CipherSuite::TlsAes256GcmSha384];
+    assert!(connect(Arc::new(cc), Arc::new(sc), "nss.test").is_err());
 }
