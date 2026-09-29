@@ -153,7 +153,7 @@ pub const CNSA1_SIGSCHEMES: &[&str] = &[
 
 /// `profile:cnsa-2` suites (unavailable profile; listed for explanation only).
 pub const CNSA2_SUITES: &[&str] = &["suite:tls-aes-256-gcm-sha384"];
-/// `profile:cnsa-2` groups: ML-KEM-1024, not implemented.
+/// `profile:cnsa-2` groups: ML-KEM-1024 (implemented; the profile waits on ML-DSA-87).
 pub const CNSA2_GROUPS: &[&str] = &["group:mlkem1024"];
 /// `profile:cnsa-2` signature schemes: ML-DSA-87, not implemented.
 pub const CNSA2_SIGSCHEMES: &[&str] = &["sigscheme:mldsa87"];
@@ -238,7 +238,7 @@ pub static PROFILES: &[Profile] = &[
         name: "CNSA 2.0",
         summary: "The NSA CNSA 2.0 suite: ML-KEM-1024 and ML-DSA-87 with AES-256.",
         status: ProfileStatus::Unavailable,
-        status_reason: "IronCrypto does not implement ML-KEM-1024 or ML-DSA-87. Do not substitute ML-KEM-768 or ML-DSA-65: they do not meet CNSA 2.0.",
+        status_reason: "IronCrypto does not implement ML-DSA-87 (ML-KEM-1024 is available). Do not substitute ML-DSA-65 or ML-KEM-768: they do not meet CNSA 2.0.",
         suites: CNSA2_SUITES,
         groups: CNSA2_GROUPS,
         sigschemes: CNSA2_SIGSCHEMES,

@@ -161,13 +161,13 @@ wire_enum! {
         MlKem512 = 0x0200 => "group:mlkem512",
         /// Pure ML-KEM-768.
         MlKem768 = 0x0201 => "group:mlkem768",
-        /// Pure ML-KEM-1024. Named, not implemented.
+        /// Pure ML-KEM-1024.
         MlKem1024 = 0x0202 => "group:mlkem1024",
         /// Hybrid P-256 ECDHE + ML-KEM-768.
         SecP256r1MlKem768 = 0x11eb => "group:secp256r1mlkem768",
         /// Hybrid X25519 + ML-KEM-768.
         X25519MlKem768 = 0x11ec => "group:x25519mlkem768",
-        /// Hybrid P-384 ECDHE + ML-KEM-1024. Named, not implemented.
+        /// Hybrid P-384 ECDHE + ML-KEM-1024.
         SecP384r1MlKem1024 = 0x11ed => "group:secp384r1mlkem1024",
     }
 }

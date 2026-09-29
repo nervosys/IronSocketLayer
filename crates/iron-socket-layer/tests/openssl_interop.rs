@@ -6,7 +6,8 @@
 //!   IronSocketLayer' own certificate builder and verified by OpenSSL.
 //!
 //! Covers every implemented group — including X25519MLKEM768,
-//! SecP256r1MLKEM768 and pure ML-KEM-768 — and every key type, ML-DSA-65
+//! SecP256r1MLKEM768, SecP384r1MLKEM1024 and pure ML-KEM-768 and
+//! ML-KEM-1024 — and every key type, ML-DSA-65
 //! included. Ignored by default because it needs `openssl` on PATH:
 //! `cargo test -p iron-socket-layer --test openssl_interop -- --ignored --test-threads=1`.
 
@@ -34,6 +35,8 @@ const GROUPS: &[(NamedGroup, &str)] = &[
     (NamedGroup::X25519MlKem768, "X25519MLKEM768"),
     (NamedGroup::SecP256r1MlKem768, "SecP256r1MLKEM768"),
     (NamedGroup::MlKem768, "MLKEM768"),
+    (NamedGroup::SecP384r1MlKem1024, "SecP384r1MLKEM1024"),
+    (NamedGroup::MlKem1024, "MLKEM1024"),
     (NamedGroup::X25519, "x25519"),
     (NamedGroup::Secp256r1, "P-256"),
     (NamedGroup::Secp384r1, "P-384"),

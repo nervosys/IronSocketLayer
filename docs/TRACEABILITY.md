@@ -18,7 +18,7 @@ feed the life-cycle data.
 |---|---|---|
 | HLR-001 | Implement the TLS 1.3 handshake and record protocol of RFC 8446 for client and server, full handshake with (EC)DHE/KEM key exchange and certificate authentication. | REQ-CODEC-*, REQ-MSG-*, REQ-KS-*, REQ-REC-*, REQ-CONN-* |
 | HLR-002 | Implement TLS for QUIC per RFC 9001, for QUIC versions 1 and 2 (RFC 9369). | REQ-QUIC-* |
-| HLR-003 | Offer post-quantum key exchange (ML-KEM-768, hybrid with X25519 or P-256) and ML-DSA-65 authentication. | REQ-KX-*, REQ-SIG-* |
+| HLR-003 | Offer post-quantum key exchange (ML-KEM-768 and ML-KEM-1024, and hybrids with X25519, P-256 or P-384) and ML-DSA-65 authentication. | REQ-KX-*, REQ-SIG-* |
 | HLR-004 | Authenticate peers by RFC 5280 path validation or SPKI pinning; never offer a mode without authentication. | REQ-X509-*, REQ-SIG-* |
 | HLR-005 | Under a FIPS profile, use only algorithms IronCrypto's module approves, with the module gate enforced, and report service indicators. | REQ-CFG-003 |
 | HLR-006 | Expose configuration as named profiles identical to the ontology's, and refuse rather than substitute when a profile is unavailable. | REQ-CFG-001, REQ-CFG-002, REQ-CFG-004 |
@@ -48,7 +48,8 @@ feed the life-cycle data.
 | REQ-KS-003 | Finished MACs are compared in constant time. | src/key_schedule.rs | Test | src/key_schedule.rs::finished_rejects_a_single_flipped_bit |
 | REQ-KX-001 | Peer key shares of the wrong length, form or value are refused. | src/crypto/kx.rs | Test | src/crypto/kx.rs::malformed_shares_are_rejected_not_panicked_on; src/crypto/kx.rs::a_compressed_point_is_refused |
 | REQ-KX-002 | An all-zero X25519 shared secret is refused (RFC 8446 §7.4.2). | src/crypto/kx.rs | Test | src/crypto/kx.rs::an_all_zero_x25519_secret_is_refused |
-| REQ-KX-003 | Ephemeral private keys are zeroized. | src/crypto/kx.rs | Analysis | Ephemeral scalars live in `SecretVec` and ML-KEM decapsulation keys in `Zeroizing<[u8; N]>`; both zeroize on drop, and `KeyShare::complete` consumes the share. |
+| REQ-KX-003 | Ephemeral private keys are zeroized. | src/crypto/kx.rs | Analysis | Ephemeral scalars and ML-KEM decapsulation keys live in `SecretVec`, and KEM shared secrets pass through `Zeroizing` arrays into `SecretVec`; all zeroize on drop, and `KeyShare::complete` consumes the share. |
+| REQ-KX-004 | Hybrid shares and secrets follow draft-ietf-tls-ecdhe-mlkem's component order: ML-KEM first for X25519MLKEM768, ECDH first for SecP256r1MLKEM768 and SecP384r1MLKEM1024. | src/crypto/kx.rs | Test | src/crypto/kx.rs::every_group_agrees_with_itself; tests/openssl_interop.rs::our_client_against_openssl_server_for_every_key_and_group; tests/openssl_interop.rs::openssl_client_against_our_server_for_every_key_and_group; tests/interop.rs::hybrid_post_quantum_with_cloudflare |
 | REQ-REC-001 | A record sequence number never wraps; the key is exhausted first. | src/record.rs | Test | src/record.rs::sequence_exhaustion_refuses_before_wrapping |
 | REQ-REC-002 | Each record nonce is the IV XOR the sequence number. | src/record.rs | Test | src/crypto/mod.rs::nonce_xors_the_low_bytes; src/record.rs::a_replayed_record_fails_because_the_sequence_advanced |
 | REQ-REC-003 | The record header is the AEAD additional data. | src/record.rs | Test | src/record.rs::a_modified_header_fails_authentication |

@@ -40,6 +40,9 @@ ic-drbg = { path = "../AgenticCrypto/crates/ic-drbg", version = ">=0.1.3, <0.3",
 ic-ec = { path = "../AgenticCrypto/crates/ic-ec", version = ">=0.1.3, <0.3", default-features = false }
 ic-rsa = { path = "../AgenticCrypto/crates/ic-rsa", version = ">=0.1.3, <0.3", default-features = false }
 ic-pkix = { path = "../AgenticCrypto/crates/ic-pkix", version = ">=0.1.3, <0.3", default-features = false }
+# ML-KEM-1024 (MLKEM1024, SecP384r1MLKEM1024) is on IronCrypto's master after
+# 0.2.2 and in no published release yet: until one ships, this workspace builds
+# from the path only. Raise the minimum to that release when it exists.
 ic-mlkem = { path = "../AgenticCrypto/crates/ic-mlkem", version = ">=0.1.3, <0.3", default-features = false }
 ic-mldsa = { path = "../AgenticCrypto/crates/ic-mldsa", version = ">=0.1.3, <0.3", default-features = false }
 ic-fips = { path = "../AgenticCrypto/crates/ic-fips", version = ">=0.1.3, <0.3", default-features = false }

@@ -44,7 +44,8 @@ pub enum Profile {
     Fips140_3,
     /// CNSA 1.0: P-384 and AES-256.
     Cnsa1,
-    /// CNSA 2.0: needs ML-KEM-1024 and ML-DSA-87, which this build lacks.
+    /// CNSA 2.0: needs ML-DSA-87, which this build lacks (ML-KEM-1024 is
+    /// implemented).
     /// Building it fails; an agent must not substitute another profile.
     Cnsa2,
     /// A deliberately narrow profile for DO-178C DAL-A programmes: one suite,
@@ -488,7 +489,7 @@ impl Common {
             // REQ-CFG-004.
             return Err(Error::new(
                 ErrorKind::InvalidConfig,
-                "profile unavailable in this build (CNSA 2.0 needs ML-KEM-1024 and ML-DSA-87); do not substitute",
+                "profile unavailable in this build (CNSA 2.0 needs ML-DSA-87); do not substitute",
             ));
         }
         Ok(Self {

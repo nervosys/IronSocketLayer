@@ -21,8 +21,8 @@ Then build the profile it names: `ClientConfig::new(Profile::PostQuantum, roots)
 
 ## When the answer is "unavailable", stop
 
-`profile:cnsa-2` is unavailable in this build: it needs ML-KEM-1024 and
-ML-DSA-87. If `recommend` returns `unavailable` or `impossible`, report it to
+`profile:cnsa-2` is unavailable in this build: it needs ML-DSA-87
+(ML-KEM-1024 is implemented). If `recommend` returns `unavailable` or `impossible`, report it to
 the user. **Do not substitute another profile.** Falling back is the downgrade
 attack, performed by the agent itself.
 

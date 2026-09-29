@@ -205,10 +205,11 @@ pub fn recommend(intent_id: &str, policy: &Policy) -> Result<Recommendation, NoR
         chosen = base;
         rationale = base.rationale;
     } else if fips && pq {
-        // Every approved-and-post-quantum profile needs ML-KEM-1024 (CNSA 2.0)
-        // or accepts classical groups; neither meets both requirements.
+        // The only approved profile whose every group is post-quantum is
+        // CNSA 2.0, which still waits on ML-DSA-87; the others also accept
+        // classical groups.
         let cnsa2 = profiles::get("profile:cnsa-2").ok_or(NoRecommendation::UnknownIntent)?;
-        return Err(NoRecommendation::Unavailable { profile: cnsa2.id, reason: "FIPS and post-quantum-only together need an approved profile whose every group is post-quantum. profile:fips-140-3 also accepts classical groups, and profile:cnsa-2 (ML-KEM-1024, ML-DSA-87) is not implemented. Do not substitute: either accept profile:fips-140-3 with SecP256r1MLKEM768 preferred but not required, or use a validated module that implements CNSA 2.0." });
+        return Err(NoRecommendation::Unavailable { profile: cnsa2.id, reason: "FIPS and post-quantum-only together need an approved profile whose every group is post-quantum. profile:fips-140-3 also accepts classical groups, and profile:cnsa-2 is not available until ML-DSA-87 is (its ML-KEM-1024 is implemented). Do not substitute: either accept profile:fips-140-3 with SecP256r1MLKEM768 preferred but not required, or use a validated module that implements CNSA 2.0." });
     } else if fips {
         chosen = profiles::get("profile:fips-140-3").ok_or(NoRecommendation::UnknownIntent)?;
         rationale = "A FIPS requirement was stated, so the intent's usual profile is replaced by profile:fips-140-3, which offers approved algorithms only.";

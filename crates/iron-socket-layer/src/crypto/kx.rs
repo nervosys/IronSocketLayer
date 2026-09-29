@@ -1,30 +1,31 @@
 //! Key exchange for every implemented `NamedGroup`, over IronCrypto.
 //!
-//! Classical ECDHE (X25519, P-256, P-384, P-521), pure ML-KEM-768, and the two
-//! hybrids that carry post-quantum security today: X25519MLKEM768 and
-//! SecP256r1MLKEM768 (draft-ietf-tls-ecdhe-mlkem).
+//! Classical ECDHE (X25519, P-256, P-384, P-521), pure ML-KEM-768 and
+//! ML-KEM-1024 (draft-ietf-tls-mlkem), and three hybrids
+//! (draft-ietf-tls-ecdhe-mlkem): X25519MLKEM768, SecP256r1MLKEM768 and
+//! SecP384r1MLKEM1024.
 //!
 //! # Hybrid encodings
 //!
 //! The two hybrids do not order their components the same way, and getting it
 //! wrong produces a handshake that fails only against other implementations:
 //!
-//! | group              | client share      | server share       | secret        |
-//! |--------------------|-------------------|--------------------|---------------|
-//! | X25519MLKEM768     | ek ‖ x25519       | ct ‖ x25519        | ss_kem ‖ ss_ec |
-//! | SecP256r1MLKEM768  | p256 ‖ ek         | p256 ‖ ct          | ss_ec ‖ ss_kem |
+//! | group               | client share      | server share       | secret        |
+//! |---------------------|-------------------|--------------------|---------------|
+//! | X25519MLKEM768      | ek ‖ x25519       | ct ‖ x25519        | ss_kem ‖ ss_ec |
+//! | SecP256r1MLKEM768   | p256 ‖ ek         | p256 ‖ ct          | ss_ec ‖ ss_kem |
+//! | SecP384r1MLKEM1024  | p384 ‖ ek         | p384 ‖ ct          | ss_ec ‖ ss_kem |
 //!
 //! Requirement trace: `REQ-KX-001` (reject invalid peer shares),
 //! `REQ-KX-002` (reject an all-zero X25519 output, RFC 8446 §7.4.2),
-//! `REQ-KX-003` (ephemeral private keys are zeroized).
+//! `REQ-KX-003` (ephemeral private keys are zeroized), `REQ-KX-004` (hybrid
+//! component order).
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use ic_core::traits::{KeyAgreement, RandomSource};
 use ic_core::Zeroizing;
-use ic_mlkem::kem::{CIPHERTEXT_LEN, DECAPS_KEY_LEN, ENCAPS_KEY_LEN, SHARED_SECRET_LEN};
-use ic_mlkem::MlKem768;
+use ic_mlkem::{MlKem1024, MlKem768};
 
 use crate::enums::NamedGroup;
 use crate::error::{Error, ErrorKind, Result};
@@ -41,6 +42,10 @@ pub const IMPLEMENTED_GROUPS: &[NamedGroup] = &[
     NamedGroup::Secp384r1,
     NamedGroup::Secp521r1,
     NamedGroup::MlKem768,
+    // The CNSA 2.0 sizes: offered only where a profile or caller asks, since
+    // their shares are over 1.5 KB.
+    NamedGroup::SecP384r1MlKem1024,
+    NamedGroup::MlKem1024,
 ];
 
 /// Whether this build implements `group`.
@@ -58,24 +63,20 @@ pub fn ic_ids(group: NamedGroup) -> &'static [&'static str] {
         NamedGroup::MlKem768 => &["ml-kem-768"],
         NamedGroup::X25519MlKem768 => &["ml-kem-768", "x25519"],
         NamedGroup::SecP256r1MlKem768 => &["ecdh-p256", "ml-kem-768"],
+        NamedGroup::MlKem1024 => &["ml-kem-1024"],
+        NamedGroup::SecP384r1MlKem1024 => &["ecdh-p384", "ml-kem-1024"],
         _ => &[],
     }
 }
 
 /// Whether the group resists a quantum adversary (has an ML-KEM component).
 pub fn is_post_quantum(group: NamedGroup) -> bool {
-    matches!(
-        group,
-        NamedGroup::MlKem768 | NamedGroup::X25519MlKem768 | NamedGroup::SecP256r1MlKem768
-    )
+    pure_kem_of(group).is_some() || hybrid_of(group).is_some()
 }
 
 /// Whether the group is a hybrid of classical and post-quantum.
 pub fn is_hybrid(group: NamedGroup) -> bool {
-    matches!(
-        group,
-        NamedGroup::X25519MlKem768 | NamedGroup::SecP256r1MlKem768
-    )
+    hybrid_of(group).is_some()
 }
 
 #[derive(Clone, Copy)]
@@ -187,11 +188,136 @@ fn ec_of(group: NamedGroup) -> Option<Ec> {
     })
 }
 
+/// An ML-KEM parameter set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kem {
+    K768,
+    K1024,
+}
+
+/// Run `$body` with `$m` bound to the parameter set's module (for its sizes)
+/// and `$t` to its type (for its functions).
+macro_rules! with_kem {
+    ($kem:expr, $m:ident, $t:ident, $body:expr) => {
+        match $kem {
+            Kem::K768 => {
+                use ic_mlkem::kem as $m;
+                type $t = MlKem768;
+                $body
+            }
+            Kem::K1024 => {
+                use ic_mlkem::kem1024 as $m;
+                type $t = MlKem1024;
+                $body
+            }
+        }
+    };
+}
+
+impl Kem {
+    fn ek_len(self) -> usize {
+        with_kem!(self, m, _T, m::ENCAPS_KEY_LEN)
+    }
+
+    fn ct_len(self) -> usize {
+        with_kem!(self, m, _T, m::CIPHERTEXT_LEN)
+    }
+
+    fn keygen(self, rng: &mut dyn RandomSource) -> Result<(Vec<u8>, super::SecretVec)> {
+        let mut rng = DynRng(rng);
+        with_kem!(self, m, T, {
+            let mut ek = alloc::vec![0u8; m::ENCAPS_KEY_LEN];
+            let mut dk = super::SecretVec::new(alloc::vec![0u8; m::DECAPS_KEY_LEN]);
+            let ek_arr: &mut [u8; m::ENCAPS_KEY_LEN] = ek
+                .as_mut_slice()
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::Internal, "ek length"))?;
+            let dk_arr: &mut [u8; m::DECAPS_KEY_LEN] = dk
+                .get_mut()
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::Internal, "dk length"))?;
+            T::keygen(&mut rng, ek_arr, dk_arr)
+                .map_err(|_| Error::new(ErrorKind::Crypto, "ml-kem key generation failed"))?;
+            Ok((ek, dk))
+        })
+    }
+
+    fn encapsulate(
+        self,
+        rng: &mut dyn RandomSource,
+        ek: &[u8],
+    ) -> Result<(Vec<u8>, super::SecretVec)> {
+        let mut rng = DynRng(rng);
+        with_kem!(self, m, T, {
+            let ek: &[u8; m::ENCAPS_KEY_LEN] = ek.try_into().map_err(|_| {
+                Error::new(
+                    ErrorKind::IllegalParameter,
+                    "ml-kem encapsulation key length",
+                )
+            })?;
+            let mut ct = alloc::vec![0u8; m::CIPHERTEXT_LEN];
+            let ct_arr: &mut [u8; m::CIPHERTEXT_LEN] = ct
+                .as_mut_slice()
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::Internal, "ct length"))?;
+            let mut ss = Zeroizing::new([0u8; m::SHARED_SECRET_LEN]);
+            T::encapsulate(&mut rng, ek, ct_arr, ss.get_mut()).map_err(|_| {
+                Error::new(
+                    ErrorKind::IllegalParameter,
+                    "ml-kem encapsulation key rejected",
+                )
+            })?;
+            Ok((ct, super::SecretVec::new(ss.get().to_vec())))
+        })
+    }
+
+    fn decapsulate(self, dk: &[u8], ct: &[u8]) -> Result<super::SecretVec> {
+        with_kem!(self, m, T, {
+            let dk: &[u8; m::DECAPS_KEY_LEN] = dk
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::Internal, "dk length"))?;
+            let ct: &[u8; m::CIPHERTEXT_LEN] = ct
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::IllegalParameter, "ml-kem ciphertext length"))?;
+            let mut ss = Zeroizing::new([0u8; m::SHARED_SECRET_LEN]);
+            T::decapsulate(dk, ct, ss.get_mut()).map_err(|_| {
+                Error::new(ErrorKind::IllegalParameter, "ml-kem ciphertext rejected")
+            })?;
+            Ok(super::SecretVec::new(ss.get().to_vec()))
+        })
+    }
+}
+
+/// The parameter set of a pure ML-KEM group.
+fn pure_kem_of(group: NamedGroup) -> Option<Kem> {
+    match group {
+        NamedGroup::MlKem768 => Some(Kem::K768),
+        NamedGroup::MlKem1024 => Some(Kem::K1024),
+        _ => None,
+    }
+}
+
+/// A hybrid group's components, and whether ML-KEM comes first in the
+/// shares and the secret (only in X25519MLKEM768). `REQ-KX-004`.
+fn hybrid_of(group: NamedGroup) -> Option<(Ec, Kem, bool)> {
+    match group {
+        NamedGroup::X25519MlKem768 => Some((Ec::X25519, Kem::K768, true)),
+        NamedGroup::SecP256r1MlKem768 => Some((Ec::P256, Kem::K768, false)),
+        NamedGroup::SecP384r1MlKem1024 => Some((Ec::P384, Kem::K1024, false)),
+        _ => None,
+    }
+}
+
 enum Private {
     Ec(Ec, super::SecretVec),
-    Kem(DecapsKey),
-    X25519Kem(super::SecretVec, DecapsKey),
-    P256Kem(super::SecretVec, DecapsKey),
+    Kem(Kem, super::SecretVec),
+    Hybrid {
+        ec: Ec,
+        kem: Kem,
+        kem_first: bool,
+        ec_private: super::SecretVec,
+        decaps_key: super::SecretVec,
+    },
 }
 
 /// A client's ephemeral key share, awaiting the server's.
@@ -207,21 +333,6 @@ impl core::fmt::Debug for KeyShare {
     }
 }
 
-type DecapsKey = Box<Zeroizing<[u8; DECAPS_KEY_LEN]>>;
-
-fn kem_keygen(rng: &mut dyn RandomSource) -> Result<(Vec<u8>, DecapsKey)> {
-    let mut ek = alloc::vec![0u8; ENCAPS_KEY_LEN];
-    let mut dk = Box::new(Zeroizing::new([0u8; DECAPS_KEY_LEN]));
-    let ek_arr: &mut [u8; ENCAPS_KEY_LEN] = ek
-        .as_mut_slice()
-        .try_into()
-        .map_err(|_| Error::new(ErrorKind::Internal, "ek length"))?;
-    let mut rng = DynRng(rng);
-    MlKem768::keygen(&mut rng, ek_arr, dk.get_mut())
-        .map_err(|_| Error::new(ErrorKind::Crypto, "ml-kem key generation failed"))?;
-    Ok((ek, dk))
-}
-
 /// Adapts `&mut dyn RandomSource` to the `R: RandomSource + ?Sized` bound.
 struct DynRng<'a>(&'a mut dyn RandomSource);
 
@@ -231,47 +342,34 @@ impl RandomSource for DynRng<'_> {
     }
 }
 
-fn kem_encapsulate(
-    rng: &mut dyn RandomSource,
-    ek: &[u8],
-) -> Result<(Vec<u8>, Zeroizing<[u8; 32]>)> {
-    let ek: &[u8; ENCAPS_KEY_LEN] = ek.try_into().map_err(|_| {
-        Error::new(
-            ErrorKind::IllegalParameter,
-            "ml-kem encapsulation key length",
-        )
-    })?;
-    let mut ct = alloc::vec![0u8; CIPHERTEXT_LEN];
-    let ct_arr: &mut [u8; CIPHERTEXT_LEN] = ct
-        .as_mut_slice()
-        .try_into()
-        .map_err(|_| Error::new(ErrorKind::Internal, "ct length"))?;
-    let mut ss = Zeroizing::new([0u8; SHARED_SECRET_LEN]);
-    let mut rng = DynRng(rng);
-    MlKem768::encapsulate(&mut rng, ek, ct_arr, ss.get_mut()).map_err(|_| {
-        Error::new(
-            ErrorKind::IllegalParameter,
-            "ml-kem encapsulation key rejected",
-        )
-    })?;
-    Ok((ct, ss))
-}
-
-fn kem_decapsulate(dk: &[u8; DECAPS_KEY_LEN], ct: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
-    let ct: &[u8; CIPHERTEXT_LEN] = ct
-        .try_into()
-        .map_err(|_| Error::new(ErrorKind::IllegalParameter, "ml-kem ciphertext length"))?;
-    let mut ss = Zeroizing::new([0u8; SHARED_SECRET_LEN]);
-    MlKem768::decapsulate(dk, ct, ss.get_mut())
-        .map_err(|_| Error::new(ErrorKind::IllegalParameter, "ml-kem ciphertext rejected"))?;
-    Ok(ss)
-}
-
-fn concat(a: &[u8], b: &[u8]) -> SharedSecret {
+/// Join a hybrid's two parts in the group's order.
+fn ordered(kem_first: bool, kem: &[u8], ec: &[u8]) -> Vec<u8> {
+    let (a, b) = if kem_first { (kem, ec) } else { (ec, kem) };
     let mut v = Vec::with_capacity(a.len() + b.len());
     v.extend_from_slice(a);
     v.extend_from_slice(b);
-    super::SecretVec::new(v)
+    v
+}
+
+/// Split a hybrid share into its (KEM part, EC part), checking the length.
+fn split_hybrid(
+    share: &[u8],
+    kem_first: bool,
+    kem_len: usize,
+    ec_len: usize,
+) -> Result<(&[u8], &[u8])> {
+    if share.len() != kem_len + ec_len {
+        return Err(Error::new(
+            ErrorKind::IllegalParameter,
+            "hybrid share length",
+        ));
+    }
+    Ok(if kem_first {
+        share.split_at(kem_len)
+    } else {
+        let (ec, kem) = share.split_at(ec_len);
+        (kem, ec)
+    })
 }
 
 impl KeyShare {
@@ -280,33 +378,27 @@ impl KeyShare {
         let (public, private) = if let Some(ec) = ec_of(group) {
             let (sk, pk) = ec.generate(rng)?;
             (pk, Private::Ec(ec, sk))
+        } else if let Some(kem) = pure_kem_of(group) {
+            let (ek, dk) = kem.keygen(rng)?;
+            (ek, Private::Kem(kem, dk))
+        } else if let Some((ec, kem, kem_first)) = hybrid_of(group) {
+            let (ek, decaps_key) = kem.keygen(rng)?;
+            let (ec_private, pk) = ec.generate(rng)?;
+            (
+                ordered(kem_first, &ek, &pk),
+                Private::Hybrid {
+                    ec,
+                    kem,
+                    kem_first,
+                    ec_private,
+                    decaps_key,
+                },
+            )
         } else {
-            match group {
-                NamedGroup::MlKem768 => {
-                    let (ek, dk) = kem_keygen(rng)?;
-                    (ek, Private::Kem(dk))
-                }
-                NamedGroup::X25519MlKem768 => {
-                    let (ek, dk) = kem_keygen(rng)?;
-                    let (sk, pk) = Ec::X25519.generate(rng)?;
-                    let mut public = ek;
-                    public.extend_from_slice(&pk);
-                    (public, Private::X25519Kem(sk, dk))
-                }
-                NamedGroup::SecP256r1MlKem768 => {
-                    let (ek, dk) = kem_keygen(rng)?;
-                    let (sk, pk) = Ec::P256.generate(rng)?;
-                    let mut public = pk;
-                    public.extend_from_slice(&ek);
-                    (public, Private::P256Kem(sk, dk))
-                }
-                _ => {
-                    return Err(Error::new(
-                        ErrorKind::HandshakeFailure,
-                        "group not implemented",
-                    ));
-                }
-            }
+            return Err(Error::new(
+                ErrorKind::HandshakeFailure,
+                "group not implemented",
+            ));
         };
         Ok(Self {
             group,
@@ -333,35 +425,24 @@ impl KeyShare {
                 ec.agree(sk.get(), server_share, out.get_mut())?;
                 Ok(out)
             }
-            Private::Kem(dk) => {
-                let ss = kem_decapsulate(dk.get(), server_share)?;
-                Ok(concat(ss.get(), &[]))
-            }
-            Private::X25519Kem(sk, dk) => {
-                if server_share.len() != CIPHERTEXT_LEN + 32 {
-                    return Err(Error::new(
-                        ErrorKind::IllegalParameter,
-                        "hybrid share length",
-                    ));
-                }
-                let (ct, pk) = server_share.split_at(CIPHERTEXT_LEN);
-                let kem = kem_decapsulate(dk.get(), ct)?;
-                let mut ec = Zeroizing::new([0u8; 32]);
-                Ec::X25519.agree(sk.get(), pk, ec.get_mut())?;
-                Ok(concat(kem.get(), ec.get()))
-            }
-            Private::P256Kem(sk, dk) => {
-                if server_share.len() != 65 + CIPHERTEXT_LEN {
-                    return Err(Error::new(
-                        ErrorKind::IllegalParameter,
-                        "hybrid share length",
-                    ));
-                }
-                let (pk, ct) = server_share.split_at(65);
-                let mut ec = Zeroizing::new([0u8; 32]);
-                Ec::P256.agree(sk.get(), pk, ec.get_mut())?;
-                let kem = kem_decapsulate(dk.get(), ct)?;
-                Ok(concat(ec.get(), kem.get()))
+            Private::Kem(kem, dk) => kem.decapsulate(dk.get(), server_share),
+            Private::Hybrid {
+                ec,
+                kem,
+                kem_first,
+                ec_private,
+                decaps_key,
+            } => {
+                let (ct, pk) =
+                    split_hybrid(server_share, *kem_first, kem.ct_len(), ec.public_len())?;
+                let mut ec_secret = super::SecretVec::new(alloc::vec![0u8; ec.secret_len()]);
+                ec.agree(ec_private.get(), pk, ec_secret.get_mut())?;
+                let kem_secret = kem.decapsulate(decaps_key.get(), ct)?;
+                Ok(super::SecretVec::new(ordered(
+                    *kem_first,
+                    kem_secret.get(),
+                    ec_secret.get(),
+                )))
             }
         }
     }
@@ -380,48 +461,24 @@ pub fn respond(
         ec.agree(sk.get(), client_share, out.get_mut())?;
         return Ok((pk, out));
     }
-    match group {
-        NamedGroup::MlKem768 => {
-            let (ct, ss) = kem_encapsulate(rng, client_share)?;
-            Ok((ct, concat(ss.get(), &[])))
-        }
-        NamedGroup::X25519MlKem768 => {
-            if client_share.len() != ENCAPS_KEY_LEN + 32 {
-                return Err(Error::new(
-                    ErrorKind::IllegalParameter,
-                    "hybrid share length",
-                ));
-            }
-            let (ek, peer) = client_share.split_at(ENCAPS_KEY_LEN);
-            let (ct, kem) = kem_encapsulate(rng, ek)?;
-            let (sk, pk) = Ec::X25519.generate(rng)?;
-            let mut ec = Zeroizing::new([0u8; 32]);
-            Ec::X25519.agree(sk.get(), peer, ec.get_mut())?;
-            let mut share = ct;
-            share.extend_from_slice(&pk);
-            Ok((share, concat(kem.get(), ec.get())))
-        }
-        NamedGroup::SecP256r1MlKem768 => {
-            if client_share.len() != 65 + ENCAPS_KEY_LEN {
-                return Err(Error::new(
-                    ErrorKind::IllegalParameter,
-                    "hybrid share length",
-                ));
-            }
-            let (peer, ek) = client_share.split_at(65);
-            let (sk, pk) = Ec::P256.generate(rng)?;
-            let mut ec = Zeroizing::new([0u8; 32]);
-            Ec::P256.agree(sk.get(), peer, ec.get_mut())?;
-            let (ct, kem) = kem_encapsulate(rng, ek)?;
-            let mut share = pk;
-            share.extend_from_slice(&ct);
-            Ok((share, concat(ec.get(), kem.get())))
-        }
-        _ => Err(Error::new(
+    if let Some(kem) = pure_kem_of(group) {
+        return kem.encapsulate(rng, client_share);
+    }
+    let Some((ec, kem, kem_first)) = hybrid_of(group) else {
+        return Err(Error::new(
             ErrorKind::HandshakeFailure,
             "group not implemented",
-        )),
-    }
+        ));
+    };
+    let (ek, peer) = split_hybrid(client_share, kem_first, kem.ek_len(), ec.public_len())?;
+    let (sk, pk) = ec.generate(rng)?;
+    let mut ec_secret = super::SecretVec::new(alloc::vec![0u8; ec.secret_len()]);
+    ec.agree(sk.get(), peer, ec_secret.get_mut())?;
+    let (ct, kem_secret) = kem.encapsulate(rng, ek)?;
+    Ok((
+        ordered(kem_first, &ct, &pk),
+        super::SecretVec::new(ordered(kem_first, kem_secret.get(), ec_secret.get())),
+    ))
 }
 
 #[cfg(all(test, feature = "std"))]
