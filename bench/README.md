@@ -106,6 +106,15 @@ and resumed handshakes level with rustls (0.97×). Those runs were at 100% CPU
 load, so the tables above, which predate both changes, stay as they are until
 a run on a quiet machine.
 
+At abcc2d2 (counter mode with its own AES-NI kernel), at 75% load: raw
+AES-128-GCM seal about 5,050 MiB/s (ring 10,600–12,000), bulk TLS
+1,610–1,675 MiB/s (0.40–0.44× rustls), resumed handshakes level with rustls
+(1.00–1.02×), full handshakes 0.63–0.76×. With the cipher this fast, bulk
+reaches only about 65% of its seal+open ceiling, so the record layer's own
+costs now show: the receive path copies each record twice more than it
+needs to (out of the input buffer, and into the application queue), and
+scans it for padding.
+
 Since `REQ-REC-007` the record layer scans each whole record for padding in
 constant time: about 0.8 µs per 16 KiB record, around 5% of bulk throughput.
 
