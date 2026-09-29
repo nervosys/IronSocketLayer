@@ -99,6 +99,11 @@ in-memory tests are backed by handshakes with independent implementations:
   both ways (`s_server -psk -nocert`, `s_client -psk`); and 0-RTT both ways
   (`s_server -early_data` answers a request IronSocketLayer sent only as early
   data, and `s_client -early_data` reports its early data accepted).
+* **CNSA 2.0 with OpenSSL 3.5** (`tests/openssl_cnsa2.rs`), both ways:
+  `profile:cnsa-2` with the FIPS gate on, against an OpenSSL restricted to
+  MLKEM1024, TLS_AES_256_GCM_SHA384 and mldsa87. The client verifies an
+  OpenSSL-generated ML-DSA-87 certificate, and OpenSSL verifies an
+  all-ML-DSA-87 chain IronSocketLayer issued.
 * **Published vectors**: RFC 9001 Appendix A (Initial secrets, packet key and
   IV, header protection for AES and ChaCha20), RFC 9180 Appendix A.1.1 (HPKE)
   and the RFC 8446 HelloRetryRequest constant.
@@ -115,6 +120,7 @@ Both interop suites are `#[ignore]`d by default because they need the network or
 ```console
 $ cargo test -p iron-socket-layer --test interop -- --ignored
 $ cargo test -p iron-socket-layer --test openssl_interop -- --ignored --test-threads=1
+$ cargo test -p iron-socket-layer --test openssl_cnsa2 -- --ignored
 ```
 
 ## Using it

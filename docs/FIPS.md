@@ -70,8 +70,9 @@ here calls something approved that IronCrypto does not permit.
 **`profile:cnsa-2`** is also gated: ML-KEM-1024 only, ML-DSA-87 on the
 handshake and on every certificate of the path, and TLS_AES_256_GCM_SHA384.
 All three are approved in IronCrypto's registry and self-tested at start-up.
-As with every profile here, that is conformance to an algorithm set, not a
-validation.
+It interoperates with OpenSSL 3.5 restricted to the same three parameters,
+in both directions (`tests/openssl_cnsa2.rs`). As with every profile here,
+that is conformance to an algorithm set, not a validation.
 
 **X25519MLKEM768.** Because its ML-KEM secret comes first in the
 concatenation, SP 800-56C rev. 2 can be read to permit it in approved mode with

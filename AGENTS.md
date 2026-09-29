@@ -99,6 +99,7 @@ $ cargo test --workspace
 $ cargo clippy --workspace --all-targets
 $ cargo build -p iron-socket-layer --no-default-features --target thumbv7em-none-eabihf
 $ cargo test -p iron-socket-layer --test openssl_interop -- --ignored --test-threads=1   # if openssl >= 3.5 is present
+$ cargo test -p iron-socket-layer --test openssl_cnsa2 -- --ignored                       # likewise
 ```
 
 If you changed a parser or the state machine, fuzz it too (see
