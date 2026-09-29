@@ -463,6 +463,15 @@ fn row(name: &str, unit: &str, s: &Stats) {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("bulk") {
+        // IronSocketLayer bulk only, many runs: for A/B comparisons of the
+        // record layer, where the full comparison is too noisy.
+        let m = material();
+        let (cc, sc) = isl_configs(&m, NamedGroup::X25519);
+        let s = measure(15, || isl_bulk_mib_per_sec(&cc, &sc, 64 * 1024 * 1024));
+        row("bulk AES-128-GCM, 16 KiB records     [isl]", "MiB/s", &s);
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("parts") {
         return parts();
     }

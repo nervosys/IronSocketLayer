@@ -794,6 +794,9 @@ impl Connection {
 
     fn process_records(&mut self) -> Result<()> {
         loop {
+            if self.open_in_place()? {
+                continue;
+            }
             let rec = match &mut self.core.transport {
                 Transport::Tls { incoming, .. } => match record::take_record(incoming)? {
                     Some(r) => r,
@@ -882,50 +885,107 @@ impl Connection {
                 }
                 Transport::Quic { .. } => return Ok(()),
             };
-            match inner_ty {
-                ContentType::Handshake => {
-                    if content.is_empty() {
-                        return Err(Error::new(
-                            ErrorKind::UnexpectedMessage,
-                            "zero-length handshake fragment",
-                        ));
-                    }
-                    self.core.hs_buf.extend_from_slice(&content);
-                    self.process_handshake()?;
-                }
-                ContentType::Alert => self.core.on_alert(&content)?,
-                ContentType::ApplicationData if self.core.early_budget.is_some() => {
-                    // Accepted 0-RTT data, within max_early_data. REQ-0RTT-003.
-                    let left = self.core.early_budget.unwrap_or(0);
-                    if content.len() > left {
-                        return Err(Error::new(
-                            ErrorKind::UnexpectedMessage,
-                            "0-RTT data exceeds max_early_data_size",
-                        ));
-                    }
-                    self.core.early_budget = Some(left - content.len());
-                    self.core.report.bytes_received += content.len() as u64;
-                    self.core.app_in.extend(content.iter());
-                }
-                ContentType::ApplicationData => {
-                    // REQ-CONN-003.
-                    if self.core.state != HandshakeState::Connected {
-                        return Err(Error::new(
-                            ErrorKind::UnexpectedMessage,
-                            "application data during the handshake",
-                        ));
-                    }
-                    self.core.report.bytes_received += content.len() as u64;
-                    self.core.app_in.extend(content.iter());
-                }
-                _ => {
+            self.deliver(inner_ty, &content)?;
+        }
+    }
+
+    /// Hand a record's decrypted content to where its type goes.
+    fn deliver(&mut self, inner_ty: ContentType, content: &[u8]) -> Result<()> {
+        match inner_ty {
+            ContentType::Handshake => {
+                if content.is_empty() {
                     return Err(Error::new(
                         ErrorKind::UnexpectedMessage,
-                        "unexpected inner content type",
-                    ))
+                        "zero-length handshake fragment",
+                    ));
                 }
+                self.core.hs_buf.extend_from_slice(content);
+                self.process_handshake()?;
+            }
+            ContentType::Alert => self.core.on_alert(content)?,
+            ContentType::ApplicationData if self.core.early_budget.is_some() => {
+                // Accepted 0-RTT data, within max_early_data. REQ-0RTT-003.
+                let left = self.core.early_budget.unwrap_or(0);
+                if content.len() > left {
+                    return Err(Error::new(
+                        ErrorKind::UnexpectedMessage,
+                        "0-RTT data exceeds max_early_data_size",
+                    ));
+                }
+                self.core.early_budget = Some(left - content.len());
+                self.core.report.bytes_received += content.len() as u64;
+                self.core.app_in.extend(content.iter());
+            }
+            ContentType::ApplicationData => {
+                // REQ-CONN-003.
+                if self.core.state != HandshakeState::Connected {
+                    return Err(Error::new(
+                        ErrorKind::UnexpectedMessage,
+                        "application data during the handshake",
+                    ));
+                }
+                self.core.report.bytes_received += content.len() as u64;
+                self.core.app_in.extend(content.iter());
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::UnexpectedMessage,
+                    "unexpected inner content type",
+                ))
             }
         }
+        Ok(())
+    }
+
+    /// The bulk path: open the next record in place in the input buffer.
+    ///
+    /// It applies only when nothing unusual is in play: keys installed, the
+    /// handshake over, no 0-RTT accounting, the peer not closed, and a
+    /// protected record within the negotiated size. Application data then goes
+    /// straight to the receive queue without the copy `take_record` makes;
+    /// other content (KeyUpdate, NewSessionTicket, alerts) is copied out and
+    /// delivered as usual. Returns whether it consumed a record. `false` leaves
+    /// the record to the general path, which applies every check.
+    fn open_in_place(&mut self) -> Result<bool> {
+        let core = &mut self.core;
+        if core.peer_closed
+            || core.state != HandshakeState::Connected
+            || core.early_budget.is_some()
+            || core.skip_early_budget != 0
+        {
+            return Ok(false);
+        }
+        let Transport::Tls {
+            incoming,
+            read: Some(p),
+            ..
+        } = &mut core.transport
+        else {
+            return Ok(false);
+        };
+        let Some((header, len)) = record::peek_record(incoming)? else {
+            return Ok(false);
+        };
+        if header[0] != ContentType::ApplicationData.to_wire()
+            || core
+                .local_record_limit
+                .is_some_and(|l| len.saturating_sub(crate::crypto::TAG_LEN) > l)
+        {
+            return Ok(false);
+        }
+        let end = record::HEADER_LEN + len;
+        let (inner, n) = p.open(&header, &mut incoming[record::HEADER_LEN..end])?;
+        let content = &incoming[record::HEADER_LEN..record::HEADER_LEN + n];
+        if inner == ContentType::ApplicationData {
+            core.report.bytes_received += n as u64;
+            core.app_in.extend(content.iter());
+            incoming.drain(..end);
+            return Ok(true);
+        }
+        let content = content.to_vec();
+        incoming.drain(..end);
+        self.deliver(inner, &content)?;
+        Ok(true)
     }
 
     pub(crate) fn process_handshake(&mut self) -> Result<()> {
@@ -1246,6 +1306,47 @@ mod tests {
         s.read_tls(&c.take_tls()).unwrap();
         assert_eq!(c.state(), HandshakeState::Connected);
         (c, s)
+    }
+
+    /// Records opened in place and records taken the general way must agree:
+    /// a stream of application data of every size, with a KeyUpdate in the
+    /// middle and close_notify at the end, arrives intact however the bytes
+    /// are split across reads.
+    #[test]
+    fn records_split_anywhere_arrive_intact() {
+        for piece in [1usize, 5, 6, 997, 16_389, usize::MAX] {
+            let (mut c, mut s) = pair();
+            let mut sent = Vec::new();
+            for (i, len) in [0usize, 1, 100, 16_384, 16_385, 40_000, 3]
+                .iter()
+                .enumerate()
+            {
+                let data: Vec<u8> = (0..*len).map(|j| (i * 31 + j) as u8).collect();
+                c.send(&data).unwrap();
+                sent.extend_from_slice(&data);
+                if i == 3 {
+                    c.key_update(true).unwrap();
+                }
+            }
+            c.close();
+            let wire = c.take_tls();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            for chunk in wire.chunks(piece.min(wire.len())) {
+                s.read_tls(chunk).unwrap();
+                loop {
+                    let n = s.recv(&mut buf);
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                }
+            }
+            assert_eq!(got, sent, "pieces of {piece}");
+            assert!(s.peer_closed(), "pieces of {piece}");
+            assert_eq!(s.report().key_updates_received, 1);
+            assert_eq!(s.report().bytes_received, sent.len() as u64);
+        }
     }
 
     /// `recv` copies from both halves of the receive ring: odd-sized reads

@@ -135,6 +135,9 @@ impl Protector {
         let inner_len = content.len() + 1 + pad;
         let body_len = inner_len + TAG_LEN;
         let nonce = self.next_nonce()?;
+        // One allocation for the whole record: growing piecemeal would copy
+        // the content again when the tag no longer fits.
+        out.reserve(HEADER_LEN + body_len);
         let start = out.len();
         out.push(ContentType::ApplicationData.to_wire());
         out.extend_from_slice(&[0x03, 0x03]);
@@ -310,8 +313,9 @@ fn content_end(inner: &[u8]) -> usize {
     ct::select_u32(found, last_base.wrapping_add(pos).wrapping_add(1), 0) as usize
 }
 
-/// Take one complete record off the front of `buf`, if present. `REQ-REC-004`.
-pub fn take_record(buf: &mut Vec<u8>) -> Result<Option<RawRecord>> {
+/// Validate the record header at the front of `buf` and return it with the
+/// body length, if the whole record is present. `REQ-REC-004`.
+pub(crate) fn peek_record(buf: &[u8]) -> Result<Option<([u8; HEADER_LEN], usize)>> {
     if buf.len() < HEADER_LEN {
         return Ok(None);
     }
@@ -341,6 +345,14 @@ pub fn take_record(buf: &mut Vec<u8>) -> Result<Option<RawRecord>> {
     }
     let mut header = [0u8; HEADER_LEN];
     header.copy_from_slice(&buf[..HEADER_LEN]);
+    Ok(Some((header, len)))
+}
+
+/// Take one complete record off the front of `buf`, if present. `REQ-REC-004`.
+pub fn take_record(buf: &mut Vec<u8>) -> Result<Option<RawRecord>> {
+    let Some((header, len)) = peek_record(buf)? else {
+        return Ok(None);
+    };
     let body = buf[HEADER_LEN..HEADER_LEN + len].to_vec();
     buf.drain(..HEADER_LEN + len);
     Ok(Some(RawRecord { header, body }))
