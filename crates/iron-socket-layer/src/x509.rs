@@ -2780,6 +2780,95 @@ mod chain_tests {
         );
     }
 
+    /// REQ-X509-002: a graph built to be expensive exhausts the search
+    /// budget and fails, rather than running on. Twelve CAs share a name and
+    /// a key, so key identifiers cannot prune them: each validly issues the
+    /// leaf and every other, and none reaches an anchor.
+    #[test]
+    fn an_adversarial_graph_exhausts_the_search_budget() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let mut r = rng();
+        let hub_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let hub = self_signed(&params("Hub", &[], true), &hub_key, &mut r).unwrap();
+        let hubs: Vec<Vec<u8>> = (1..=12u8)
+            .map(|i| {
+                let params = CertificateParams {
+                    serial: [i; 16],
+                    ..params("Hub", &[], true)
+                };
+                issue(&params, hub_key.spki(), &hub, &hub_key, &mut r).unwrap()
+            })
+            .collect();
+        let lk = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let leaf = issue(
+            &params("l", &["l.example.com"], false),
+            lk.spki(),
+            &hub,
+            &hub_key,
+            &mut r,
+        )
+        .unwrap();
+        let ints: Vec<&[u8]> = hubs.iter().map(|h| &h[..]).collect();
+        let e = verify_chain(&leaf, &ints, &p.roots, &opts()).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::UnknownCa, "{e}");
+        assert!(
+            e.to_string().contains("path search budget exhausted"),
+            "{e}"
+        );
+    }
+
+    /// REQ-X509-008: name constraints on a trust anchor bind the whole path.
+    #[test]
+    fn a_trust_anchor_can_constrain_names() {
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let mut base = Vec::new();
+        push_tlv(&mut base, T_GN_DNS, b"example.com");
+        let mut subtree = Vec::new();
+        push_tlv(&mut subtree, T_SEQUENCE, &base);
+        let mut body = Vec::new();
+        push_tlv(&mut body, T_CTX0, &subtree);
+        let mut nc = Vec::new();
+        push_tlv(&mut nc, T_SEQUENCE, &body);
+        let mut ext = Vec::new();
+        push_ext(&mut ext, OID_EXT_NC, true, &nc);
+        let root = build(
+            &params("Constrained Root", &[], true),
+            root_key.spki(),
+            &encode_name("Constrained Root"),
+            &key_identifier(root_key.spki()).unwrap(),
+            &root_key,
+            &mut r,
+            &[ext],
+        )
+        .unwrap();
+        let mut roots = RootStore::new();
+        roots.add_der(&root).unwrap();
+        let ik = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let int = issue(
+            &params("Int", &[], true),
+            ik.spki(),
+            &root,
+            &root_key,
+            &mut r,
+        )
+        .unwrap();
+        let leaf = |name: &str, r: &mut ic_drbg::Rng| {
+            let lk = SigningKey::generate(KeyKind::EcdsaP256, r).unwrap();
+            issue(&params("l", &[name], false), lk.spki(), &int, &ik, r).unwrap()
+        };
+        verify_chain(&leaf("a.example.com", &mut r), &[&int], &roots, &opts()).unwrap();
+        assert_eq!(
+            err(verify_chain(
+                &leaf("evil.org", &mut r),
+                &[&int],
+                &roots,
+                &opts()
+            )),
+            ErrorKind::CertificateUsage
+        );
+    }
+
     #[test]
     fn schemes_outside_the_policy_are_refused() {
         let p = pki([KeyKind::EcdsaP256; 3]);
