@@ -12,6 +12,10 @@ ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 
+# Its own workspace root: excluded from the library's workspace, and never
+# absorbed by one it happens to sit inside.
+[workspace]
+
 [profile.release]
 opt-level = 3
 lto = "fat"

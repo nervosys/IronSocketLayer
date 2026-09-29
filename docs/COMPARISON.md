@@ -10,7 +10,7 @@ No speed comparison with wolfSSL is made, because none has been measured. A
 claim about speed without a controlled measurement would be the kind of
 unchecked assertion this project refuses elsewhere. Against rustls with *ring*,
 which has been measured ([bench/](../bench/README.md)), IronSocketLayer is
-slower: about 0.7× the full-handshake rate and about 0.3× bulk throughput. The
+slower: about 0.7× the full-handshake rate and 0.5× bulk throughput, with resumption level. The
 causes are IronCrypto's P-256 and AES-GCM speed, not the protocol layer.
 wolfSSL's assembly-optimised wolfCrypt should be expected to be ahead as well.
 
@@ -38,7 +38,7 @@ wolfSSL's assembly-optimised wolfCrypt should be expected to be ahead as well.
 | **Protocol breadth** | TLS 1.2, DTLS 1.2/1.3, session resumption, 0-RTT, OCSP and CRL, ECH, many more cipher suites and extensions. | TLS 1.3 and QUIC-TLS only (TLS 1.2 excluded by design); session resumption (PSK with (EC)DHE), OCSP stapling, CRLs, record_size_limit, Encrypted Client Hello and opt-in 0-RTT (TLS over TCP and QUIC) are implemented. Staples IronSocketLayer mints use SHA-256 CertIDs, which clients that look up only by SHA-1 do not match. |
 | **Maturity** | Long deployment history, a CVE process, extensive third-party review. | New code. Interop against Cloudflare, Google, GitHub and OpenSSL 3.5 is tested, but there is no field history. |
 | **Footprint and hardware** | Tuned for very small targets, with hardware crypto acceleration across many vendors. | Not yet measured for size. Uses IronCrypto's AES-NI and CLMUL paths on x86-64 (its ARMv8 backend is not yet enabled by default); `alloc` required. |
-| **Speed** | Assembly-optimised wolfCrypt (not measured here). | Measured only against rustls/ring, and slower: IronCrypto's AES-GCM is about 6× and its P-256 3–4× slower than ring's. The record layer itself reaches about 95% of the cipher's ceiling. |
+| **Speed** | Assembly-optimised wolfCrypt (not measured here). | Measured only against rustls/ring: about 0.7× the full-handshake rate and 0.5× the bulk throughput, with resumption level. The causes are IronCrypto's P-256 (3–4× slower than ring) and AES-GCM (about 2.6×). The record layer reaches 73–87% of the cipher's ceiling. |
 | **Parameter sets** | ML-KEM-512/768/1024, ML-DSA-44/65/87. | ML-KEM-768/1024 and ML-DSA-65/87, which is enough for CNSA 2.0 (`profile:cnsa-2`). The 512 and 44 sets are not offered. |
 
 ## Choosing

@@ -15,52 +15,60 @@ $ cargo run --release
 
 ## Results
 
-AMD Ryzen 9 9900X, Windows 11, rustc 1.98.1, 2026-09-28. The machine was busy
-with other builds, so the spread is wide; read these as indicative, and compare
-runs only when they come from the same machine a few minutes apart. Each figure
-is the median of 7 runs.
+AMD Ryzen 9 9900X, Windows 11, rustc 1.98.1, 2026-09-29. IronSocketLayer
+a1194d5 (records opened in place) over IronCrypto abcc2d2 (SHA-NI for
+buffered blocks, 8-block GHASH, AES-NI counter mode). IronCrypto's later
+releases, 0.2.3 and 0.2.4, add algorithms and change neither AES-GCM nor
+P-256. The machine was never quiet: this is the cleanest of five full runs,
+each the median of 7. Compare runs only on one machine, minutes apart.
 
 | | IronSocketLayer | rustls (ring) | ratio |
 |---|---:|---:|---:|
-| Full handshake, X25519, ECDSA P-256 certificate | 2,434 hs/s | 3,406 hs/s | 0.71× |
-| Full handshake, X25519MLKEM768 | 1,475 hs/s | not offered by ring | — |
-| Resumed handshake, PSK with X25519 | 4,353 hs/s | 5,614 hs/s | 0.78× |
-| Bulk AES-128-GCM, 16 KiB records | 788 MiB/s | 2,881 MiB/s | 0.27× |
+| Full handshake, X25519, ECDSA P-256 certificate | 3,598 hs/s | 4,944 hs/s | 0.73× |
+| Full handshake, X25519MLKEM768 | 2,043 hs/s | not offered by ring | — |
+| Resumed handshake, PSK with X25519 | 7,241 hs/s | 7,250 hs/s | 1.00× |
+| Bulk AES-128-GCM, 16 KiB records | 2,120 MiB/s | 3,928 MiB/s | 0.54× |
 
 | Primitive | IronCrypto | ring |
 |---|---:|---:|
-| AES-128-GCM seal, 16 KiB | 1,652 MiB/s | 10,008 MiB/s |
-| ECDSA P-256 sign | 18,519 op/s | 75,534 op/s |
-| ECDSA P-256 verify | 7,957 op/s | 23,732 op/s |
-| X25519, both ends of an exchange | 7,179 op/s | 6,107 op/s |
+| AES-128-GCM seal, 16 KiB | 5,109 MiB/s | 13,553 MiB/s |
+| ECDSA P-256 sign | 25,734 op/s | 83,036–104,221 op/s |
+| ECDSA P-256 verify | 9,960 op/s | 33,454 op/s |
+| X25519, both ends of an exchange | 11,351 op/s | 9,841 op/s |
+
+Across all five runs, two on this build and three on IronCrypto 0.2.4 at
+97% load, the ratios were: full handshakes 0.61–0.75× (and one 1.34×, where
+the rustls run was clearly disturbed), resumed 0.86–1.15×, bulk 0.43–0.54×.
+
+Where this started, before any of the changes below: full 0.71×, resumed
+0.78×, bulk 0.27×.
 
 ## What the numbers say
 
-* **Bulk throughput is bounded by the cipher, not the record layer.** Every
-  byte is sealed once and opened once, so the ceiling is half the raw seal
-  rate. IronSocketLayer reaches about 95% of IronCrypto's ceiling; rustls
-  reaches about 58% of ring's. The gap is IronCrypto's AES-GCM, which is
-  about 6× slower than ring's assembly.
-* **Handshakes are bounded by P-256.** Of about 410 µs per full handshake,
-  about 320 µs is the ECDSA signature, its verification and X25519. IronCrypto's
-  P-256 is 3–4× slower than ring's, while its X25519 is slightly faster. The
-  remaining protocol cost is similar for the two libraries: about 90 µs here and
-  about 75 µs in rustls.
-* **Resumption has about 75 µs of overhead** beyond the X25519 exchange,
-  against about 15 µs in rustls. Counting calls shows a resumed handshake
-  performs about 56 HMAC-based operations across both ends (HKDF-Extract,
-  HKDF-Expand-Label, binders, Finished). That is what RFC 8446 requires, with
-  nothing repeated. IronCrypto takes about 0.75 µs for a short HMAC-SHA256
-  where ring takes about 0.21 µs, which accounts for 30–40 µs of the gap. Plain
-  SHA-256 matches ring on 4 KiB, so the cost is per-call HMAC setup. Ticket
-  sealing, AEAD key setup (about 2 µs each) and the per-connection DRBG (about
-  3.5 µs) are small.
-* **Hybrid post-quantum key exchange costs about 40%** of full-handshake rate
-  (2,434 → 1,475 hs/s).
+* **Resumption is level with rustls.** IronCrypto's SHA-256 had routed
+  every buffered block (including each HMAC's final padding block) through
+  the portable rounds instead of SHA-NI. It was fixed at f295fe3, and short
+  HMACs went from 0.75 µs to 0.28 µs (ring: 0.20 µs). A resumed handshake is
+  about 56 HMAC-based operations, so that was most of the gap.
+* **Bulk throughput is bounded by the cipher.** Every byte is sealed once
+  and opened once, so the ceiling is half the raw seal rate. The record layer
+  reaches 73–87% of IronCrypto's ceiling, where rustls reaches 56–77% of
+  ring's. The record layer's own gains here:
+  * `recv` copies slices instead of single bytes;
+  * protected records are opened in place, not copied first;
+  * a sealed record is allocated once.
 
-The first run of this harness found that `Connection::recv` copied one byte at
-a time. It now copies slices, which raised bulk throughput from about 430 to
-about 790 MiB/s. The benchmark is here to catch things like that.
+  It also pays about 0.8 µs per record for the constant-time padding scan
+  (`REQ-REC-007`). What remains is AES-GCM: IronCrypto seals at about
+  2.6× below ring. ring very likely uses VAES and VPCLMULQDQ on this Zen 5
+  CPU, where IronCrypto does 128 bits at a time.
+* **Full handshakes are bounded by P-256.** IronCrypto signs 3–4× and
+  verifies about 3.4× slower than ring's assembly (nistz256), while its
+  X25519 is faster than ring's. Hybrid post-quantum key exchange costs
+  about 45% of the full-handshake rate.
+
+The first run of this harness found `recv` copying one byte at a time. That
+is what it is for.
 
 ## Where the time goes
 
@@ -71,56 +79,16 @@ optimising anything.
 
 ## What would close the gap
 
-All three causes are in IronCrypto, not in this repository:
+Both remaining causes are in IronCrypto, not in this repository:
 
-| IronCrypto primitive | vs ring | Effect here |
-|---|---:|---|
-| AES-GCM (AES-NI + CLMUL paths already present) | ~6× slower | Bulk throughput |
-| ECDSA P-256 sign and verify | 3–4× slower | Full-handshake rate |
-| HMAC-SHA256 on short inputs | ~3.5× slower | Resumption and key-schedule overhead |
+| IronCrypto primitive | vs ring | Effect here | Status |
+|---|---:|---|---|
+| AES-GCM | ~2.6× slower (was ~6×) | Bulk throughput | Needs a wide-vector (VAES) backend |
+| ECDSA P-256 sign and verify | 3–4× slower | Full-handshake rate | Open; IronCrypto's P-256 code had uncommitted changes on 2026-09-29, nothing released |
+| HMAC-SHA256 on short inputs | ~1.4× (was ~3.5×) | Resumption | Fixed at f295fe3 |
 
-Changes there should be made in IronCrypto with its own tests and self-tests;
-this harness will show their effect here without any change to the library.
-
-IronCrypto's assessment (2026-09-29, not yet verified here):
-
-* **HMAC** is the most tractable. A keyed HMAC state that can be cloned after
-  the ipad/opad blocks would let HKDF-Expand stop re-keying on every call. It
-  would be an additive API, in 0.2.x.
-* **AES-GCM**: IronCrypto already aggregates GHASH four blocks at a time and
-  leads RustCrypto. On this Zen 5 CPU ring very likely uses VAES and
-  VPCLMULQDQ on 256/512-bit registers, so closing the gap means a wide-vector
-  backend in ic-cipher.
-* **P-256**: ring uses hand-written assembly (nistz256 with a large
-  precomputed table). Matching it likely needs a P-256-specific field with
-  Solinas reduction, and possibly intrinsics. This is the largest of the three.
-
-**Update:** IronCrypto fixed the HMAC cause at f295fe3 (on master, not yet
-released). SHA-256 sent blocks assembled in its internal buffer, which
-includes every final padding block, through the portable rounds instead of
-SHA-NI. After the fix this harness measures a 200-byte HMAC-SHA256 at about
-0.28 µs, against 0.20 µs for ring (previously 0.75 µs). No change was needed
-here. At adbd761 IronCrypto also reduces GHASH once per eight blocks; this
-harness then measures raw AES-128-GCM seal at about 2,630 MiB/s (was 1,650),
-and resumed handshakes level with rustls (0.97×). Those runs were at 100% CPU
-load, so the tables above, which predate both changes, stay as they are until
-a run on a quiet machine.
-
-At abcc2d2 (counter mode with its own AES-NI kernel), at 75% load: raw
-AES-128-GCM seal about 5,050 MiB/s (ring 10,600–12,000), bulk TLS
-1,610–1,675 MiB/s (0.40–0.44× rustls), resumed handshakes level with rustls
-(1.00–1.02×), full handshakes 0.63–0.76×. With the cipher this fast, bulk
-reaches only about 65% of its seal+open ceiling, so the record layer's own
-costs now show: the receive path copies each record twice more than it
-needs to (out of the input buffer, and into the application queue), and
-scans it for padding.
-
-Since `REQ-REC-007` the record layer scans each whole record for padding in
-constant time: about 0.8 µs per 16 KiB record, around 5% of bulk throughput.
-
-IronCrypto 0.2.1 (within this workspace's `>=0.1.3, <0.3` range) speeds up
-P-256 public-key derivation and ECDH over the NIST curves, but not ECDSA sign
-or verify, so the handshake figures above should not move with it.
+Changes there are made in IronCrypto with its own tests and self-tests.
+This harness shows their effect here without any change to the library.
 
 ## Not measured
 
