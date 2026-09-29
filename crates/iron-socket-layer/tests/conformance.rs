@@ -254,3 +254,72 @@ fn the_client_refuses_non_conforming_retries() {
     sh.suite = Some(other);
     refused(answer(&mut c, &sh), "suite changed after HelloRetryRequest");
 }
+
+/// REQ-ECH-001: the server refuses outer hellos that misuse ECH: the inner
+/// marker in an outer hello and, after a retry, a second hello that drops ECH
+/// or brings a new encapsulated key (which must be empty the second time).
+#[test]
+fn the_server_refuses_misused_ech() {
+    use iron_socket_layer::ech::EchServer;
+    use iron_socket_layer::msgs::EchHello;
+    const REAL: &str = "secret-backend.test";
+    const PUBLIC: &str = "public.test";
+    let pki = Pki::new(KeyKind::EcdsaP256, REAL);
+    let ech = Arc::new(
+        EchServer::generate(3, PUBLIC, 64, &mut ic_drbg::Rng::from_os().unwrap()).unwrap(),
+    );
+    let mut sc = iron_socket_layer::config::ServerConfig::new(
+        Profile::Default,
+        pki.identity_for(&[REAL, PUBLIC]),
+    )
+    .unwrap();
+    sc.ech = Some(ech.clone());
+    sc.common.groups = vec![NamedGroup::Secp384r1];
+    let sc = Arc::new(sc);
+    let mut cc = pki.client_config(Profile::Default);
+    cc.ech_configs = Some(ech.config_list().to_vec());
+    cc.common.groups = vec![NamedGroup::X25519, NamedGroup::Secp384r1];
+    cc.initial_key_shares = 1;
+    let cc = Arc::new(cc);
+
+    // The inner marker in the outer hello.
+    let mut c = Connection::client(cc.clone(), REAL).unwrap();
+    let (_, body) = first_message(&c.take_tls());
+    let mut ch = ClientHello::decode(&body).unwrap();
+    ch.ech = Some(EchHello::Inner);
+    let mut s = Connection::server(sc.clone()).unwrap();
+    refused(
+        s.read_tls(&record_of(
+            HandshakeType::ClientHello,
+            &ch.encode().unwrap(),
+        )),
+        "inner ECH marker in an outer ClientHello",
+    );
+
+    // After a retry: the second outer hello, changed.
+    let second = |edit: fn(&mut ClientHello)| {
+        let mut c = Connection::client(cc.clone(), REAL).unwrap();
+        let mut s = Connection::server(sc.clone()).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        c.read_tls(&s.take_tls()).unwrap();
+        let flight = c.take_tls();
+        let at = if flight[0] == 20 { 6 } else { 0 };
+        let (ty, body) = first_message(&flight[at..]);
+        assert_eq!(ty, HandshakeType::ClientHello);
+        let mut ch = ClientHello::decode(&body).unwrap();
+        edit(&mut ch);
+        s.read_tls(&record_of(
+            HandshakeType::ClientHello,
+            &ch.encode().unwrap(),
+        ))
+    };
+    refused(second(|ch| ch.ech = None), "second ClientHello dropped ECH");
+    refused(
+        second(|ch| {
+            if let Some(EchHello::Outer { enc, .. }) = &mut ch.ech {
+                *enc = vec![7; 32];
+            }
+        }),
+        "second ECH hello with a new enc",
+    );
+}
