@@ -1361,7 +1361,7 @@ fn ip_within(ip: &[u8], constraint: &[u8]) -> bool {
         .all(|((i, a), m)| i & m == a & m)
 }
 
-/// Apply one `NameConstraints` body to the names of `subjects`.
+/// Apply one `NameConstraints` body to the names of `subjects`. `REQ-X509-008`.
 fn apply_name_constraints(nc: &[u8], subjects: &[&Certificate<'_>]) -> Result<()> {
     let violation = || Error::new(ErrorKind::CertificateUsage, "name constraints violated");
     let unsupported = || {
@@ -2585,6 +2585,121 @@ mod chain_tests {
         assert_eq!(
             err(verify_chain(&leaf, &[&int3, &p.int], &p.roots, &opts())),
             ErrorKind::UnsupportedCertificate
+        );
+    }
+
+    /// NameConstraints with `permitted` and `excluded` general subtrees
+    /// (tag, base) on a fresh intermediate under the fixture's.
+    fn constrained(
+        p: &Pki,
+        permitted: &[(u8, &[u8])],
+        excluded: &[(u8, &[u8])],
+    ) -> (Vec<u8>, SigningKey) {
+        let subtrees = |list: &[(u8, &[u8])]| {
+            let mut out = Vec::new();
+            for (tag, base) in list {
+                let mut gn = Vec::new();
+                push_tlv(&mut gn, *tag, base);
+                push_tlv(&mut out, T_SEQUENCE, &gn);
+            }
+            out
+        };
+        let mut body = Vec::new();
+        if !permitted.is_empty() {
+            push_tlv(&mut body, T_CTX0, &subtrees(permitted));
+        }
+        if !excluded.is_empty() {
+            push_tlv(&mut body, T_CTX1, &subtrees(excluded));
+        }
+        let mut nc = Vec::new();
+        push_tlv(&mut nc, T_SEQUENCE, &body);
+        let mut ext = Vec::new();
+        push_ext(&mut ext, OID_EXT_NC, true, &nc);
+        with_extra(ext, &p.int, &p.int_key, true)
+    }
+
+    /// Verify a leaf with these names under `(int, key)` and the fixture's
+    /// intermediate; `Err(kind)` if refused.
+    fn under(
+        p: &Pki,
+        ca: &(Vec<u8>, SigningKey),
+        dns: &[&str],
+        ips: &[&str],
+    ) -> core::result::Result<(), ErrorKind> {
+        let mut r = rng();
+        let lk = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let ips: Vec<IpAddr> = ips.iter().map(|s| IpAddr::parse(s).unwrap()).collect();
+        let params = CertificateParams {
+            ip_addresses: &ips,
+            ..params("leaf", dns, false)
+        };
+        let leaf = issue(&params, lk.spki(), &ca.0, &ca.1, &mut r).unwrap();
+        verify_chain(&leaf, &[&ca.0, &p.int], &p.roots, &opts())
+            .map(|_| ())
+            .map_err(|e| e.kind())
+    }
+
+    /// RFC 5280 §4.2.1.10: excluded DNS subtrees refuse the names inside them,
+    /// and a wildcard whose scope contains an excluded subtree, conservatively.
+    #[test]
+    fn excluded_dns_subtrees_are_enforced() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let ca = constrained(&p, &[], &[(T_GN_DNS, b"evil.example.com")]);
+        let v = Err(ErrorKind::CertificateUsage);
+        assert_eq!(under(&p, &ca, &["a.example.com"], &[]), Ok(()));
+        assert_eq!(under(&p, &ca, &["evil.example.com"], &[]), v);
+        assert_eq!(under(&p, &ca, &["x.evil.example.com"], &[]), v);
+        assert_eq!(
+            under(&p, &ca, &["EVIL.Example.com"], &[]),
+            v,
+            "case-insensitive"
+        );
+        assert_eq!(
+            under(&p, &ca, &["*.example.com"], &[]),
+            v,
+            "a wildcard over an excluded subtree"
+        );
+        // A name that merely ends with the same characters is not inside it.
+        assert_eq!(under(&p, &ca, &["notevil.example.com"], &[]), Ok(()));
+        // One excluded name among several SANs is enough.
+        assert_eq!(
+            under(&p, &ca, &["a.example.com", "evil.example.com"], &[]),
+            v
+        );
+    }
+
+    /// IP subtrees are address and mask; they apply to addresses of their own
+    /// family only.
+    #[test]
+    fn ip_name_constraints_are_enforced() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let v = Err(ErrorKind::CertificateUsage);
+        // Permitted 10.0.0.0/8, excluded 10.9.0.0/16.
+        let ca = constrained(
+            &p,
+            &[(T_GN_IP, &[10, 0, 0, 0, 255, 0, 0, 0])],
+            &[(T_GN_IP, &[10, 9, 0, 0, 255, 255, 0, 0])],
+        );
+        assert_eq!(under(&p, &ca, &["a.example.com"], &["10.1.2.3"]), Ok(()));
+        assert_eq!(under(&p, &ca, &["a.example.com"], &["192.0.2.1"]), v);
+        assert_eq!(under(&p, &ca, &["a.example.com"], &["10.9.1.1"]), v);
+        // IPv4 constraints say nothing about an IPv6 address.
+        assert_eq!(under(&p, &ca, &["a.example.com"], &["2001:db8::1"]), Ok(()));
+        // An IPv6 permitted subtree: 2001:db8::/32.
+        let mut v6 = [0u8; 32];
+        v6[..4].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8]);
+        v6[16..20].copy_from_slice(&[0xff; 4]);
+        let ca6 = constrained(&p, &[(T_GN_IP, &v6)], &[]);
+        assert_eq!(
+            under(&p, &ca6, &["a.example.com"], &["2001:db8:1::5"]),
+            Ok(())
+        );
+        assert_eq!(under(&p, &ca6, &["a.example.com"], &["2001:db9::5"]), v);
+        // A malformed IP subtree (neither 8 nor 32 bytes) fails closed.
+        let bad = constrained(&p, &[(T_GN_IP, &[10, 0, 0, 0])], &[]);
+        assert_eq!(
+            under(&p, &bad, &["a.example.com"], &["10.1.2.3"]),
+            Err(ErrorKind::UnsupportedCertificate)
         );
     }
 
