@@ -2703,6 +2703,83 @@ mod chain_tests {
         );
     }
 
+    /// An RSASSA-PSS AlgorithmIdentifier body with the given parameters.
+    fn pss_alg(hash: &[u8], mgf: &[u8], mgf_hash: &[u8], salt: u8, trailer: Option<u8>) -> Vec<u8> {
+        let mut halg = Vec::new();
+        push_tlv(&mut halg, T_OID, hash);
+        push_tlv(&mut halg, T_NULL, &[]);
+        let mut hseq = Vec::new();
+        push_tlv(&mut hseq, T_SEQUENCE, &halg);
+        let mut params = Vec::new();
+        push_tlv(&mut params, T_CTX0, &hseq);
+        let mut mhalg = Vec::new();
+        push_tlv(&mut mhalg, T_OID, mgf_hash);
+        push_tlv(&mut mhalg, T_NULL, &[]);
+        let mut mgfb = Vec::new();
+        push_tlv(&mut mgfb, T_OID, mgf);
+        push_tlv(&mut mgfb, T_SEQUENCE, &mhalg);
+        let mut mseq = Vec::new();
+        push_tlv(&mut mseq, T_SEQUENCE, &mgfb);
+        push_tlv(&mut params, T_CTX1, &mseq);
+        let mut sint = Vec::new();
+        push_tlv(&mut sint, T_INTEGER, &[salt]);
+        push_tlv(&mut params, T_CTX2, &sint);
+        if let Some(t) = trailer {
+            let mut ti = Vec::new();
+            push_tlv(&mut ti, T_INTEGER, &[t]);
+            push_tlv(&mut params, T_CTX3, &ti);
+        }
+        let mut body = Vec::new();
+        push_tlv(&mut body, T_OID, OID_RSA_PSS);
+        push_tlv(&mut body, T_SEQUENCE, &params);
+        body
+    }
+
+    /// REQ-X509-005: RSA-PSS certificate signatures are accepted only with the
+    /// RFC 8446 parameters: MGF1 over the message hash, a salt as long as that
+    /// hash, and trailer field 1. Anything else is refused rather than
+    /// verified under altered parameters.
+    #[test]
+    fn rsa_pss_parameters_must_be_the_standard_ones() {
+        let sha1: &[u8] = &[0x2b, 0x0e, 0x03, 0x02, 0x1a];
+        assert_eq!(
+            scheme_from_alg(&pss_alg(OID_SHA256, OID_MGF1, OID_SHA256, 32, None)).unwrap(),
+            SignatureScheme::RsaPssRsaeSha256
+        );
+        assert_eq!(
+            scheme_from_alg(&pss_alg(OID_SHA384, OID_MGF1, OID_SHA384, 48, Some(1))).unwrap(),
+            SignatureScheme::RsaPssRsaeSha384
+        );
+        let refused = |alg: Vec<u8>| scheme_from_alg(&alg).unwrap_err().kind();
+        let u = ErrorKind::UnsupportedCertificate;
+        assert_eq!(
+            refused(pss_alg(OID_SHA256, OID_SHA256, OID_SHA256, 32, None)),
+            u,
+            "not MGF1"
+        );
+        assert_eq!(
+            refused(pss_alg(OID_SHA256, OID_MGF1, OID_SHA384, 32, None)),
+            u,
+            "MGF1 hash differs"
+        );
+        assert_eq!(
+            refused(pss_alg(OID_SHA256, OID_MGF1, OID_SHA256, 20, None)),
+            u,
+            "salt length"
+        );
+        assert_eq!(refused(pss_alg(sha1, OID_MGF1, sha1, 20, None)), u, "SHA-1");
+        let e =
+            scheme_from_alg(&pss_alg(OID_SHA256, OID_MGF1, OID_SHA256, 32, Some(2))).unwrap_err();
+        assert!(e.to_string().contains("PSS trailer field"), "{e}");
+        // Our own encoder writes exactly the accepted form.
+        let ours = alg_id(SignatureScheme::RsaPssRsaeSha512).unwrap();
+        let body = Der::new(&ours).expect(T_SEQUENCE).unwrap();
+        assert_eq!(
+            scheme_from_alg(body).unwrap(),
+            SignatureScheme::RsaPssRsaeSha512
+        );
+    }
+
     #[test]
     fn schemes_outside_the_policy_are_refused() {
         let p = pki([KeyKind::EcdsaP256; 3]);
