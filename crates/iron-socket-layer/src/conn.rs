@@ -1685,6 +1685,63 @@ mod tests {
         );
     }
 
+    /// REQ-PHA-002: after a post-handshake request, the server refuses a
+    /// client Certificate whose context answers some other request, or no
+    /// request (the empty context of a handshake Certificate).
+    #[test]
+    fn the_server_refuses_step_up_answers_that_do_not_match() {
+        use crate::config::{ClientAuth, PeerVerification};
+        use crate::msgs::CertificateMsg;
+        let (cc, sc) = configs();
+        let roots = match &cc.verification {
+            PeerVerification::Roots(r) => r.clone(),
+            _ => unreachable!(),
+        };
+        let leaf = sc.identities[0].chain[0].clone();
+        let mut ccfg = (*cc).clone();
+        ccfg.post_handshake_auth = true;
+        ccfg.identity = Some(sc.identities[0].clone());
+        let scfg = (*sc)
+            .clone()
+            .with_client_auth(ClientAuth::OnDemand(PeerVerification::Roots(roots)));
+        let (ccfg, scfg) = (Arc::new(ccfg), Arc::new(scfg));
+        let asked = || {
+            let mut c = Connection::client(ccfg.clone(), "s.test").unwrap();
+            let mut s = Connection::server(scfg.clone()).unwrap();
+            for _ in 0..4 {
+                s.read_tls(&c.take_tls()).unwrap();
+                c.read_tls(&s.take_tls()).unwrap();
+            }
+            s.read_tls(&c.take_tls()).unwrap();
+            assert_eq!(s.state(), HandshakeState::Connected);
+            s.request_client_auth().unwrap();
+            let _request = s.take_tls();
+            s
+        };
+        let answer = |s: &mut Connection, context: Vec<u8>, chain: Vec<Vec<u8>>| {
+            let body = CertificateMsg {
+                context,
+                chain,
+                ocsp: None,
+            }
+            .encode()
+            .unwrap();
+            let m = msgs::frame(HandshakeType::Certificate, &body).unwrap();
+            s.core.hs_buf.extend_from_slice(&m);
+            s.process_handshake()
+        };
+        let mut s = asked();
+        refuses(
+            answer(&mut s, alloc::vec![0xee; 8], alloc::vec![leaf.clone()]),
+            "certificate_request_context does not match",
+        );
+        let mut s = asked();
+        refuses(
+            answer(&mut s, alloc::vec![], alloc::vec![leaf]),
+            "certificate_request_context does not match",
+        );
+    }
+
     /// A pinned key still needs a certificate inside its validity period:
     /// pinning replaces the path, not the dates.
     #[test]

@@ -323,3 +323,28 @@ fn the_server_refuses_misused_ech() {
         "second ECH hello with a new enc",
     );
 }
+
+/// RFC 8446 §4.2.9: a ClientHello offering a PSK must carry
+/// psk_key_exchange_modes. REQ-PSK-001.
+#[test]
+fn a_psk_offer_without_key_exchange_modes_is_refused() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let cc = Arc::new(pki.client_config(Profile::Default));
+    let sc = Arc::new(pki.server_config(Profile::Default));
+    // A first connection leaves a ticket in the client's store.
+    let (mut c, mut s) = connect(cc.clone(), sc.clone(), "server.test").unwrap();
+    exchange(&mut c, &mut s);
+    let mut c = Connection::client(cc, "server.test").unwrap();
+    let (_, body) = first_message(&c.take_tls());
+    let mut ch = ClientHello::decode(&body).unwrap();
+    assert!(ch.psk.is_some(), "the second hello offers the ticket");
+    ch.psk_modes.clear();
+    let mut s = Connection::server(sc).unwrap();
+    refused(
+        s.read_tls(&record_of(
+            HandshakeType::ClientHello,
+            &ch.encode().unwrap(),
+        )),
+        "pre_shared_key without psk_key_exchange_modes",
+    );
+}
