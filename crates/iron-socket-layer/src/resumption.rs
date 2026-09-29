@@ -122,10 +122,16 @@ pub trait ReplayGuard: Send + Sync + core::fmt::Debug {
 }
 
 /// An in-memory [`ReplayGuard`]. When full it refuses rather than forgets.
+///
+/// A hash map (std's randomly keyed SipHash, so a peer cannot choose keys
+/// that collide), so recording a ClientHello costs the same however many are
+/// held: the guard is on the path of every 0-RTT attempt, and a list scanned
+/// on each would let a flood of them make every one slower. Expired entries
+/// are dropped when the map fills.
 #[cfg(feature = "std")]
 #[derive(Debug, Default)]
 pub struct MemoryReplayGuard {
-    seen: std::sync::Mutex<Vec<([u8; 32], u64)>>,
+    seen: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
 }
 
 #[cfg(feature = "std")]
@@ -137,15 +143,29 @@ impl MemoryReplayGuard {
 #[cfg(feature = "std")]
 impl ReplayGuard for MemoryReplayGuard {
     fn insert_fresh(&self, key: [u8; 32], now: u64, expires: u64) -> bool {
+        use std::collections::hash_map::Entry;
         let Ok(mut seen) = self.seen.lock() else {
             return false;
         };
-        seen.retain(|(_, e)| *e > now);
-        if seen.iter().any(|(k, _)| ic_core::ct::verify(k, &key)) || seen.len() >= Self::CAPACITY {
-            return false;
+        if seen.len() >= Self::CAPACITY {
+            seen.retain(|_, e| *e > now);
         }
-        seen.push((key, expires));
-        true
+        let full = seen.len() >= Self::CAPACITY;
+        match seen.entry(key) {
+            // Still remembered: a replay.
+            Entry::Occupied(e) if *e.get() > now => false,
+            // Remembered once but expired: record it afresh.
+            Entry::Occupied(mut e) => {
+                e.insert(expires);
+                true
+            }
+            // New, and room for it; when full, refuse rather than forget.
+            Entry::Vacant(e) if !full => {
+                e.insert(expires);
+                true
+            }
+            Entry::Vacant(_) => false,
+        }
     }
 }
 
@@ -528,6 +548,36 @@ mod tests {
         assert!(store.take("s1.test", 1000).is_some());
         let last = alloc::format!("s{}.test", MemoryTicketStore::CAPACITY);
         assert!(store.take(&last, 1000).is_some());
+    }
+
+    /// REQ-0RTT-002: the guard refuses a replay while it is remembered,
+    /// forgets it after it expires, and when full refuses new first flights
+    /// rather than forgetting old ones.
+    #[test]
+    fn the_replay_guard_refuses_replays_and_fails_closed_when_full() {
+        let g = MemoryReplayGuard::default();
+        let key = |i: u32| {
+            let mut k = [0u8; 32];
+            k[..4].copy_from_slice(&i.to_be_bytes());
+            k
+        };
+        assert!(g.insert_fresh(key(0), 100, 200));
+        assert!(!g.insert_fresh(key(0), 150, 250), "replay accepted");
+        assert!(
+            g.insert_fresh(key(0), 200, 300),
+            "expired entry still refused"
+        );
+        for i in 1..MemoryReplayGuard::CAPACITY as u32 {
+            assert!(g.insert_fresh(key(i), 200, 300));
+        }
+        // Full of live entries: a new one is refused, and nothing is forgotten.
+        assert!(
+            !g.insert_fresh(key(u32::MAX), 250, 350),
+            "accepted when full"
+        );
+        assert!(!g.insert_fresh(key(1), 250, 350), "forgot a live entry");
+        // Once they expire, room returns.
+        assert!(g.insert_fresh(key(u32::MAX), 300, 400));
     }
 
     /// REQ-PSK-006: a ticket sealed in another state format does not decode,
