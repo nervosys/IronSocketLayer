@@ -1314,6 +1314,7 @@ fn check_issuer(cert: &Certificate<'_>, below: usize, opts: &VerifyOptions<'_>) 
             ))
         }
     }
+    // REQ-X509-006: an issuer's key usage must allow certificate signing.
     if let Some(ku) = cert.ext.key_usage {
         if ku & KU_KEY_CERT_SIGN == 0 {
             return Err(Error::new(
@@ -1617,6 +1618,7 @@ pub fn verify_chain(
             "unknown critical extension",
         ));
     }
+    // REQ-X509-006: the end entity is not a CA, and may sign.
     if leaf.is_ca() {
         return Err(Error::new(
             ErrorKind::CertificateUsage,
@@ -2737,5 +2739,131 @@ mod chain_tests {
             }
             Err(e) => assert_eq!(e.kind(), ErrorKind::InvalidConfig),
         }
+    }
+
+    fn msg(r: Result<ChainReport>) -> String {
+        r.unwrap_err().to_string()
+    }
+
+    /// Replace `from` with `to` (same length) inside a certificate's TBS and
+    /// sign it again with `issuer_key`, as a CA that issued it would have.
+    fn resign(cert: &[u8], issuer_key: &SigningKey, from: &[u8], to: &[u8]) -> Vec<u8> {
+        assert_eq!(from.len(), to.len());
+        let mut outer = Der::new(cert);
+        let mut s = outer.nested(T_SEQUENCE).unwrap();
+        let mut tbs = s.expect_raw(T_SEQUENCE).unwrap().to_vec();
+        let alg = s.expect_raw(T_SEQUENCE).unwrap().to_vec();
+        let at = tbs
+            .windows(from.len())
+            .position(|w| w == from)
+            .expect("pattern in TBS");
+        tbs[at..at + from.len()].copy_from_slice(to);
+        let scheme = issuer_key.schemes()[0];
+        let sig = issuer_key.sign(scheme, &tbs, &mut rng()).unwrap();
+        let mut body = tbs;
+        body.extend_from_slice(&alg);
+        let mut bits = alloc::vec![0u8];
+        bits.extend_from_slice(&sig);
+        push_tlv(&mut body, T_BIT_STRING, &bits);
+        let mut out = Vec::new();
+        push_tlv(&mut out, T_SEQUENCE, &body);
+        out
+    }
+
+    /// REQ-X509-*: key usage must permit each certificate's role. A leaf
+    /// without digitalSignature cannot sign a handshake; an issuer without
+    /// keyCertSign cannot issue, even when validly signed.
+    #[test]
+    fn key_usage_must_permit_the_role() {
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let root = self_signed(&params("Root", &[], true), &root_key, &mut r).unwrap();
+        let int_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let int = issue(
+            &params("Int", &[], true),
+            int_key.spki(),
+            &root,
+            &root_key,
+            &mut r,
+        )
+        .unwrap();
+        let leaf_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let leaf = issue(
+            &params("leaf", &["leaf.example.com"], false),
+            leaf_key.spki(),
+            &int,
+            &int_key,
+            &mut r,
+        )
+        .unwrap();
+        let mut roots = RootStore::new();
+        roots.add_der(&root).unwrap();
+        verify_chain(&leaf, &[&int], &roots, &opts()).unwrap();
+
+        // The leaf allows keyEncipherment only.
+        let leaf2 = resign(
+            &leaf,
+            &int_key,
+            &[0x03, 0x02, 0x07, 0x80],
+            &[0x03, 0x02, 0x05, 0x20],
+        );
+        assert!(msg(verify_chain(&leaf2, &[&int], &roots, &opts()))
+            .contains("leaf key usage lacks digitalSignature"));
+        // The intermediate allows digitalSignature and cRLSign, not keyCertSign.
+        let int2 = resign(
+            &int,
+            &root_key,
+            &[0x03, 0x02, 0x01, 0x86],
+            &[0x03, 0x02, 0x01, 0x82],
+        );
+        assert!(msg(verify_chain(&leaf, &[&int2], &roots, &opts()))
+            .contains("issuer key usage lacks keyCertSign"));
+    }
+
+    /// Policy limits: the path depth, the smallest RSA modulus, and a CA
+    /// certificate presented as the end entity.
+    #[test]
+    fn path_policy_limits_are_enforced() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let mut shallow = opts();
+        shallow.max_depth = 1;
+        assert!(msg(verify_chain(&p.leaf, &[&p.int], &p.roots, &shallow))
+            .contains("no trust anchor within the depth limit"));
+        assert!(msg(verify_chain(&p.int, &[], &p.roots, &opts()))
+            .contains("a CA certificate cannot be an end entity"));
+
+        let mut r = rng();
+        let rsa = SigningKey::rsa(ic_rsa::generate(2048, &mut r).unwrap()).unwrap();
+        let root = self_signed(&params("RSA Root", &[], true), &rsa, &mut r).unwrap();
+        let lk = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let leaf = issue(
+            &params("l", &["l.example.com"], false),
+            lk.spki(),
+            &root,
+            &rsa,
+            &mut r,
+        )
+        .unwrap();
+        let mut roots = RootStore::new();
+        roots.add_der(&root).unwrap();
+        verify_chain(&leaf, &[], &roots, &opts()).unwrap();
+        let mut strict = opts();
+        strict.min_rsa_bits = 3072;
+        assert!(msg(verify_chain(&leaf, &[], &roots, &strict))
+            .contains("RSA key smaller than the policy minimum"));
+    }
+
+    /// A certificate whose outer signature algorithm differs from the one in
+    /// its TBSCertificate is refused at parse time: algorithm substitution.
+    #[test]
+    fn the_two_signature_algorithms_must_agree() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        // ecdsa-with-SHA256; its last occurrence is the outer AlgorithmIdentifier.
+        let oid = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let at = p.leaf.windows(oid.len()).rposition(|w| w == oid).unwrap();
+        let mut leaf = p.leaf.clone();
+        leaf[at + oid.len() - 1] = 0x03; // ecdsa-with-SHA384
+        let e = Certificate::parse(&leaf).unwrap_err();
+        assert!(e.to_string().contains("signature algorithm differs"), "{e}");
     }
 }
