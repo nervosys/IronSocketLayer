@@ -138,7 +138,7 @@ impl PacketKey {
         TAG_LEN
     }
 
-    /// Packets one key may protect (RFC 9001 §6.6).
+    /// Packets one key may protect (RFC 9001 §6.6). `REQ-QUIC-005`.
     pub fn confidentiality_limit(&self) -> u64 {
         match self.aead.alg() {
             AeadAlg::Aes128Gcm | AeadAlg::Aes256Gcm => 1 << 23,

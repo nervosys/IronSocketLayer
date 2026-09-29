@@ -12,7 +12,7 @@
 //!
 //! Requirement trace: `REQ-SIG-001` (the scheme must match the key type),
 //! `REQ-SIG-002` (PKCS#1 v1.5 and SHA-1 never sign a handshake),
-//! `REQ-SIG-003` (private keys are zeroized).
+//! `REQ-SIG-003` (private keys are zeroized), `REQ-SIG-004` (PKCS#8 loading).
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -367,7 +367,8 @@ impl SigningKey {
     /// Load a PKCS#8 `PrivateKeyInfo` (DER).
     ///
     /// Accepts P-256, P-384, P-521, Ed25519, RSA (2048–4096 bits), and
-    /// ML-DSA-65 in the seed form of draft-ietf-lamps-dilithium-certificates.
+    /// ML-DSA-65 in the seed form of draft-ietf-lamps-dilithium-certificates,
+    /// or seed and expanded key together, which must agree. `REQ-SIG-004`.
     pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self> {
         // As for SPKI: ic_pkix errors on curves it does not name (P-521)
         // instead of reporting them unsupported, so an error falls through to

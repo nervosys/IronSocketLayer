@@ -9,7 +9,9 @@ mod common;
 use std::sync::Arc;
 
 use common::*;
-use iron_socket_layer::config::{ClientAuth, ClientConfig, PeerVerification, Profile};
+use iron_socket_layer::config::{
+    ClientAuth, ClientConfig, PeerVerification, Profile, ServerConfig,
+};
 use iron_socket_layer::crypto::sign::KeyKind;
 use iron_socket_layer::enums::{NamedGroup, SignatureScheme};
 use iron_socket_layer::report::Property;
@@ -70,17 +72,28 @@ fn the_fips_gate_refuses_then_admits_and_reports_indicators() {
     // 5. DAL-A: one suite, one group, one scheme, mutual authentication.
     let pki = Pki::with_kinds(KeyKind::EcdsaP384, KeyKind::EcdsaP384, "fcc.test");
     let client_id = pki.client_identity(KeyKind::EcdsaP384, "flight-computer-2");
+    let refused = |r: iron_socket_layer::Result<()>, expect: &str| {
+        let e = r.expect_err(expect);
+        assert_eq!(e.kind(), ErrorKind::InvalidConfig, "{e}");
+        assert!(e.to_string().contains(expect), "wanted {expect:?}, got {e}");
+    };
     let no_identity = pki.client_config(Profile::DalA);
-    assert_eq!(
-        no_identity.validate().unwrap_err().kind(),
-        ErrorKind::InvalidConfig
-    );
+    refused(no_identity.validate(), "profile requires a client identity");
     let optional = pki
         .server_config(Profile::DalA)
         .with_client_auth(ClientAuth::Optional(PeerVerification::Roots(pki.roots())));
-    assert_eq!(
-        optional.validate().unwrap_err().kind(),
-        ErrorKind::InvalidConfig
+    refused(
+        optional.validate(),
+        "profile requires mandatory client authentication",
+    );
+    // DAL-A signs with ECDSA P-384 only: a P-256 server key cannot serve it.
+    let p256 = Pki::new(KeyKind::EcdsaP256, "fcc.test");
+    let wrong_key = ServerConfig::new(Profile::DalA, p256.server_identity())
+        .unwrap()
+        .with_client_auth(ClientAuth::Required(PeerVerification::Roots(pki.roots())));
+    refused(
+        wrong_key.validate(),
+        "a server key cannot sign with any scheme the profile allows",
     );
     let cc = pki.client_config(Profile::DalA).with_identity(client_id);
     let sc = pki
