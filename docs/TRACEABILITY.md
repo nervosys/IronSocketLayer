@@ -95,7 +95,7 @@ feed the life-cycle data.
 | REQ-RSL-003 | Records sent never exceed the limit the peer negotiated. | src/conn.rs | Test | tests/handshake.rs::record_size_limits_are_honoured_in_both_directions |
 | REQ-HPKE-001 | HPKE base mode follows RFC 9180's key schedule and nonce sequence. | src/crypto/hpke.rs | Test | src/crypto/hpke.rs::base_mode_matches_rfc9180_a1_1; tests/interop.rs::encrypted_client_hello_with_cloudflare |
 | REQ-HPKE-002 | An all-zero X25519 output is refused. | src/crypto/hpke.rs | Test | src/crypto/hpke.rs::a_low_order_key_is_refused |
-| REQ-HPKE-003 | An HPKE context never reuses a nonce. | src/crypto/hpke.rs | Test | src/crypto/hpke.rs::contexts_stay_in_step_and_detect_tampering |
+| REQ-HPKE-003 | An HPKE context never reuses a nonce. | src/crypto/hpke.rs | Test | src/crypto/hpke.rs::contexts_stay_in_step_and_detect_tampering; src/crypto/hpke.rs::an_exhausted_context_refuses_rather_than_reusing_a_nonce |
 | REQ-ECH-001 | With ECH the real server name appears only inside the encrypted inner hello. | src/ech.rs | Test | tests/ech.rs::accepted_ech_hides_the_real_name; tests/ech.rs::ech_works_over_quic |
 | REQ-ECH-002 | ECH acceptance is decided by the confirmation value alone, compared in constant time. | src/ech.rs | Test | tests/ech.rs::accepted_ech_hides_the_real_name; tests/ech.rs::ech_survives_a_hello_retry_request; tests/interop.rs::encrypted_client_hello_with_cloudflare |
 | REQ-ECH-003 | On rejection the client authenticates the public name, aborts with ech_required and exposes the retry configurations. | src/ech.rs | Test | tests/ech.rs::rejected_ech_aborts_with_authenticated_retry_configs; tests/interop.rs::cloudflare_rejects_an_unknown_ech_key_and_its_retry_configs_work |

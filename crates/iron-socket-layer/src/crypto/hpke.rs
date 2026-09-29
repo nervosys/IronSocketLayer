@@ -368,12 +368,68 @@ mod tests {
         }
     }
 
-    /// REQ-HPKE-002.
+    /// REQ-HPKE-002, at both layers. IronCrypto's X25519 already refuses a
+    /// low-order point, so through the public API the refusal comes from
+    /// there ("bad enc"/"bad recipient key"); this module's own all-zero check
+    /// is defence in depth behind it, and is exercised directly below.
     #[test]
     fn a_low_order_key_is_refused() {
         let mut rng = ic_drbg::Rng::from_os().unwrap();
-        assert!(setup_sender(&[0u8; 32], b"", AEAD_AES_128_GCM, &mut rng).is_err());
+        let e = setup_sender(&[0u8; 32], b"", AEAD_AES_128_GCM, &mut rng).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::IllegalParameter, "{e}");
         let kp = KemKeyPair::generate(&mut rng).unwrap();
-        assert!(setup_receiver(&[0u8; 32], &kp, b"", AEAD_AES_128_GCM).is_err());
+        let e = setup_receiver(&[0u8; 32], &kp, b"", AEAD_AES_128_GCM).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::IllegalParameter, "{e}");
+
+        // The module's own check, on an all-zero shared secret.
+        let e = kem_shared_secret(&[0u8; 32], &[1u8; 32], &[2u8; 32]).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::IllegalParameter);
+        assert!(e.to_string().contains("all-zero X25519 output"), "{e}");
+        assert!(kem_shared_secret(&[1u8; 32], &[1u8; 32], &[2u8; 32]).is_ok());
+    }
+
+    /// Keys and encapsulations of the wrong length are refused, not
+    /// truncated or padded.
+    #[test]
+    fn wrong_lengths_are_refused() {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        for len in [0usize, 31, 33] {
+            let v = alloc::vec![9u8; len];
+            assert!(
+                KemKeyPair::from_private(&v).is_err(),
+                "private key of {len}"
+            );
+            assert!(
+                setup_sender(&v, b"", AEAD_AES_128_GCM, &mut rng).is_err(),
+                "pk of {len}"
+            );
+            let kp = KemKeyPair::generate(&mut rng).unwrap();
+            assert!(
+                setup_receiver(&v, &kp, b"", AEAD_AES_128_GCM).is_err(),
+                "enc of {len}"
+            );
+        }
+    }
+
+    /// REQ-HPKE-003: a context refuses to seal or open past the last
+    /// sequence number instead of reusing a nonce.
+    #[test]
+    fn an_exhausted_context_refuses_rather_than_reusing_a_nonce() {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let kp = KemKeyPair::generate(&mut rng).unwrap();
+        let (enc, mut tx) = setup_sender(&kp.public, b"info", AEAD_AES_128_GCM, &mut rng).unwrap();
+        let mut rx = setup_receiver(&enc, &kp, b"info", AEAD_AES_128_GCM).unwrap();
+        tx.seq = u64::MAX - 1;
+        rx.seq = u64::MAX - 1;
+        let ct = tx.seal(b"", b"last").unwrap();
+        assert_eq!(rx.open(b"", &ct).unwrap(), b"last");
+        assert_eq!(
+            tx.seal(b"", b"x").unwrap_err().kind(),
+            ErrorKind::KeyExhausted
+        );
+        assert_eq!(
+            rx.open(b"", &ct).unwrap_err().kind(),
+            ErrorKind::KeyExhausted
+        );
     }
 }
