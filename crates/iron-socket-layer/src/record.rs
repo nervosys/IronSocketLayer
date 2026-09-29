@@ -226,36 +226,88 @@ impl RawRecord {
 /// this takes depends on the record's length, which is on the wire anyway,
 /// and not on how much of it is padding, which is what padding hides.
 /// Scanning backwards and stopping early would reveal the content length to
-/// anyone who can time it.
+/// anyone who can time it. `REQ-REC-007`.
 ///
-/// It works a 64-bit word at a time: a masked select per word, with the last
-/// non-zero byte of a word found by `leading_zeros`, a single instruction whose
-/// timing does not depend on its operand. On a 16 KiB record this takes about
-/// 0.7 µs (Zen 5), about 5% of what sealing and opening that record costs; a
-/// byte-at-a-time select took 5 µs. `REQ-REC-007`.
+/// It follows IronCrypto's constant-time convention: every data-dependent
+/// decision is an `ic_core::ct::Choice` built arithmetically and released
+/// only through `black_box`, so the compiler cannot turn a mask back into a
+/// branch. `leading_zeros` is avoided, since without LZCNT (and on cores with
+/// no count-leading-zeros instruction) it need not be constant time. For
+/// speed the scan goes a 32-byte block at a time, keeping the last block with
+/// a non-zero byte, and searches inside that one block at the end: about
+/// 0.8 µs per 16 KiB record on Zen 5, where a per-byte select took 5 µs.
+///
+/// Kept out of line so that its machine code can be audited on its own:
+/// `cargo rustc -p iron-socket-layer --release -- --emit asm`, then look for
+/// `content_end`. On x86-64 the only branches are on the length (the loop,
+/// the tail copy, and the overflow check on the public block offset).
+#[inline(never)]
 fn content_end(inner: &[u8]) -> usize {
-    // All ones if `x` is non-zero, else zero, without a branch.
-    fn nonzero_mask(x: u64) -> usize {
-        ((x | x.wrapping_neg()) >> 63).wrapping_neg() as usize
+    use ic_core::ct::{self, Choice};
+
+    const LOW7: u64 = 0x7f7f_7f7f_7f7f_7f7f;
+    // Whether any byte of `v` is non-zero.
+    fn any(v: u64) -> Choice {
+        let v = v | (v >> 32);
+        let v = v | (v >> 16);
+        let v = v | (v >> 8);
+        Choice::from_u8(v as u8)
     }
-    let mut end = 0usize;
-    let mut words = inner.chunks_exact(8);
-    let mut base = 0usize;
-    for chunk in &mut words {
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(chunk);
-        let w = u64::from_le_bytes(bytes);
-        // Little-endian: the highest non-zero byte is the last one in memory.
-        let here = base + 8 - (w.leading_zeros() / 8) as usize;
-        let m = nonzero_mask(w);
-        end = (end & !m) | (here & m);
-        base += 8;
+    // The top bit of each byte set exactly when that byte is non-zero. No
+    // carry crosses a byte: (b & 0x7f) + 0x7f is at most 0xfe.
+    fn marks(w: u64) -> u64 {
+        ((w & LOW7).wrapping_add(LOW7) | w) & !LOW7
     }
-    for (i, &b) in words.remainder().iter().enumerate() {
-        let m = nonzero_mask(u64::from(b));
-        end = (end & !m) | ((base + i + 1) & m);
+
+    let mut last = [0u64; 4];
+    let mut last_base = 0u32;
+    let mut step = |block: &[u8; 32], base: u32| {
+        let mut m4 = [0u64; 4];
+        for (k, m) in m4.iter_mut().enumerate() {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(&block[8 * k..8 * k + 8]);
+            *m = marks(u64::from_le_bytes(w));
+        }
+        let m = u64::from(any(m4[0] | m4[1] | m4[2] | m4[3]).unwrap_u8()).wrapping_neg();
+        for (l, n) in last.iter_mut().zip(m4) {
+            *l ^= m & (n ^ *l);
+        }
+        last_base ^= (m as u32) & (base ^ last_base);
+    };
+    // `inner` is at most MAX_CIPHERTEXT bytes, checked by the caller, so
+    // offsets fit a u32.
+    let mut base = 0u32;
+    let mut blocks = inner.chunks_exact(32);
+    for block in &mut blocks {
+        let mut b = [0u8; 32];
+        b.copy_from_slice(block);
+        step(&b, base);
+        base += 32;
     }
-    end
+    // The tail, zero-extended: the added zeros count as padding.
+    let rest = blocks.remainder();
+    let mut b = [0u8; 32];
+    b[..rest.len()].copy_from_slice(rest);
+    step(&b, base);
+
+    // In the last non-zero block: the last non-zero word, then its highest
+    // non-zero byte, by branch-free binary search.
+    let hi = any(last[2] | last[3]);
+    let lo_pair = ct::select_u64(hi, last[2], last[0]);
+    let hi_pair = ct::select_u64(hi, last[3], last[1]);
+    // Sums of secret-derived positions use wrapping arithmetic: they are far
+    // below 2^32, and a checked add would compile to a branch on them.
+    let mut pos = ct::select_u32(hi, 16, 0);
+    let hi = any(hi_pair);
+    let mut x = ct::select_u64(hi, hi_pair, lo_pair);
+    pos = ct::select_u32(hi, pos.wrapping_add(8), pos);
+    for shift in [32u32, 16, 8] {
+        let hi = any(x >> shift);
+        pos = ct::select_u32(hi, pos.wrapping_add(shift / 8), pos);
+        x = ct::select_u64(hi, x >> shift, x);
+    }
+    let found = any(last[0] | last[1] | last[2] | last[3]);
+    ct::select_u32(found, last_base.wrapping_add(pos).wrapping_add(1), 0) as usize
 }
 
 /// Take one complete record off the front of `buf`, if present. `REQ-REC-004`.
@@ -437,16 +489,18 @@ mod tests {
             vec![vec![], vec![0], vec![1], vec![0, 0, 0], vec![0x80, 0, 0]];
         // Every short length with the padding starting at every position, and
         // a lone non-zero byte in every position: all word/remainder splits.
-        for len in 0..=25usize {
+        for len in 0..=70usize {
             for zeros_from in 0..=len {
                 let mut v: Vec<u8> = (0..len).map(|i| (i * 37 % 255 + 1) as u8).collect();
                 v[zeros_from..].fill(0);
                 cases.push(v);
-                let mut lone = vec![0u8; len];
-                if zeros_from < len {
-                    lone[zeros_from] = 0x01;
+                for value in [0x01, 0x7f, 0x80, 0xff] {
+                    let mut lone = vec![0u8; len];
+                    if zeros_from < len {
+                        lone[zeros_from] = value;
+                    }
+                    cases.push(lone);
                 }
-                cases.push(lone);
             }
         }
         for len in [1usize, 2, 15, 16, 17, 31, 32, 33, 255, 4096, 16_385] {

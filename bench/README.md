@@ -107,7 +107,7 @@ load, so the tables above, which predate both changes, stay as they are until
 a run on a quiet machine.
 
 Since `REQ-REC-007` the record layer scans each whole record for padding in
-constant time: about 0.7 µs per 16 KiB record, around 5% of bulk throughput.
+constant time: about 0.8 µs per 16 KiB record, around 5% of bulk throughput.
 
 IronCrypto 0.2.1 (within this workspace's `>=0.1.3, <0.3` range) speeds up
 P-256 public-key derivation and ECDH over the NIST curves, but not ECDSA sign
