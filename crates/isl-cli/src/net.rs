@@ -187,6 +187,15 @@ pub fn tls_probe(
         if let Some(t) = transport_error {
             map.insert("transportError".into(), Json::str(t));
         }
+        // What the peer objected to, from the ontology, so an agent need not
+        // look the alert up separately.
+        let alert_meaning = match map.get("alertReceived") {
+            Some(Json::String(id)) => isl_ontology::get(id).map(|e| e.summary),
+            _ => None,
+        };
+        if let Some(m) = alert_meaning {
+            map.insert("alertReceivedMeaning".into(), Json::str(m));
+        }
         if let Some(err) = conn.error() {
             if let Some(doc) = isl_ontology::errors::get(err.id()) {
                 map.insert("meaning".into(), Json::str(doc.meaning));

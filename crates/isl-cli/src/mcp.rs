@@ -152,11 +152,9 @@ pub fn tools() -> Vec<Tool> {
     t
 }
 
-/// HOOK(iron-socket-layer client): tools that drive live connections.
-///
-/// `tls_probe` (connect to host:port and return the SessionReport JSON) is
-/// added here once the client API is wired in. Keep every such tool total:
-/// hostile arguments must produce an `isError` result, never a panic.
+/// Tools that drive live connections: `tls_probe` connects to host:port and
+/// returns the SessionReport JSON. Keep every such tool total: hostile
+/// arguments must produce an `isError` result, never a panic.
 pub fn extra_tools() -> Vec<Tool> {
     vec![Tool {
         name: "tls_probe",

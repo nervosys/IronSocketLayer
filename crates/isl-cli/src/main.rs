@@ -423,6 +423,9 @@ fn run(args: Args) -> ExitCode {
                     "peerKey",
                     "peerSubjectCommonName",
                     "alpn",
+                    "alertSent",
+                    "alertReceived",
+                    "alertReceivedMeaning",
                 ] {
                     if let Some(Json::String(x)) = v.get(k) {
                         println!("  {k:<22} {x}");
