@@ -1524,6 +1524,150 @@ mod tests {
         assert_eq!(&buf[..4], b"last");
         assert_eq!(s.recv(&mut buf), 0);
     }
+
+    /// A client, configured by `edit`, that has processed a real server's
+    /// ServerHello and now expects its encrypted flight.
+    fn client_after_server_hello(edit: impl FnOnce(&mut ClientConfig)) -> (Connection, Vec<u8>) {
+        let (cc, sc) = configs();
+        let leaf = sc.identities[0].chain[0].clone();
+        let mut cfg = (*cc).clone();
+        edit(&mut cfg);
+        let mut c = Connection::client(Arc::new(cfg), "s.test").unwrap();
+        let mut s = Connection::server(sc).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        let flight = s.take_tls();
+        let len = u16::from_be_bytes([flight[3], flight[4]]) as usize;
+        c.read_tls(&flight[..5 + len]).unwrap();
+        (c, leaf)
+    }
+
+    /// Hand the client one handshake message as if it had arrived under the
+    /// handshake keys: the checks under test are the client's, not the
+    /// record layer's.
+    fn deliver(c: &mut Connection, ty: HandshakeType, body: &[u8]) -> Result<()> {
+        let m = msgs::frame(ty, body)?;
+        c.core.hs_buf.extend_from_slice(&m);
+        c.process_handshake()
+    }
+
+    fn refuses(r: Result<()>, want: &str) {
+        let e = r.expect_err(want);
+        assert!(e.to_string().contains(want), "wanted {want:?}, got {e}");
+    }
+
+    /// REQ-MSG-006: the client refuses EncryptedExtensions that answer what it
+    /// did not ask, or omit what it required.
+    #[test]
+    fn the_client_refuses_unrequested_encrypted_extensions() {
+        use crate::msgs::EncryptedExtensions as Ee;
+        let ee = |e: Ee| e.encode().unwrap();
+        let (mut c, _) = client_after_server_hello(|_| {});
+        deliver(
+            &mut c,
+            HandshakeType::EncryptedExtensions,
+            &ee(Ee::default()),
+        )
+        .unwrap();
+
+        type Case = (fn(&mut ClientConfig), fn(&mut Ee), &'static str);
+        let cases: &[Case] = &[
+            (
+                |_| {},
+                |e| e.alpn = Some(b"h2".to_vec()),
+                "server selected an ALPN protocol not offered",
+            ),
+            (
+                |c| {
+                    c.common.alpn = alloc::vec![b"h2".to_vec()];
+                    c.common.require_alpn = true;
+                },
+                |_| {},
+                "server selected no ALPN protocol",
+            ),
+            (
+                |c| c.send_sni = false,
+                |e| e.server_name_ack = true,
+                "server_name acknowledged but not sent",
+            ),
+            (
+                |_| {},
+                |e| e.record_size_limit = Some(1000),
+                "record_size_limit answered but not offered",
+            ),
+            (
+                |_| {},
+                |e| e.ech_retry_configs = Some(alloc::vec![0, 0]),
+                "encrypted_client_hello in EncryptedExtensions but not offered",
+            ),
+            (
+                |_| {},
+                |e| e.early_data = true,
+                "server accepted early data that was not sent",
+            ),
+            (
+                |_| {},
+                |e| e.quic_params = Some(alloc::vec![1]),
+                "QUIC transport parameters over TCP",
+            ),
+        ];
+        for (cfg, edit, want) in cases {
+            let (mut c, _) = client_after_server_hello(cfg);
+            let mut e = Ee::default();
+            edit(&mut e);
+            refuses(
+                deliver(&mut c, HandshakeType::EncryptedExtensions, &ee(e)),
+                want,
+            );
+        }
+    }
+
+    /// REQ-MSG-006: the client refuses a server Certificate message with a
+    /// context, with no certificate, or with a staple it did not request.
+    #[test]
+    fn the_client_refuses_malformed_server_certificates() {
+        use crate::msgs::{CertificateMsg, EncryptedExtensions};
+        let ee = EncryptedExtensions::default().encode().unwrap();
+        type Case = (
+            fn(&mut ClientConfig),
+            fn(Vec<u8>) -> CertificateMsg,
+            &'static str,
+        );
+        let cases: &[Case] = &[
+            (
+                |_| {},
+                |leaf| CertificateMsg {
+                    context: alloc::vec![1],
+                    chain: alloc::vec![leaf],
+                    ocsp: None,
+                },
+                "server Certificate must have an empty context",
+            ),
+            (
+                |_| {},
+                |_| CertificateMsg {
+                    context: alloc::vec![],
+                    chain: alloc::vec![],
+                    ocsp: None,
+                },
+                "server sent an empty Certificate",
+            ),
+            (
+                |c| c.revocation = crate::config::Revocation::Off,
+                |leaf| CertificateMsg {
+                    context: alloc::vec![],
+                    chain: alloc::vec![leaf],
+                    ocsp: Some(alloc::vec![0x30, 0x00]),
+                },
+                "OCSP staple sent but not requested",
+            ),
+        ];
+        for (cfg, make, want) in cases {
+            let (mut c, leaf) = client_after_server_hello(cfg);
+            deliver(&mut c, HandshakeType::EncryptedExtensions, &ee).unwrap();
+            let body = make(leaf).encode().unwrap();
+            refuses(deliver(&mut c, HandshakeType::Certificate, &body), want);
+        }
+    }
 }
 
 /// Record a completed handshake's properties and indicators in the report.
