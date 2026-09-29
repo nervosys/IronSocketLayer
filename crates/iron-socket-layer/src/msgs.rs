@@ -1544,4 +1544,84 @@ mod tests {
         );
         assert!(ticket(604_800, alloc::vec![1]).is_ok());
     }
+
+    /// The checks our own encoder cannot trip, reached with messages built
+    /// byte by byte: each carries one malformed extension. `REQ-MSG-004`.
+    #[test]
+    fn hand_built_malformed_extensions_are_refused() {
+        fn expect<T: core::fmt::Debug>(r: Result<T>, want: &str) {
+            let e = r.expect_err(want);
+            assert!(e.to_string().contains(want), "wanted {want:?}, got {e}");
+        }
+        fn ext(ty: u16, data: &[u8]) -> Vec<u8> {
+            let mut v = ty.to_be_bytes().to_vec();
+            v.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            v.extend_from_slice(data);
+            v
+        }
+        fn with_len16(body: &[u8]) -> Vec<u8> {
+            let mut v = (body.len() as u16).to_be_bytes().to_vec();
+            v.extend_from_slice(body);
+            v
+        }
+        // legacy_version, random, empty session ID, one suite, null
+        // compression, then the given extensions.
+        let hello = |exts: &[u8]| {
+            let mut v = alloc::vec![0x03, 0x03];
+            v.extend_from_slice(&[0u8; 32]);
+            v.extend_from_slice(&[0x00, 0x00, 0x02, 0x13, 0x01, 0x01, 0x00]);
+            v.extend_from_slice(&with_len16(exts));
+            ClientHello::decode(&v)
+        };
+        assert!(hello(&[]).is_ok());
+        let mut two_names = Vec::new();
+        for n in [&b"a.test"[..], b"b.test"] {
+            two_names.push(0);
+            two_names.extend_from_slice(&with_len16(n));
+        }
+        expect(
+            hello(&ext(0, &with_len16(&two_names))),
+            "two host names in server_name",
+        );
+        expect(hello(&ext(49, &[0])), "post_handshake_auth must be empty");
+        expect(hello(&ext(16, &[0, 0])), "empty ALPN list");
+        expect(hello(&ext(10, &[0, 3, 0, 0x1d, 0])), "odd-length u16 list");
+        // An outer ECH: suite, config ID, empty enc, empty payload.
+        expect(
+            hello(&ext(0xfe0d, &[0, 0, 1, 0, 1, 7, 0, 0, 0, 0])),
+            "empty ECH payload",
+        );
+
+        let ee = |exts: &[u8]| EncryptedExtensions::decode(&with_len16(exts));
+        assert!(ee(&[]).is_ok());
+        expect(
+            ee(&ext(0, &[0])),
+            "server_name acknowledgement must be empty",
+        );
+        expect(
+            ee(&ext(42, &[0, 0, 0, 0])),
+            "early_data in EncryptedExtensions must be empty",
+        );
+        let mut two = alloc::vec![2];
+        two.extend_from_slice(b"h2");
+        two.push(8);
+        two.extend_from_slice(b"http/1.1");
+        expect(
+            ee(&ext(16, &with_len16(&two))),
+            "server selected more than one ALPN protocol",
+        );
+
+        // Certificate: empty context, one entry whose status_request uses an
+        // unknown CertificateStatusType (2).
+        let status = ext(5, &[2, 0, 0, 1, 0xaa]);
+        let mut entry = alloc::vec![0, 0, 1, 0x30];
+        entry.extend_from_slice(&with_len16(&status));
+        let mut body = alloc::vec![0];
+        body.extend_from_slice(&(entry.len() as u32).to_be_bytes()[1..]);
+        body.extend_from_slice(&entry);
+        expect(
+            CertificateMsg::decode(&body),
+            "unknown CertificateStatusType",
+        );
+    }
 }
