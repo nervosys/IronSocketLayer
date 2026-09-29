@@ -196,6 +196,13 @@ pub fn tls_probe(
         if let Some(m) = alert_meaning {
             map.insert("alertReceivedMeaning".into(), Json::str(m));
         }
+        let alert = match map.get("alertReceived") {
+            Some(Json::String(a)) => Some(a.clone()),
+            _ => None,
+        };
+        if let Some(h) = downgrade_hint(profile, alert.as_deref(), conn.error().map(|e| e.kind())) {
+            map.insert("hint".into(), Json::str(h));
+        }
         if let Some(err) = conn.error() {
             if let Some(doc) = isl_ontology::errors::get(err.id()) {
                 map.insert("meaning".into(), Json::str(doc.meaning));
@@ -208,6 +215,24 @@ pub fn tls_probe(
         }
     }
     Ok(report)
+}
+
+/// A restrictive profile refused for want of common parameters invites a
+/// retry with a weaker one: the downgrade the profile exists to prevent. Say
+/// so, where the agent reads the failure.
+fn downgrade_hint(
+    profile: Profile,
+    alert_received: Option<&str>,
+    error: Option<iron_socket_layer::ErrorKind>,
+) -> Option<String> {
+    let no_common = alert_received == Some("alert:handshake-failure")
+        || error == Some(iron_socket_layer::ErrorKind::HandshakeFailure);
+    (no_common && profile != Profile::Default).then(|| {
+        format!(
+            "The server shares none of {}'s parameters. Report this to the user; do not retry with a weaker profile, which is the downgrade this profile exists to prevent.",
+            profile.id()
+        )
+    })
 }
 
 fn pem_blocks(text: &str, label: &str) -> Result<Vec<Vec<u8>>, String> {
@@ -282,6 +307,33 @@ pub fn serve(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_refused_restrictive_profile_warns_against_downgrading() {
+        use iron_socket_layer::ErrorKind;
+        let h = downgrade_hint(
+            Profile::Cnsa2,
+            Some("alert:handshake-failure"),
+            Some(ErrorKind::PeerAlert),
+        )
+        .unwrap();
+        assert!(h.contains("profile:cnsa-2") && h.contains("do not retry with a weaker profile"));
+        assert!(downgrade_hint(
+            Profile::PostQuantum,
+            None,
+            Some(ErrorKind::HandshakeFailure)
+        )
+        .is_some());
+        // The default profile has nothing weaker to fall back to, and other
+        // failures are not a lack of common parameters.
+        assert!(downgrade_hint(Profile::Default, Some("alert:handshake-failure"), None).is_none());
+        assert!(downgrade_hint(
+            Profile::Cnsa2,
+            Some("alert:bad-certificate"),
+            Some(ErrorKind::PeerAlert)
+        )
+        .is_none());
+    }
+
     use super::*;
 
     #[test]

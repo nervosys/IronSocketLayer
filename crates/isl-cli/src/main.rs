@@ -439,6 +439,9 @@ failed: {e} ({})",
                         s(v, "errorContext")
                     );
                     println!("meaning: {}", s(v, "meaning"));
+                    if let Some(Json::String(h)) = v.get("hint") {
+                        println!("note:    {h}");
+                    }
                     println!("recovery:");
                     for step in arr(v, "recovery") {
                         println!("  - {}", step.as_str().unwrap_or(""));
