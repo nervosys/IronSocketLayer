@@ -1404,4 +1404,144 @@ mod tests {
         let mut big = frame(HandshakeType::Certificate, &[0; 200]).unwrap();
         assert!(take_message(&mut big, 100).is_err());
     }
+
+    /// Every field-level check in the decoders refuses its case, each
+    /// identified by its own message. Random bytes fail earlier, at framing,
+    /// so these are reached only from otherwise well-formed messages.
+    /// `REQ-MSG-004`.
+    #[test]
+    fn every_field_check_refuses_its_case() {
+        fn expect<T: core::fmt::Debug>(r: Result<T>, want: &str) {
+            let e = r.expect_err(want);
+            assert!(e.to_string().contains(want), "wanted {want:?}, got {e}");
+        }
+        type Ch = fn(&mut ClientHello);
+        let hello_cases: &[(Ch, &str)] = &[
+            (
+                |c| c.session_id = alloc::vec![1; 33],
+                "legacy_session_id longer than 32 bytes",
+            ),
+            (|c| c.suites.clear(), "cipher_suites"),
+            (
+                |c| c.server_name = Some("exämple.com".into()),
+                "server_name is not ASCII",
+            ),
+            (
+                |c| c.server_name = Some(String::new()),
+                "server_name is not ASCII",
+            ),
+            (
+                |c| c.key_shares = alloc::vec![(NamedGroup::X25519, alloc::vec![])],
+                "empty key_exchange",
+            ),
+            (
+                |c| c.key_shares.push((NamedGroup::X25519, alloc::vec![6; 32])),
+                "two key shares for one group",
+            ),
+            (
+                |c| c.alpn = alloc::vec![alloc::vec![]],
+                "empty ALPN protocol name",
+            ),
+            (|c| c.cookie = Some(alloc::vec![]), "empty cookie"),
+            (
+                |c| c.psk.as_mut().unwrap().identities[0].identity.clear(),
+                "empty PSK identity",
+            ),
+            (
+                |c| c.psk.as_mut().unwrap().binders[0] = alloc::vec![3; 31],
+                "PSK binder shorter than 32 bytes",
+            ),
+            (
+                |c| c.psk.as_mut().unwrap().binders.push(alloc::vec![3; 32]),
+                "PSK identities and binders do not pair up",
+            ),
+        ];
+        for (edit, want) in hello_cases {
+            let mut ch = sample_hello();
+            edit(&mut ch);
+            expect(ch.encode().and_then(|b| ClientHello::decode(&b)), want);
+        }
+
+        let server_hello = || ServerHello {
+            random: [1; 32],
+            session_id: alloc::vec![2; 32],
+            suite: Some(CipherSuite::TlsAes128GcmSha256),
+            selected_version: Some(ProtocolVersion::Tls13),
+            key_share: Some((NamedGroup::X25519, alloc::vec![5; 32])),
+            ..Default::default()
+        };
+        let good = server_hello().encode().unwrap();
+        assert!(ServerHello::decode(&good).is_ok());
+        let mut sh = server_hello();
+        sh.session_id = alloc::vec![2; 33];
+        expect(
+            sh.encode().and_then(|b| ServerHello::decode(&b)),
+            "legacy_session_id_echo longer than 32 bytes",
+        );
+        let mut sh = server_hello();
+        sh.key_share = Some((NamedGroup::X25519, alloc::vec![]));
+        expect(
+            sh.encode().and_then(|b| ServerHello::decode(&b)),
+            "empty key_exchange",
+        );
+        // legacy_compression_method follows version, random, session ID, suite.
+        let mut bad = good.clone();
+        bad[2 + 32 + 1 + 32 + 2] = 1;
+        expect(
+            ServerHello::decode(&bad),
+            "legacy_compression_method must be null",
+        );
+        let hrr = ServerHello {
+            random: HRR_RANDOM,
+            key_share: None,
+            hrr_group: Some(NamedGroup::X25519),
+            cookie: Some(alloc::vec![]),
+            ..server_hello()
+        };
+        expect(
+            hrr.encode().and_then(|b| ServerHello::decode(&b)),
+            "empty cookie",
+        );
+
+        let cert = |chain: Vec<Vec<u8>>, ocsp: Option<Vec<u8>>| {
+            CertificateMsg {
+                context: alloc::vec![],
+                chain,
+                ocsp,
+            }
+            .encode()
+            .and_then(|b| CertificateMsg::decode(&b))
+        };
+        expect(
+            cert(alloc::vec![alloc::vec![]], None),
+            "empty certificate entry",
+        );
+        expect(
+            cert(alloc::vec![alloc::vec![0x30]; MAX_CHAIN_LEN + 1], None),
+            "certificate chain too long",
+        );
+        expect(
+            cert(alloc::vec![alloc::vec![0x30]], Some(alloc::vec![])),
+            "empty OCSP response",
+        );
+        assert!(cert(alloc::vec![alloc::vec![0x30]; MAX_CHAIN_LEN], None).is_ok());
+
+        let ticket = |lifetime: u32, ticket: Vec<u8>| {
+            NewSessionTicket {
+                lifetime,
+                age_add: 1,
+                nonce: alloc::vec![0],
+                ticket,
+                max_early_data: None,
+            }
+            .encode()
+            .and_then(|b| NewSessionTicket::decode(&b))
+        };
+        expect(ticket(3600, alloc::vec![]), "empty ticket");
+        expect(
+            ticket(604_801, alloc::vec![1]),
+            "ticket lifetime exceeds seven days",
+        );
+        assert!(ticket(604_800, alloc::vec![1]).is_ok());
+    }
 }
