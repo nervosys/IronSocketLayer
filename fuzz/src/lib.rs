@@ -133,6 +133,9 @@ pub fn server_config() -> Arc<ServerConfig> {
         sc.early_data = Some(EarlyDataPolicy::new(16_384));
         sc.external_psks = vec![psk()];
         sc.retry_cookie = true;
+        // Every group this build implements, so a ClientHello can reach each
+        // key-share parser (ML-KEM-1024 included), not only the defaults.
+        sc.common.groups = iron_socket_layer::crypto::kx::IMPLEMENTED_GROUPS.to_vec();
         // ServerConfig::new drew ticket keys from the OS; redraw them from the
         // fixed DRBG so recorded tickets open in every run.
         sc.tickets = Some(Arc::new(

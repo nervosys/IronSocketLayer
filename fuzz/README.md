@@ -45,24 +45,30 @@ Without it the target exits with `STATUS_DLL_NOT_FOUND`.
 
 ## Results so far
 
-2026-09-29, Windows 11, nightly, AddressSanitizer, one process per target, on
-a heavily loaded machine. No crashes or sanitizer reports (leak detection is
-not available with ASan on Windows):
+Windows 11, nightly, AddressSanitizer, one process per target, on a heavily
+loaded machine. No crashes or sanitizer reports (leak detection is not
+available with ASan on Windows), and no slow units:
 
 | Target | Runs | Time | Coverage (edges) |
 |---|---:|---:|---:|
-| `messages` | 1.9 M | 61 s | 956 |
-| `records` | 13.9 M | 181 s | 67 |
-| `pki` | 533 k | 181 s | 2,695 |
-| `tls_server` | 155 k | 171 s | 4,812 |
-| `tls_client` | 38 k | 151 s | 4,262 |
-| `quic_server` | 1.46 M | 171 s | 1,805 |
+| `messages` | 7.1 M | 151 s | 1,159 |
+| `records` | 14.0 M | 151 s | 58 |
+| `pki` (now with ML-DSA-65/87 certificates) | 586 k | 151 s | 2,790 |
+| `tls_server` (now with every group enabled) | 137 k | 151 s | 5,281 |
+| `tls_client` | 41 k | 151 s | 4,299 |
+| `quic_server` | 1.17 M | 151 s | 1,816 |
 
-These are short runs. A first `tls_client` run was stopped by an outer
-timeout before libFuzzer's own time limit. A rerun with a 5-second per-input
-limit found no input that slow, so it looks like start-up time on a loaded
-machine, but this has not been proven. Longer campaigns on a quiet machine are
-the next step.
+That is the 2026-09-29 afternoon run, after in-place record decryption,
+ML-KEM-1024 and ML-DSA-87. The fixture server now enables every implemented
+group, so ClientHellos reach the ML-KEM-1024 key-share parsers, and the seeds
+include ML-KEM-1024 ClientHellos and ML-DSA certificates.
+
+Twice a run was stopped by an outer timeout before libFuzzer's own limit
+(`tls_client` in the morning, `tls_server` in the afternoon). Rerun with
+`-timeout=10 -print_final_stats=1`, the slowest unit took under a second and
+the run ended on time, so these were start-up delays on a loaded machine,
+not hangs. These are still short runs. Longer campaigns on a quiet machine
+are the next step.
 
 When a target does crash, fix the cause and add the input as a regression test
 in `crates/iron-socket-layer/tests/robustness.rs`.

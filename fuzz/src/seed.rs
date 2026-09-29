@@ -74,6 +74,21 @@ fn main() {
     let (c2, _) = tls(Arc::new(pc));
     write("tls_server", "external-psk", &frame_chunks(&refs(&c2)));
 
+    // ML-KEM-1024 key shares: the hybrid and the pure group.
+    for (name, group) in [
+        (
+            "secp384r1mlkem1024",
+            iron_socket_layer::enums::NamedGroup::SecP384r1MlKem1024,
+        ),
+        ("mlkem1024", iron_socket_layer::enums::NamedGroup::MlKem1024),
+    ] {
+        let mut kc = (*client_config()).clone();
+        kc.common.groups = vec![group];
+        kc.initial_key_shares = 1;
+        let (c3, _) = tls(Arc::new(kc));
+        write("tls_server", name, &frame_chunks(&refs(&c3)));
+    }
+
     // Handshake messages: the ClientHello body (record header and handshake
     // header stripped), and the record stream itself.
     let ch = &c1[0];
@@ -133,6 +148,36 @@ fn main() {
     .unwrap();
     write("pki", "ocsp", &with_sel(3, &resp));
     write("pki", "ech-configs", &with_sel(4, p.ech.config_list()));
+    // Post-quantum certificates, self-signed, for the X.509 parser.
+    for (name, kind) in [
+        (
+            "mldsa65-cert",
+            iron_socket_layer::crypto::sign::KeyKind::MlDsa65,
+        ),
+        (
+            "mldsa87-cert",
+            iron_socket_layer::crypto::sign::KeyKind::MlDsa87,
+        ),
+    ] {
+        let key = iron_socket_layer::crypto::sign::SigningKey::generate(kind, &mut *r).unwrap();
+        let cert = iron_socket_layer::x509::self_signed(
+            &iron_socket_layer::x509::CertificateParams {
+                subject_cn: NAME,
+                dns_names: &[NAME],
+                ip_addresses: &[],
+                not_before: NOW - 86_400,
+                not_after: NOW + 86_400,
+                is_ca: false,
+                path_len: None,
+                usage: &[iron_socket_layer::x509::Usage::ServerAuth],
+                serial: [3; 16],
+            },
+            &key,
+            &mut *r,
+        )
+        .unwrap();
+        write("pki", name, &with_sel(0, &cert));
+    }
     // The seeds are only useful if replaying them reproduces the handshake:
     // check that, along the targets' own code path.
     let replay = |mut conn: Connection, seed: &[u8]| {
