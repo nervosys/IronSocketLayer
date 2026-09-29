@@ -1040,7 +1040,8 @@ impl ServerHs {
         Ok(())
     }
 
-    /// ClientHello2 must be ClientHello1 with only the permitted changes (§4.1.2).
+    /// ClientHello2 must be ClientHello1 with only the permitted changes
+    /// (§4.1.2): the requested share and the cookie as sent. `REQ-MSG-005`.
     fn check_second_hello(&self, ch: &ClientHello) -> Result<()> {
         let first = self
             .first_hello
@@ -1061,7 +1062,15 @@ impl ServerHs {
             }
             _ => {}
         }
-        if ch.cookie != self.retry_cookie {
+        // The cookie is no secret (it went out in the clear), but whatever a
+        // peer sends that is checked against a value of ours is compared in
+        // constant time, so that no case needs arguing.
+        let cookie_ok = match (&ch.cookie, &self.retry_cookie) {
+            (Some(got), Some(ours)) => ic_core::ct::verify(got, ours),
+            (None, None) => true,
+            _ => false,
+        };
+        if !cookie_ok {
             return Err(illegal("cookie does not match"));
         }
         Ok(())

@@ -100,8 +100,14 @@ released). SHA-256 sent blocks assembled in its internal buffer, which
 includes every final padding block, through the portable rounds instead of
 SHA-NI. After the fix this harness measures a 200-byte HMAC-SHA256 at about
 0.28 µs, against 0.20 µs for ring (previously 0.75 µs). No change was needed
-here. The tables above predate the fix and will be updated after a run on a
-quiet machine.
+here. At adbd761 IronCrypto also reduces GHASH once per eight blocks; this
+harness then measures raw AES-128-GCM seal at about 2,630 MiB/s (was 1,650),
+and resumed handshakes level with rustls (0.97×). Those runs were at 100% CPU
+load, so the tables above, which predate both changes, stay as they are until
+a run on a quiet machine.
+
+Since `REQ-REC-007` the record layer scans each whole record for padding in
+constant time: about 0.7 µs per 16 KiB record, around 5% of bulk throughput.
 
 IronCrypto 0.2.1 (within this workspace's `>=0.1.3, <0.3` range) speeds up
 P-256 public-key derivation and ECDH over the NIST curves, but not ECDSA sign

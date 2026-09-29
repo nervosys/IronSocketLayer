@@ -111,6 +111,52 @@ fn hello_retry_request_recovers_a_missing_share() {
     exchange(&mut c, &mut s);
 }
 
+/// A server that has sent a HelloRetryRequest with a cookie, and the client's
+/// reply to it.
+fn retried_hello(pki: &Pki) -> (Connection, Vec<u8>) {
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.groups = vec![NamedGroup::X25519, NamedGroup::Secp384r1];
+    cc.initial_key_shares = 1;
+    let mut sc = pki.server_config(Profile::Default);
+    sc.common.groups = vec![NamedGroup::Secp384r1];
+    sc.retry_cookie = true;
+    let mut c = Connection::client(Arc::new(cc), "server.test").unwrap();
+    let mut s = Connection::server(Arc::new(sc)).unwrap();
+    s.read_tls(&c.take_tls()).unwrap();
+    c.read_tls(&s.take_tls()).unwrap();
+    (s, c.take_tls())
+}
+
+/// REQ-MSG-005: the second ClientHello must carry the cookie exactly as sent.
+#[test]
+fn a_second_hello_must_echo_the_cookie_unchanged() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    // The cookie extension: type 44, length 34, then a 32-byte cookie.
+    let marker = [0x00, 0x2c, 0x00, 0x22, 0x00, 0x20];
+    let find = |b: &[u8]| {
+        b.windows(marker.len())
+            .position(|w| w == marker)
+            .expect("cookie extension")
+    };
+
+    let (mut s, ch2) = retried_hello(&pki);
+    s.read_tls(&ch2).unwrap();
+
+    // The last byte of the cookie changed.
+    let (mut s, mut ch2) = retried_hello(&pki);
+    let at = find(&ch2) + marker.len() + 31;
+    ch2[at] ^= 1;
+    let err = s.read_tls(&ch2).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::IllegalParameter, "{err}");
+
+    // The cookie extension turned into an unknown one, so no cookie at all.
+    let (mut s, mut ch2) = retried_hello(&pki);
+    let at = find(&ch2);
+    ch2[at..at + 2].copy_from_slice(&[0xfa, 0xfa]);
+    let err = s.read_tls(&ch2).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::IllegalParameter, "{err}");
+}
+
 #[test]
 fn mutual_authentication_is_reported_on_both_sides() {
     let pki = Pki::new(KeyKind::Ed25519, "server.test");
