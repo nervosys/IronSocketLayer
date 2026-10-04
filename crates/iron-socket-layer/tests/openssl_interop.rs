@@ -241,6 +241,8 @@ fn s_client(dir: &Path, port: u16, group: &str, extra: &[&str]) -> String {
         "-verify_hostname",
         "server.test",
         "-brief",
+        // stdin is finite; wait for the server's echo and close_notify.
+        "-ign_eof",
     ];
     args.extend_from_slice(extra);
     let mut child = Command::new("openssl")
@@ -623,6 +625,8 @@ fn openssl_verifies_our_staples() {
             "-servername",
             "server.test",
             "-status",
+            // Wait for the echo server to close rather than racing stdin EOF.
+            "-ign_eof",
         ])
         .current_dir(&dir)
         .stdin(Stdio::piped())
@@ -932,6 +936,8 @@ fn external_psk_with_openssl_both_ways() {
             "-psk_identity",
             "sensor-17",
             "-brief",
+            // Finite stdin must not close TLS before the server's echo.
+            "-ign_eof",
         ])
         .current_dir(&dir)
         .stdin(Stdio::piped())

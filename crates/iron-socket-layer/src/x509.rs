@@ -153,10 +153,33 @@ impl<'a> Der<'a> {
 
     /// Next element: `(tag, content, whole TLV)`.
     fn tlv(&mut self) -> Result<(u8, &'a [u8], &'a [u8])> {
+        self.tlv_inner(false)
+    }
+
+    /// REQ-X509-033: opaque otherName values retain valid high-numbered identifiers.
+    fn any(&mut self) -> Result<()> {
+        let (tag, _, _) = self.tlv_inner(true)?;
+        if tag & 0xdf == 0 {
+            return Err(bad("end-of-contents is not a DER value"));
+        }
+        Ok(())
+    }
+
+    fn tlv_inner(&mut self, allow_high_tags: bool) -> Result<(u8, &'a [u8], &'a [u8])> {
         let start = self.pos;
         let tag = self.byte()?;
         if tag & 0x1f == 0x1f {
-            return Err(bad("high-tag-number DER form"));
+            if !allow_high_tags {
+                return Err(bad("high-tag-number DER form"));
+            }
+            let first = self.byte()?;
+            if first & 0x7f == 0 || first < 31 {
+                return Err(bad("nonminimal DER tag number"));
+            }
+            let mut octet = first;
+            while octet & 0x80 != 0 {
+                octet = self.byte()?;
+            }
         }
         let first = self.byte()?;
         let len = if first < 0x80 {
@@ -249,9 +272,141 @@ fn whole_bits(content: &[u8]) -> Result<&[u8]> {
     }
 }
 
+/// REQ-X509-031: registeredID SAN OIDs have nonempty, complete, minimal subidentifiers.
+fn check_oid_encoding(content: &[u8]) -> Result<()> {
+    if content.is_empty() {
+        return Err(bad("empty OBJECT IDENTIFIER"));
+    }
+    let mut arc_start = true;
+    for &byte in content {
+        if arc_start && byte == 0x80 {
+            return Err(bad("nonminimal OBJECT IDENTIFIER subidentifier"));
+        }
+        arc_start = byte & 0x80 == 0;
+    }
+    if !arc_start {
+        return Err(bad("truncated OBJECT IDENTIFIER subidentifier"));
+    }
+    Ok(())
+}
+
+/// REQ-X509-033: otherName has a valid type OID and one explicitly wrapped value.
+fn check_other_name(content: &[u8]) -> Result<()> {
+    let mut name = Der::new(content);
+    check_oid_encoding(name.expect(T_OID)?)?;
+    let mut value = name.nested(T_CTX0)?;
+    name.finish()?;
+    value.any()?;
+    value.finish()?;
+    Ok(())
+}
+
+/// REQ-X509-034: EDI party fields contain one nonempty DirectoryString choice.
+/// REQ-X509-035: UTF8String EDI fields contain well-formed UTF-8.
+/// REQ-X509-036: PrintableString EDI fields use only the ASN.1 character repertoire.
+/// REQ-X509-037: BMPString and UniversalString EDI fields contain complete code units.
+/// REQ-X509-069: BMPString EDI fields exclude surrogate code units and FFFE/FFFF.
+fn check_directory_string(content: &[u8]) -> Result<()> {
+    let mut string = Der::new(content);
+    let (tag, value, _) = string.tlv()?;
+    if !matches!(tag, T_T61 | T_PRINTABLE | 0x1c | T_UTF8 | 0x1e) {
+        return Err(bad("invalid DirectoryString choice"));
+    }
+    if value.is_empty() {
+        return Err(bad("empty DirectoryString"));
+    }
+    if tag == T_UTF8 && core::str::from_utf8(value).is_err() {
+        return Err(bad("invalid DirectoryString UTF-8"));
+    }
+    if tag == T_PRINTABLE
+        && value
+            .iter()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !b" '()+,-./:=?".contains(byte))
+    {
+        return Err(bad("invalid DirectoryString PrintableString character"));
+    }
+    if (tag == 0x1e && value.len() % 2 != 0) || (tag == 0x1c && value.len() % 4 != 0) {
+        return Err(bad("incomplete DirectoryString code unit"));
+    }
+    if tag == 0x1e
+        && value.chunks_exact(2).any(|unit| {
+            let code = u16::from_be_bytes([unit[0], unit[1]]);
+            matches!(code, 0xd800..=0xdfff | 0xfffe..=0xffff)
+        })
+    {
+        return Err(bad("invalid DirectoryString BMPString character"));
+    }
+    string.finish()?;
+    Ok(())
+}
+
+/// REQ-X509-034: ediPartyName has an optional assigner followed by a required party.
+fn check_edi_party_name(content: &[u8]) -> Result<()> {
+    let mut name = Der::new(content);
+    if let Some(assigner) = name.optional(T_CTX0)? {
+        check_directory_string(assigner)?;
+    }
+    check_directory_string(name.expect(T_CTX1)?)?;
+    name.finish()?;
+    Ok(())
+}
+
+/// REQ-X509-038: directoryName SANs have nonempty RDN sets and complete attributes.
+fn check_directory_name(content: &[u8]) -> Result<()> {
+    let mut wrapper = Der::new(content);
+    let body = wrapper.expect(T_SEQUENCE)?;
+    wrapper.finish()?;
+    if body.is_empty() {
+        return Err(bad("empty directoryName SAN"));
+    }
+    check_rdn_sequence(body)
+}
+
+/// REQ-X509-038: RDN sets are nonempty and attribute fields are fully consumed.
+/// REQ-X509-039: RDN attributes follow DER SET OF encoding order.
+/// REQ-X509-040: certificate issuer and subject Names use the same RDN validation.
+fn check_rdn_sequence(body: &[u8]) -> Result<()> {
+    let mut name = Der::new(body);
+    while !name.is_empty() {
+        check_relative_distinguished_name(name.expect(T_SET)?)?;
+    }
+    Ok(())
+}
+
+/// REQ-X509-038, REQ-X509-039: validate one RDN's nonempty, ordered attributes
+/// independently of whether it appears in a Name or as an implicit RDN choice.
+fn check_relative_distinguished_name(body: &[u8]) -> Result<()> {
+    let mut rdn = Der::new(body);
+    if rdn.is_empty() {
+        return Err(bad("empty Name RDN"));
+    }
+    let mut previous: Option<&[u8]> = None;
+    while !rdn.is_empty() {
+        let encoded = rdn.expect_raw(T_SEQUENCE)?;
+        // Complete, minimally encoded TLVs cannot be prefixes of each other,
+        // so slice ordering agrees with X.690's zero-padded octet comparison.
+        if previous.is_some_and(|prev| prev > encoded) {
+            return Err(bad("Name RDN attributes are not in DER order"));
+        }
+        previous = Some(encoded);
+        let mut attribute_der = Der::new(encoded);
+        let mut attribute = attribute_der.nested(T_SEQUENCE)?;
+        check_oid_encoding(attribute.expect(T_OID)?)?;
+        attribute.any()?;
+        attribute.finish()?;
+    }
+    Ok(())
+}
+
+/// REQ-X509-028: nonnegative DER integers use minimal sign encoding.
 fn small_uint(content: &[u8]) -> Result<u64> {
     if content.is_empty() || content[0] & 0x80 != 0 {
         return Err(bad("expected a non-negative INTEGER"));
+    }
+    if let [0, second, ..] = content {
+        if second & 0x80 == 0 {
+            return Err(bad("nonminimal non-negative INTEGER"));
+        }
     }
     let digits = if content[0] == 0 && content.len() > 1 {
         &content[1..]
@@ -573,6 +728,7 @@ struct Extensions<'a> {
     key_usage: Option<u16>,
     eku: Option<&'a [u8]>,
     san: Option<&'a [u8]>,
+    san_critical: bool,
     name_constraints: Option<&'a [u8]>,
     ski: Option<&'a [u8]>,
     aki: Option<&'a [u8]>,
@@ -595,7 +751,31 @@ pub struct Certificate<'a> {
     ext: Extensions<'a>,
 }
 
+/// REQ-X509-012: implicit unique-ID BIT STRINGs have an unused-bit count
+/// in 0..=7, no unused bits without content, and zero padding bits.
+fn check_unique_id(content: &[u8]) -> Result<()> {
+    let (unused, bytes) = content
+        .split_first()
+        .ok_or(bad("empty unique identifier"))?;
+    if *unused > 7 {
+        return Err(bad("invalid unique identifier unused-bit count"));
+    }
+    match bytes.last() {
+        None if *unused != 0 => Err(bad("unique identifier padding without bits")),
+        Some(last) if last & ((1u8 << unused) - 1) != 0 => {
+            Err(bad("nonzero unique identifier padding bits"))
+        }
+        _ => Ok(()),
+    }
+}
+
 impl<'a> Certificate<'a> {
+    /// REQ-X509-011: unique identifiers appear only in v2 or v3 certificates.
+    /// REQ-X509-013: serial INTEGERs have no redundant sign-extension octets.
+    /// REQ-X509-019: the issuer Name is nonempty.
+    /// REQ-X509-040: issuer and subject RDNs and attribute fields are validated.
+    /// REQ-X509-053: an empty subject requires a present critical SAN.
+    /// REQ-X509-065: received validity intervals cannot end before they begin.
     /// Parse a DER certificate. `REQ-X509-001`: any malformed input is
     /// [`ErrorKind::BadCertificate`], never a panic.
     pub fn parse(der: &'a [u8]) -> Result<Self> {
@@ -624,23 +804,45 @@ impl<'a> Certificate<'a> {
         if serial.is_empty() || serial.len() > 21 {
             return Err(bad("serial number length"));
         }
+        if let [first, second, ..] = serial {
+            if (*first == 0 && second & 0x80 == 0) || (*first == 0xff && second & 0x80 != 0) {
+                return Err(bad("nonminimal serial number"));
+            }
+        }
         let inner_alg = t.expect(T_SEQUENCE)?;
         if inner_alg != sig_alg {
             return Err(bad(
                 "signature algorithm differs between TBS and certificate",
             ));
         }
+        check_algorithm_identifier_encoding(sig_alg)?;
         let issuer = t.expect_raw(T_SEQUENCE)?;
+        let issuer_body = Der::new(issuer).expect(T_SEQUENCE)?;
+        if issuer_body.is_empty() {
+            return Err(bad("empty certificate issuer name"));
+        }
+        check_rdn_sequence(issuer_body)?;
         let mut validity = t.nested(T_SEQUENCE)?;
         let (tag, nb, _) = validity.tlv()?;
         let not_before = parse_time(tag, nb)?;
         let (tag, na, _) = validity.tlv()?;
         let not_after = parse_time(tag, na)?;
         validity.finish()?;
+        if not_after < not_before {
+            return Err(bad("certificate validity ends before it begins"));
+        }
         let subject = t.expect_raw(T_SEQUENCE)?;
+        check_rdn_sequence(Der::new(subject).expect(T_SEQUENCE)?)?;
         let spki = t.expect_raw(T_SEQUENCE)?;
-        let _ = t.optional(T_ISSUER_UID)?;
-        let _ = t.optional(T_SUBJECT_UID)?;
+        check_subject_public_key_info(spki)?;
+        let issuer_uid = t.optional(T_ISSUER_UID)?;
+        let subject_uid = t.optional(T_SUBJECT_UID)?;
+        if version == 0 && (issuer_uid.is_some() || subject_uid.is_some()) {
+            return Err(bad("unique identifiers in a v1 certificate"));
+        }
+        for uid in [issuer_uid, subject_uid].into_iter().flatten() {
+            check_unique_id(uid)?;
+        }
         let mut ext = Extensions::default();
         if let Some(e) = t.optional(T_CTX3)? {
             if version != 2 {
@@ -649,6 +851,14 @@ impl<'a> Certificate<'a> {
             ext = parse_extensions(e)?;
         }
         t.finish()?;
+
+        if Der::new(subject).expect(T_SEQUENCE)?.is_empty()
+            && (ext.san.is_none() || !ext.san_critical)
+        {
+            return Err(bad(
+                "empty certificate subject requires a critical subjectAltName",
+            ));
+        }
 
         Ok(Self {
             der,
@@ -748,6 +958,7 @@ impl<'a> Certificate<'a> {
         name_common_name(self.subject)
     }
 
+    /// REQ-X509-022: both endpoints of the certificate validity interval are inclusive.
     fn check_validity(&self, now: u64) -> Result<()> {
         if now < self.not_before {
             return Err(Error::new(
@@ -782,6 +993,86 @@ impl<'a> Certificate<'a> {
     }
 }
 
+/// REQ-X509-017: AKI fields are ordered, complete, and pair issuer with serial.
+/// REQ-X509-045: serial references contain nonempty minimal DER INTEGER contents.
+fn parse_authority_key_identifier(value: &[u8]) -> Result<Option<&[u8]>> {
+    let mut v = Der::new(value);
+    let mut s = v.nested(T_SEQUENCE)?;
+    v.finish()?;
+    // Issuer/serial references are checked structurally, not used as path hints.
+    let key_identifier = s.optional(0x80)?;
+    let issuer = s.optional(T_CTX1)?;
+    let serial = s.optional(0x82)?;
+    if issuer.is_some() != serial.is_some() {
+        return Err(bad("authority key identifier issuer/serial are not paired"));
+    }
+    if let Some(issuer) = issuer {
+        check_authority_issuer_names(issuer)?;
+    }
+    if let Some(serial) = serial {
+        if serial.is_empty() {
+            return Err(bad("empty authority certificate serial number"));
+        }
+        if let [first, second, ..] = serial {
+            if (*first == 0 && second & 0x80 == 0) || (*first == 0xff && second & 0x80 != 0) {
+                return Err(bad("nonminimal authority certificate serial number"));
+            }
+        }
+    }
+    s.finish()?;
+    Ok(key_identifier)
+}
+
+/// The GeneralName choices and their specified primitive or constructed tags.
+fn defined_general_name_tag(tag: u8) -> bool {
+    matches!(
+        tag,
+        0xa0 | 0x81 | 0x82 | 0xa3 | 0xa4 | 0xa5 | 0x86 | 0x87 | 0x88
+    )
+}
+
+/// REQ-X509-046: AKI issuer GeneralNames contain a nonempty list of complete
+/// TLVs with defined GeneralName choice tags and their specified tag forms.
+/// REQ-X509-047: registeredID issuer names contain complete, minimal OID encodings.
+/// REQ-X509-048: directoryName issuer names wrap one complete Name with valid RDNs.
+/// REQ-X509-049: otherName issuer names have a valid OID and one wrapped ANY value.
+/// REQ-X509-050: EDI issuer names have ordered fields with valid DirectoryStrings.
+/// REQ-X509-051: email, DNS, and URI issuer names contain only IA5String ASCII bytes.
+/// REQ-X509-052: IP issuer names encode exactly one IPv4 or IPv6 address.
+fn check_authority_issuer_names(body: &[u8]) -> Result<()> {
+    if body.is_empty() {
+        return Err(bad("empty authority certificate issuer names"));
+    }
+    let mut names = Der::new(body);
+    while !names.is_empty() {
+        let (tag, value, _) = names.tlv()?;
+        if !defined_general_name_tag(tag) {
+            return Err(bad("invalid authority certificate issuer name tag"));
+        }
+        if matches!(tag, 0x81 | T_GN_DNS | 0x86) && !value.is_ascii() {
+            return Err(bad("authority certificate issuer IA5String is non-ASCII"));
+        }
+        if tag == T_GN_IP && value.len() != 4 && value.len() != 16 {
+            return Err(bad("authority certificate issuer iPAddress length"));
+        }
+        if tag == 0x88 {
+            check_oid_encoding(value)?;
+        }
+        if tag == T_CTX0 {
+            check_other_name(value)?;
+        }
+        if tag == 0xa5 {
+            check_edi_party_name(value)?;
+        }
+        if tag == 0xa4 {
+            let mut directory = Der::new(value);
+            check_rdn_sequence(directory.expect(T_SEQUENCE)?)?;
+            directory.finish()?;
+        }
+    }
+    Ok(())
+}
+
 /// Walk a `GeneralNames` body, calling `f(tag, value)` for each entry.
 fn for_each_san<'a>(san: Option<&'a [u8]>, mut f: impl FnMut(u8, &'a [u8])) -> Result<()> {
     let Some(san) = san else { return Ok(()) };
@@ -793,9 +1084,26 @@ fn for_each_san<'a>(san: Option<&'a [u8]>, mut f: impl FnMut(u8, &'a [u8])) -> R
     Ok(())
 }
 
+/// REQ-X509-009: KeyUsage has zero padding bits and at least one asserted bit.
+/// REQ-X509-010: a present ExtendedKeyUsage sequence contains at least one purpose.
+/// REQ-X509-014: the explicit Extensions wrapper contains exactly one sequence.
+/// REQ-X509-015: pathLenConstraint requires cA and, when present, keyCertSign.
+/// REQ-X509-016: a present SubjectAltName contains at least one name.
+/// REQ-X509-017: AKI fields are fully consumed; issuer and serial references are paired.
+/// REQ-X509-029: SAN entries use a defined GeneralName choice and its proper tag form.
+/// REQ-X509-030: DNS, email, and URI SAN IA5Strings are nonempty ASCII values.
+/// REQ-X509-032: directoryName SAN wrappers contain exactly one Name SEQUENCE.
+/// REQ-X509-041: extension identifiers use complete, minimal OBJECT IDENTIFIER encodings.
+/// REQ-X509-042: every EKU purpose has a complete, minimal OBJECT IDENTIFIER encoding.
+/// REQ-X509-045: AKI serial references contain nonempty, minimal DER INTEGER contents.
+/// REQ-X509-054: keyCertSign requires basicConstraints with cA asserted.
+/// REQ-X509-055: nameConstraints appears only with CA basicConstraints.
+/// REQ-X509-068: KeyUsage omits trailing zero named bits in its DER encoding.
 fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
     let mut ext = Extensions::default();
-    let mut list = Der::new(body).nested(T_SEQUENCE)?;
+    let mut extensions_der = Der::new(body);
+    let mut list = extensions_der.nested(T_SEQUENCE)?;
+    extensions_der.finish()?;
     let mut seen: Vec<&[u8]> = Vec::new();
     if list.is_empty() {
         return Err(bad("empty extensions list"));
@@ -803,6 +1111,7 @@ fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
     while !list.is_empty() {
         let mut e = list.nested(T_SEQUENCE)?;
         let oid = e.expect(T_OID)?;
+        check_oid_encoding(oid)?;
         let critical = match e.optional(T_BOOLEAN)? {
             Some([0xff]) => true,
             Some([0x00]) => false,
@@ -841,6 +1150,16 @@ fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
                 if *unused > 7 || bytes.is_empty() {
                     return Err(bad("malformed keyUsage"));
                 }
+                let last = bytes.last().ok_or(bad("empty keyUsage"))?;
+                if last & ((1u8 << unused) - 1) != 0 {
+                    return Err(bad("nonzero keyUsage padding bits"));
+                }
+                if bytes.iter().all(|byte| *byte == 0) {
+                    return Err(bad("keyUsage has no asserted bits"));
+                }
+                if last.trailing_zeros() != u32::from(*unused) {
+                    return Err(bad("keyUsage has trailing zero named bits"));
+                }
                 let mut ku = 0u16;
                 for i in 0..9usize {
                     if let Some(b) = bytes.get(i / 8) {
@@ -855,9 +1174,12 @@ fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
                 let mut v = Der::new(value);
                 let body = v.expect(T_SEQUENCE)?;
                 v.finish()?;
+                if body.is_empty() {
+                    return Err(bad("empty extendedKeyUsage"));
+                }
                 let mut check = Der::new(body);
                 while !check.is_empty() {
-                    check.expect(T_OID)?;
+                    check_oid_encoding(check.expect(T_OID)?)?;
                 }
                 ext.eku = Some(body);
             }
@@ -865,22 +1187,45 @@ fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
                 let mut v = Der::new(value);
                 let body = v.expect(T_SEQUENCE)?;
                 v.finish()?;
+                if body.is_empty() {
+                    return Err(bad("empty subjectAltName"));
+                }
                 let mut check = Der::new(body);
                 while !check.is_empty() {
                     let (tag, val, _) = check.tlv()?;
+                    if !defined_general_name_tag(tag) {
+                        return Err(bad("invalid subjectAltName choice tag"));
+                    }
                     if tag == T_GN_DNS && (val.is_empty() || !val.is_ascii()) {
                         return Err(bad("dNSName is not ASCII"));
+                    }
+                    if matches!(tag, 0x81 | 0x86) && (val.is_empty() || !val.is_ascii()) {
+                        return Err(bad("SAN IA5String is empty or non-ASCII"));
+                    }
+                    if tag == 0x88 {
+                        check_oid_encoding(val)?;
+                    }
+                    if tag == T_CTX0 {
+                        check_other_name(val)?;
+                    }
+                    if tag == 0xa5 {
+                        check_edi_party_name(val)?;
+                    }
+                    if tag == 0xa4 {
+                        check_directory_name(val)?;
                     }
                     if tag == T_GN_IP && val.len() != 4 && val.len() != 16 {
                         return Err(bad("iPAddress length"));
                     }
                 }
                 ext.san = Some(body);
+                ext.san_critical = critical;
             }
             OID_EXT_NC => {
                 let mut v = Der::new(value);
                 let body = v.expect(T_SEQUENCE)?;
                 v.finish()?;
+                name_constraint_lists(body)?;
                 ext.name_constraints = Some(body);
             }
             OID_EXT_SKI => {
@@ -889,12 +1234,7 @@ fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
                 v.finish()?;
             }
             OID_EXT_AKI => {
-                let mut v = Der::new(value);
-                let mut s = v.nested(T_SEQUENCE)?;
-                v.finish()?;
-                // keyIdentifier [0] IMPLICIT OCTET STRING; issuer and serial
-                // forms are accepted and ignored.
-                ext.aki = s.optional(0x80)?;
+                ext.aki = parse_authority_key_identifier(value)?;
             }
             OID_EXT_CP => {}
             _ => {
@@ -903,6 +1243,21 @@ fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
                 }
             }
         }
+    }
+    if let Some((ca, Some(_))) = ext.basic {
+        if !ca || ext.key_usage.is_some_and(|ku| ku & KU_KEY_CERT_SIGN == 0) {
+            return Err(bad(
+                "pathLenConstraint requires certificate-signing CA usage",
+            ));
+        }
+    }
+    if ext.key_usage.is_some_and(|ku| ku & KU_KEY_CERT_SIGN != 0)
+        && !matches!(ext.basic, Some((true, _)))
+    {
+        return Err(bad("keyCertSign requires CA basicConstraints"));
+    }
+    if ext.name_constraints.is_some() && !matches!(ext.basic, Some((true, _))) {
+        return Err(bad("nameConstraints requires CA basicConstraints"));
     }
     Ok(ext)
 }
@@ -920,7 +1275,44 @@ fn pss_hash(oid: &[u8]) -> Option<(SignatureScheme, u64)> {
     })
 }
 
+/// REQ-X509-066: a received signature AlgorithmIdentifier contains one valid
+/// OID and at most one complete parameter value, independently of support.
+fn check_algorithm_identifier_encoding(alg: &[u8]) -> Result<()> {
+    let mut fields = Der::new(alg);
+    check_oid_encoding(fields.expect(T_OID)?)?;
+    if !fields.is_empty() {
+        fields.any()?;
+    }
+    fields.finish()
+}
+
+/// REQ-X509-067: received SubjectPublicKeyInfo contains a complete algorithm
+/// identifier and one BIT STRING with valid unused-bit count and padding.
+fn check_subject_public_key_info(spki: &[u8]) -> Result<()> {
+    let mut wrapper = Der::new(spki);
+    let mut fields = wrapper.nested(T_SEQUENCE)?;
+    wrapper.finish()?;
+    check_algorithm_identifier_encoding(fields.expect(T_SEQUENCE)?)?;
+    let bits = fields.expect(T_BIT_STRING)?;
+    let (unused, bytes) = bits
+        .split_first()
+        .ok_or(bad("empty public key BIT STRING"))?;
+    if *unused > 7 {
+        return Err(bad("invalid public key unused-bit count"));
+    }
+    match bytes.last() {
+        None if *unused != 0 => return Err(bad("public key padding without bits")),
+        Some(last) if last & ((1u8 << unused) - 1) != 0 => {
+            return Err(bad("nonzero public key padding bits"));
+        }
+        _ => {}
+    }
+    fields.finish()
+}
+
 /// Map an `AlgorithmIdentifier` body to a scheme.
+/// REQ-X509-043: signature and RSA-PSS parameter OIDs are complete and minimal
+/// before algorithm matching; malformed identifiers are structural errors.
 fn scheme_from_alg(alg: &[u8]) -> Result<SignatureScheme> {
     let unsupported = || {
         Error::new(
@@ -930,6 +1322,7 @@ fn scheme_from_alg(alg: &[u8]) -> Result<SignatureScheme> {
     };
     let mut r = Der::new(alg);
     let oid = r.expect(T_OID)?;
+    check_oid_encoding(oid)?;
     let scheme = match oid {
         OID_ECDSA_SHA256 => SignatureScheme::EcdsaSecp256r1Sha256,
         OID_ECDSA_SHA384 => SignatureScheme::EcdsaSecp384r1Sha384,
@@ -953,18 +1346,23 @@ fn scheme_from_alg(alg: &[u8]) -> Result<SignatureScheme> {
             let mut halg = h.nested(T_SEQUENCE)?;
             h.finish()?;
             let hoid = halg.expect(T_OID)?;
+            check_oid_encoding(hoid)?;
             halg.optional_null()?;
             halg.finish()?;
             let (scheme, salt_len) = pss_hash(hoid).ok_or_else(unsupported)?;
             let mut m = p.nested(T_CTX1)?;
             let mut malg = m.nested(T_SEQUENCE)?;
             m.finish()?;
-            if malg.expect(T_OID)? != OID_MGF1 {
+            let mgf_oid = malg.expect(T_OID)?;
+            check_oid_encoding(mgf_oid)?;
+            if mgf_oid != OID_MGF1 {
                 return Err(unsupported());
             }
             let mut mh = malg.nested(T_SEQUENCE)?;
             malg.finish()?;
-            if mh.expect(T_OID)? != hoid {
+            let mgf_hash_oid = mh.expect(T_OID)?;
+            check_oid_encoding(mgf_hash_oid)?;
+            if mgf_hash_oid != hoid {
                 return Err(unsupported());
             }
             mh.optional_null()?;
@@ -1361,7 +1759,120 @@ fn ip_within(ip: &[u8], constraint: &[u8]) -> bool {
         .all(|((i, a), m)| i & m == a & m)
 }
 
+/// REQ-X509-044: CIDR masks contain leading one bits followed only by zero bits.
+fn contiguous_ip_mask(mask: &[u8]) -> bool {
+    let mut zeros = false;
+    for &byte in mask {
+        if zeros && byte != 0 {
+            return false;
+        }
+        match byte {
+            0xff => {}
+            0xfe | 0xfc | 0xf8 | 0xf0 | 0xe0 | 0xc0 | 0x80 | 0 => zeros = true,
+            _ => return false,
+        }
+    }
+    true
+}
+
+struct NameConstraintLists<'a> {
+    permitted: Option<&'a [u8]>,
+    excluded: Option<&'a [u8]>,
+}
+
+/// REQ-X509-058: BaseDistance is a nonempty, nonnegative, minimally encoded
+/// INTEGER; validation does not impose a machine-integer size limit.
+fn check_base_distance(content: &[u8]) -> Result<()> {
+    let (first, _) = content
+        .split_first()
+        .ok_or(bad("empty BaseDistance INTEGER"))?;
+    if first & 0x80 != 0 {
+        return Err(bad("negative BaseDistance INTEGER"));
+    }
+    if let [0, second, ..] = content {
+        if second & 0x80 == 0 {
+            return Err(bad("nonminimal BaseDistance INTEGER"));
+        }
+    }
+    Ok(())
+}
+
+/// REQ-X509-057: each subtree is a complete SEQUENCE with one defined base
+/// followed only by ordered optional implicit minimum and maximum fields.
+/// REQ-X509-059: registeredID constraint bases contain complete minimal OIDs.
+/// REQ-X509-060: directoryName constraint bases wrap a complete, ordered Name.
+/// REQ-X509-061: otherName constraint bases contain a valid OID and one explicit value.
+/// REQ-X509-062: EDI constraint bases have ordered fields and valid DirectoryStrings.
+/// REQ-X509-063: email, DNS, and URI constraint bases contain only IA5String bytes.
+/// REQ-X509-064: IP constraint bases encode an address and contiguous mask at parse time.
+fn check_general_subtrees(body: &[u8]) -> Result<()> {
+    let mut subtrees = Der::new(body);
+    while !subtrees.is_empty() {
+        let mut subtree = subtrees.nested(T_SEQUENCE)?;
+        let (tag, base, _) = subtree.tlv()?;
+        if !defined_general_name_tag(tag) {
+            return Err(bad("invalid name constraint base tag"));
+        }
+        if matches!(tag, 0x81 | T_GN_DNS | 0x86) && !base.is_ascii() {
+            return Err(bad("name constraint IA5String is non-ASCII"));
+        }
+        if tag == T_GN_IP {
+            if base.len() != 8 && base.len() != 32 {
+                return Err(bad("IP name constraint length"));
+            }
+            if !contiguous_ip_mask(&base[base.len() / 2..]) {
+                return Err(bad("noncontiguous IP name constraint mask"));
+            }
+        }
+        if tag == 0x88 {
+            check_oid_encoding(base)?;
+        }
+        if tag == 0xa0 {
+            check_other_name(base)?;
+        }
+        if tag == 0xa5 {
+            check_edi_party_name(base)?;
+        }
+        if tag == 0xa4 {
+            let mut directory_base = Der::new(base);
+            check_rdn_sequence(directory_base.expect(T_SEQUENCE)?)?;
+            directory_base.finish()?;
+        }
+        if let Some(minimum) = subtree.optional(0x80)? {
+            check_base_distance(minimum)?;
+        }
+        if let Some(maximum) = subtree.optional(0x81)? {
+            check_base_distance(maximum)?;
+        }
+        subtree.finish()?;
+    }
+    Ok(())
+}
+
+/// REQ-X509-018: constraints contain a field and each present subtree list is nonempty.
+/// REQ-X509-056: parse and evaluation both require complete, ordered constraint lists.
+fn name_constraint_lists(nc: &[u8]) -> Result<NameConstraintLists<'_>> {
+    let mut r = Der::new(nc);
+    let permitted = r.optional(T_CTX0)?;
+    let excluded = r.optional(T_CTX1)?;
+    r.finish()?;
+    if permitted.is_none() && excluded.is_none() {
+        return Err(bad("empty name constraints"));
+    }
+    if permitted.is_some_and(<[u8]>::is_empty) || excluded.is_some_and(<[u8]>::is_empty) {
+        return Err(bad("empty general subtrees"));
+    }
+    for body in [permitted, excluded].into_iter().flatten() {
+        check_general_subtrees(body)?;
+    }
+    Ok(NameConstraintLists {
+        permitted,
+        excluded,
+    })
+}
+
 /// Apply one `NameConstraints` body to the names of `subjects`. `REQ-X509-008`.
+/// REQ-X509-044: IP constraint masks use CIDR encoding, even for absent name families.
 fn apply_name_constraints(nc: &[u8], subjects: &[&Certificate<'_>]) -> Result<()> {
     let violation = || Error::new(ErrorKind::CertificateUsage, "name constraints violated");
     let unsupported = || {
@@ -1370,16 +1881,10 @@ fn apply_name_constraints(nc: &[u8], subjects: &[&Certificate<'_>]) -> Result<()
             "name constraint form not supported",
         )
     };
-    let mut r = Der::new(nc);
-    let mut permitted: Option<&[u8]> = None;
-    let mut excluded: Option<&[u8]> = None;
-    if let Some(p) = r.optional(T_CTX0)? {
-        permitted = Some(p);
-    }
-    if let Some(e) = r.optional(T_CTX1)? {
-        excluded = Some(e);
-    }
-    r.finish()?;
+    let NameConstraintLists {
+        permitted,
+        excluded,
+    } = name_constraint_lists(nc)?;
 
     // Collect (tag, base) pairs, failing closed on forms not evaluated here.
     let collect = |body: Option<&[u8]>| -> Result<Vec<(u8, Vec<u8>)>> {
@@ -1395,7 +1900,7 @@ fn apply_name_constraints(nc: &[u8], subjects: &[&Certificate<'_>]) -> Result<()
             }
             match tag {
                 T_GN_DNS if base.is_ascii() => out.push((tag, base.to_vec())),
-                T_GN_IP if base.len() == 8 || base.len() == 32 => out.push((tag, base.to_vec())),
+                T_GN_IP => out.push((tag, base.to_vec())),
                 _ => return Err(unsupported()),
             }
         }
@@ -1788,7 +2293,7 @@ pub struct CertificateParams<'a> {
     pub not_after: u64,
     /// Whether this is a CA certificate.
     pub is_ca: bool,
-    /// Path length constraint, for CAs.
+    /// Path length constraint; setting this requires `is_ca` to be true.
     pub path_len: Option<u8>,
     /// Extended key usages; empty for none.
     pub usage: &'a [Usage],
@@ -1823,12 +2328,14 @@ fn push_ext(out: &mut Vec<u8>, oid: &[u8], critical: bool, value: &[u8]) {
     push_tlv(out, T_SEQUENCE, &body);
 }
 
+/// REQ-X509-026: RFC 7093 method 1 hashes only the public-key octets,
+/// excluding the BIT STRING's unused-bit-count octet.
 fn key_identifier(spki: &[u8]) -> Result<Vec<u8>> {
     // RFC 7093 §2 method 1: leftmost 160 bits of SHA-256 of the key bits.
     let mut outer = Der::new(spki);
     let mut s = outer.nested(T_SEQUENCE)?;
     let _ = s.expect(T_SEQUENCE)?;
-    let key = s.expect(T_BIT_STRING)?;
+    let key = whole_bits(s.expect(T_BIT_STRING)?)?;
     let d = HashAlg::Sha256.digest(key);
     Ok(d.as_bytes()[..20].to_vec())
 }
@@ -1855,6 +2362,11 @@ fn key_usage_bits(bits: u16) -> Vec<u8> {
 
 /// Build and sign a certificate. `extra` is appended to the extensions
 /// verbatim; it exists for tests of extension handling.
+/// REQ-X509-022: issuance rejects reversed validity intervals; equal endpoints are allowed.
+/// REQ-X509-023: a configured path length requires a CA certificate and is preserved.
+/// REQ-X509-024: an issued certificate needs a subject name or alternative name.
+/// REQ-X509-025: every configured DNS alternative name passes syntax and length checks.
+/// REQ-X509-027: issuance requires a subject SPKI accepted by the crypto adapter.
 #[allow(clippy::too_many_arguments)]
 fn build(
     params: &CertificateParams<'_>,
@@ -1868,6 +2380,9 @@ fn build(
     let cfg = |c| Error::new(ErrorKind::InvalidConfig, c);
     if params.not_after < params.not_before {
         return Err(cfg("certificate validity ends before it begins"));
+    }
+    if params.path_len.is_some() && !params.is_ca {
+        return Err(cfg("certificate path length requires a CA"));
     }
     if params.subject_cn.is_empty() && params.dns_names.is_empty() && params.ip_addresses.is_empty()
     {
@@ -1989,11 +2504,18 @@ fn build(
 }
 
 /// Issue a self-signed certificate for `key`.
+/// REQ-X509-020: self-signed issuance requires a nonempty issuer common name.
 pub fn self_signed(
     params: &CertificateParams<'_>,
     key: &SigningKey,
     rng: &mut dyn RandomSource,
 ) -> Result<Vec<u8>> {
+    if params.subject_cn.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidConfig,
+            "self-signed issuer name is empty",
+        ));
+    }
     let name = encode_name(params.subject_cn);
     let ki = key_identifier(key.spki())?;
     build(params, key.spki(), &name, &ki, key, rng, &[])
@@ -2001,6 +2523,7 @@ pub fn self_signed(
 
 /// Issue a certificate for `subject_spki`, signed by the holder of
 /// `issuer_key`, whose certificate is `issuer_cert_der`.
+/// REQ-X509-021: issuance requires a nonempty subject Name on the issuer certificate.
 pub fn issue(
     params: &CertificateParams<'_>,
     subject_spki: &[u8],
@@ -2009,6 +2532,12 @@ pub fn issue(
     rng: &mut dyn RandomSource,
 ) -> Result<Vec<u8>> {
     let issuer = Certificate::parse(issuer_cert_der)?;
+    if Der::new(issuer.subject).expect(T_SEQUENCE)?.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidConfig,
+            "issuer certificate subject name is empty",
+        ));
+    }
     if issuer.spki != issuer_key.spki() {
         return Err(Error::new(
             ErrorKind::InvalidConfig,
@@ -2033,6 +2562,50 @@ pub fn issue(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Synthetic encodings exercise the minimum-octet rule in X.690 section 8.3.2.
+    #[test]
+    fn unsigned_integers_require_minimal_der_encoding() {
+        for (bytes, expected) in [
+            (&[][..], None),
+            (&[0][..], Some(0)),
+            (&[1][..], Some(1)),
+            (&[0x7f][..], Some(127)),
+            (&[0, 0x80][..], Some(128)),
+            (&[0, 0xff][..], Some(255)),
+            (&[1, 0][..], Some(256)),
+            (&[0, 0][..], None),
+            (&[0, 1][..], None),
+            (&[0, 0x7f][..], None),
+            (&[0, 0, 0x80][..], None),
+            (&[0x80][..], None),
+            (&[0xff][..], None),
+            (
+                &[0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff][..],
+                Some(u64::MAX),
+            ),
+            (&[1, 0, 0, 0, 0, 0, 0, 0, 0][..], None),
+        ] {
+            let integer = small_uint(bytes);
+            let mut basic = Vec::new();
+            push_tlv(&mut basic, T_BOOLEAN, &[0xff]);
+            push_tlv(&mut basic, T_INTEGER, bytes);
+            let mut value = Vec::new();
+            push_tlv(&mut value, T_SEQUENCE, &basic);
+            let mut extension = Vec::new();
+            push_ext(&mut extension, OID_EXT_BC, true, &value);
+            let mut extensions = Vec::new();
+            push_tlv(&mut extensions, T_SEQUENCE, &extension);
+            let parsed = parse_extensions(&extensions);
+            if let Some(expected) = expected {
+                assert_eq!(integer.unwrap(), expected);
+                assert_eq!(parsed.unwrap().basic, Some((true, Some(expected))));
+            } else {
+                assert_eq!(integer.unwrap_err().kind(), ErrorKind::BadCertificate);
+                assert_eq!(parsed.unwrap_err().kind(), ErrorKind::BadCertificate);
+            }
+        }
+    }
 
     #[test]
     fn times_convert_both_ways() {
@@ -2125,6 +2698,2318 @@ mod tests {
         assert!(!ip_within(&[11, 1, 2, 3], &[10, 0, 0, 0, 255, 0, 0, 0]));
     }
 
+    /// REQ-X509-017: AKI accepts key IDs and paired issuer/serial references;
+    /// unpaired, repeated, out-of-order and trailing fields are refused.
+    #[test]
+    fn authority_key_identifier_fields_are_paired_and_consumed() {
+        let mut issuer_names = Vec::new();
+        push_tlv(&mut issuer_names, T_GN_DNS, b"issuer.example");
+        let fields = |key: bool, issuer: bool, serial: bool| {
+            let mut body = Vec::new();
+            if key {
+                push_tlv(&mut body, 0x80, &[1, 2]);
+            }
+            if issuer {
+                push_tlv(&mut body, T_CTX1, &issuer_names);
+            }
+            if serial {
+                push_tlv(&mut body, 0x82, &[1]);
+            }
+            body
+        };
+        let mut cases = Vec::new();
+        for key in [false, true] {
+            for (issuer, serial) in [(false, false), (true, true), (true, false), (false, true)] {
+                cases.push((fields(key, issuer, serial), issuer == serial, key));
+            }
+        }
+        let mut trailing = fields(true, true, true);
+        trailing.extend_from_slice(&[0x05, 0]);
+        cases.push((trailing, false, true));
+        let mut repeated = fields(true, false, false);
+        push_tlv(&mut repeated, 0x80, &[3]);
+        cases.push((repeated, false, true));
+        let mut reversed = fields(false, false, true);
+        push_tlv(&mut reversed, T_CTX1, &issuer_names);
+        cases.push((reversed, false, false));
+        let mut repeated_issuer = fields(false, true, true);
+        push_tlv(&mut repeated_issuer, T_CTX1, &issuer_names);
+        cases.push((repeated_issuer, false, false));
+        for (body, accepted, key) in cases {
+            let mut value = Vec::new();
+            push_tlv(&mut value, T_SEQUENCE, &body);
+            let mut entry = Vec::new();
+            push_ext(&mut entry, OID_EXT_AKI, false, &value);
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, T_SEQUENCE, &entry);
+            let result = parse_extensions(&encoded);
+            if accepted {
+                assert_eq!(
+                    result.unwrap().aki,
+                    if key { Some(&[1, 2][..]) } else { None }
+                );
+            } else {
+                assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
+            }
+        }
+    }
+
+    /// REQ-X509-046: unused issuer references still contain a complete, nonempty
+    /// GeneralNames list; invalid first or last entries cannot be ignored.
+    #[test]
+    fn authority_key_identifier_issuer_names_require_complete_defined_choices() {
+        let name = |tag, value: &[u8]| {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, tag, value);
+            encoded
+        };
+        let dns = name(T_GN_DNS, b"issuer.example");
+        let directory = name(0xa4, &encode_name("Authority issuer"));
+        let email = name(0x81, b"issuer@example.test");
+        let uri = name(0x86, b"https://issuer.example");
+        let ip = name(T_GN_IP, &[192, 0, 2, 1]);
+        let registered = name(0x88, &[0x2a, 3]);
+        let other = name(T_CTX0, &[T_OID, 2, 0x2a, 3, T_CTX0, 2, T_NULL, 0]);
+        let edi = name(0xa5, &[T_CTX1, 3, T_UTF8, 1, b'A']);
+        let x400 = name(0xa3, &[T_SEQUENCE, 0]);
+        let valid = [
+            dns.clone(),
+            directory,
+            email,
+            uri,
+            ip,
+            registered,
+            other,
+            edi,
+            x400,
+        ];
+        let mut cases = Vec::new();
+        for encoded in &valid {
+            cases.push((encoded.clone(), true));
+        }
+        cases.push((valid.concat(), true));
+        cases.push((Vec::new(), false));
+        for tag in 0..=u8::MAX {
+            // The ASN.1 choice has these nine tags, including constructed forms.
+            if matches!(
+                tag,
+                0xa0 | 0x81 | 0x82 | 0xa3 | 0xa4 | 0xa5 | 0x86 | 0x87 | 0x88
+            ) {
+                continue;
+            }
+            for first in [false, true] {
+                let invalid = name(tag, &[0x05, 0]);
+                let encoded = if first {
+                    [invalid, dns.clone()].concat()
+                } else {
+                    [dns.clone(), invalid].concat()
+                };
+                cases.push((encoded, false));
+            }
+        }
+        for tail in [
+            &[T_GN_DNS][..],
+            &[T_GN_DNS, 2, b'a'][..],
+            &[T_GN_DNS, 0x80][..],
+        ] {
+            cases.push(([dns.as_slice(), tail].concat(), false));
+        }
+        for (issuer_names, accepted) in cases {
+            for key in [false, true] {
+                for critical in [false, true] {
+                    let mut body = Vec::new();
+                    if key {
+                        push_tlv(&mut body, 0x80, &[1, 2]);
+                    }
+                    push_tlv(&mut body, T_CTX1, &issuer_names);
+                    push_tlv(&mut body, 0x82, &[1]);
+                    let mut value = Vec::new();
+                    push_tlv(&mut value, T_SEQUENCE, &body);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_AKI, critical, &value);
+                    let mut extensions = Vec::new();
+                    push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                    let result = parse_extensions(&extensions);
+                    if accepted {
+                        assert_eq!(
+                            result.unwrap().aki,
+                            if key { Some(&[1, 2][..]) } else { None }
+                        );
+                    } else {
+                        assert_eq!(
+                            result.err().unwrap().kind(),
+                            ErrorKind::BadCertificate,
+                            "issuer={issuer_names:?}, key={key}, critical={critical}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-047: registeredID payloads cannot hide malformed OIDs in
+    /// otherwise well-framed issuer references, before or after valid names.
+    #[test]
+    fn authority_key_identifier_registered_ids_require_minimal_oids() {
+        let mut dns = Vec::new();
+        push_tlv(&mut dns, T_GN_DNS, b"issuer.example");
+        for (oid, expected_error) in [
+            (&[][..], Some("empty OBJECT IDENTIFIER")),
+            (
+                &[0x80, 0][..],
+                Some("nonminimal OBJECT IDENTIFIER subidentifier"),
+            ),
+            (
+                &[0x2a, 0x80, 1][..],
+                Some("nonminimal OBJECT IDENTIFIER subidentifier"),
+            ),
+            (
+                &[0x81][..],
+                Some("truncated OBJECT IDENTIFIER subidentifier"),
+            ),
+            (
+                &[0x2a, 0x81][..],
+                Some("truncated OBJECT IDENTIFIER subidentifier"),
+            ),
+            (&[0][..], None),
+            (&[0x2a, 0x81, 0][..], None),
+            (&[0x88, 0x80, 0x80, 0x80, 0x80, 0][..], None),
+        ] {
+            let mut registered = Vec::new();
+            push_tlv(&mut registered, 0x88, oid);
+            for names in [
+                registered.clone(),
+                [registered.as_slice(), dns.as_slice()].concat(),
+                [dns.as_slice(), registered.as_slice()].concat(),
+            ] {
+                for key in [false, true] {
+                    for critical in [false, true] {
+                        let mut body = Vec::new();
+                        if key {
+                            push_tlv(&mut body, 0x80, &[1, 2]);
+                        }
+                        push_tlv(&mut body, T_CTX1, &names);
+                        push_tlv(&mut body, 0x82, &[1]);
+                        let mut value = Vec::new();
+                        push_tlv(&mut value, T_SEQUENCE, &body);
+                        let mut extension = Vec::new();
+                        push_ext(&mut extension, OID_EXT_AKI, critical, &value);
+                        let mut extensions = Vec::new();
+                        push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                        let result = parse_extensions(&extensions);
+                        if let Some(context) = expected_error {
+                            let error = result.err().unwrap();
+                            assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                            assert_eq!(error.context(), context);
+                        } else {
+                            assert_eq!(
+                                result.unwrap().aki,
+                                if key { Some(&[1, 2][..]) } else { None }
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-052: AKI IP addresses have four or sixteen octets, including
+    /// entries before or after another name and address/mask-shaped payloads.
+    #[test]
+    fn authority_key_identifier_ip_names_require_address_lengths() {
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"issuer.example");
+        for len in (0..=33).chain([127, 128, 255, 256]) {
+            for byte in [0, 0xff] {
+                let address = alloc::vec![byte; len];
+                let mut encoded = Vec::new();
+                push_tlv(&mut encoded, T_GN_IP, &address);
+                for names in [
+                    encoded.clone(),
+                    [encoded.as_slice(), control.as_slice()].concat(),
+                    [control.as_slice(), encoded.as_slice()].concat(),
+                ] {
+                    for key in [false, true] {
+                        for critical in [false, true] {
+                            let mut body = Vec::new();
+                            if key {
+                                push_tlv(&mut body, 0x80, &[1, 2]);
+                            }
+                            push_tlv(&mut body, T_CTX1, &names);
+                            push_tlv(&mut body, 0x82, &[1]);
+                            let mut aki = Vec::new();
+                            push_tlv(&mut aki, T_SEQUENCE, &body);
+                            let mut extension = Vec::new();
+                            push_ext(&mut extension, OID_EXT_AKI, critical, &aki);
+                            let mut extensions = Vec::new();
+                            push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                            let result = parse_extensions(&extensions);
+                            if len == 4 || len == 16 {
+                                assert_eq!(
+                                    result.unwrap().aki,
+                                    if key { Some(&[1, 2][..]) } else { None }
+                                );
+                            } else {
+                                let error = result.err().unwrap();
+                                assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                                assert_eq!(
+                                    error.context(),
+                                    "authority certificate issuer iPAddress length"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-051: every IA5 issuer-name byte is ASCII, including later entries;
+    /// unconstrained empty IA5Strings retain their ASN.1 representation.
+    #[test]
+    fn authority_key_identifier_ia5strings_require_ascii() {
+        let mut control = Vec::new();
+        push_tlv(&mut control, 0x88, &[0x2a, 3]);
+        let ascii = (0..=0x7f).collect::<Vec<u8>>();
+        let mut values = alloc::vec![Vec::new(), ascii];
+        for byte in 0x80..=u8::MAX {
+            values.extend([
+                alloc::vec![byte],
+                alloc::vec![byte, b'A'],
+                alloc::vec![b'A', byte, b'B'],
+                alloc::vec![b'A', byte],
+            ]);
+        }
+        for tag in [0x81, T_GN_DNS, 0x86] {
+            for value in &values {
+                let mut encoded = Vec::new();
+                push_tlv(&mut encoded, tag, value);
+                for names in [
+                    encoded.clone(),
+                    [encoded.as_slice(), control.as_slice()].concat(),
+                    [control.as_slice(), encoded.as_slice()].concat(),
+                ] {
+                    for key in [false, true] {
+                        for critical in [false, true] {
+                            let mut body = Vec::new();
+                            if key {
+                                push_tlv(&mut body, 0x80, &[1, 2]);
+                            }
+                            push_tlv(&mut body, T_CTX1, &names);
+                            push_tlv(&mut body, 0x82, &[1]);
+                            let mut aki = Vec::new();
+                            push_tlv(&mut aki, T_SEQUENCE, &body);
+                            let mut extension = Vec::new();
+                            push_ext(&mut extension, OID_EXT_AKI, critical, &aki);
+                            let mut extensions = Vec::new();
+                            push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                            let result = parse_extensions(&extensions);
+                            if value.is_ascii() {
+                                assert_eq!(
+                                    result.unwrap().aki,
+                                    if key { Some(&[1, 2][..]) } else { None }
+                                );
+                            } else {
+                                let error = result.err().unwrap();
+                                assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                                assert_eq!(
+                                    error.context(),
+                                    "authority certificate issuer IA5String is non-ASCII"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-050: EDI issuer references validate every ordered string field,
+    /// regardless of list position, key identifier presence, or criticality.
+    #[test]
+    fn authority_key_identifier_edi_names_require_ordered_valid_strings() {
+        let field = |tag, string: &[u8]| {
+            let mut out = Vec::new();
+            push_tlv(&mut out, tag, string);
+            out
+        };
+        let party = field(T_CTX1, &[T_UTF8, 1, b'A']);
+        let assigner = field(T_CTX0, &[T_UTF8, 1, b'B']);
+        let mut cases = alloc::vec![
+            (party.clone(), true),
+            ([assigner.clone(), party.clone()].concat(), true),
+            (Vec::new(), false),
+            (assigner.clone(), false),
+            ([party.clone(), assigner.clone()].concat(), false),
+            ([assigner.clone(), assigner, party.clone()].concat(), false),
+            ([party.clone(), party.clone()].concat(), false),
+            ([party.clone(), alloc::vec![T_NULL, 0]].concat(), false),
+            (field(0x81, &[T_UTF8, 1, b'A']), false),
+        ];
+        for string in [
+            &[T_UTF8, 2, 0xc3, 0xa9][..],
+            &[T_PRINTABLE, 1, b'?'][..],
+            &[T_T61, 1, 0xff][..],
+            &[0x1e, 2, 0, b'A'][..],
+            &[0x1c, 4, 0, 0, 0, b'A'][..],
+        ] {
+            cases.push((field(T_CTX1, string), true));
+            cases.push(([field(T_CTX0, string), party.clone()].concat(), true));
+        }
+        for string in [
+            &[][..],
+            &[T_UTF8, 0][..],
+            &[T_UTF8, 2, b'A'][..],
+            &[T_UTF8, 1, 0xff][..],
+            &[T_UTF8, 2, 0xc0, 0x80][..],
+            &[T_PRINTABLE, 1, b'@'][..],
+            &[0x1e, 1, b'A'][..],
+            &[0x1c, 3, 0, 0, b'A'][..],
+            &[T_NULL, 0][..],
+            &[T_UTF8, 1, b'A', T_NULL, 0][..],
+        ] {
+            cases.push((field(T_CTX1, string), false));
+            cases.push(([field(T_CTX0, string), party.clone()].concat(), false));
+        }
+        let mut dns = Vec::new();
+        push_tlv(&mut dns, T_GN_DNS, b"issuer.example");
+        for (payload, accepted) in cases {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, 0xa5, &payload);
+            for names in [
+                encoded.clone(),
+                [encoded.as_slice(), dns.as_slice()].concat(),
+                [dns.as_slice(), encoded.as_slice()].concat(),
+            ] {
+                for key in [false, true] {
+                    for critical in [false, true] {
+                        let mut body = Vec::new();
+                        if key {
+                            push_tlv(&mut body, 0x80, &[1, 2]);
+                        }
+                        push_tlv(&mut body, T_CTX1, &names);
+                        push_tlv(&mut body, 0x82, &[1]);
+                        let mut value = Vec::new();
+                        push_tlv(&mut value, T_SEQUENCE, &body);
+                        let mut extension = Vec::new();
+                        push_ext(&mut extension, OID_EXT_AKI, critical, &value);
+                        let mut extensions = Vec::new();
+                        push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                        let result = parse_extensions(&extensions);
+                        if accepted {
+                            assert_eq!(
+                                result.unwrap().aki,
+                                if key { Some(&[1, 2][..]) } else { None }
+                            );
+                        } else {
+                            assert_eq!(
+                                result.err().unwrap().kind(),
+                                ErrorKind::BadCertificate,
+                                "payload={payload:?}, key={key}, critical={critical}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-049: AKI otherName fields use the shared ASN.1 structure,
+    /// including entries after another issuer name and opaque unknown values.
+    #[test]
+    fn authority_key_identifier_other_names_require_complete_fields() {
+        let other = |oid: &[u8], value: &[u8]| {
+            let mut body = Vec::new();
+            push_tlv(&mut body, T_OID, oid);
+            push_tlv(&mut body, T_CTX0, value);
+            body
+        };
+        let valid = other(&[0x2a, 3], &[T_NULL, 0]);
+        let mut trailing = valid.clone();
+        trailing.extend_from_slice(&[T_NULL, 0]);
+        let mut unwrapped = Vec::new();
+        push_tlv(&mut unwrapped, T_OID, &[0x2a, 3]);
+        unwrapped.extend_from_slice(&[T_NULL, 0]);
+        let mut missing = Vec::new();
+        push_tlv(&mut missing, T_OID, &[0x2a, 3]);
+        let mut dns = Vec::new();
+        push_tlv(&mut dns, T_GN_DNS, b"issuer.example");
+        for (payload, accepted) in [
+            (valid, true),
+            (other(&[0], &[T_UTF8, 1, b'A']), true),
+            (other(&[0x2a, 0x81, 0], &[0x9f, 31, 0]), true),
+            (other(&[0x2a, 3], &[T_SEQUENCE, 0]), true),
+            (Vec::new(), false),
+            (other(&[], &[T_NULL, 0]), false),
+            (other(&[0x80, 0], &[T_NULL, 0]), false),
+            (other(&[0x2a, 0x81], &[T_NULL, 0]), false),
+            (missing, false),
+            (unwrapped, false),
+            (other(&[0x2a, 3], &[]), false),
+            (other(&[0x2a, 3], &[T_NULL, 0, T_NULL, 0]), false),
+            (other(&[0x2a, 3], &[T_UTF8, 2, b'A']), false),
+            (other(&[0x2a, 3], &[0x9f, 0x80, 31, 0]), false),
+            (trailing, false),
+        ] {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, T_CTX0, &payload);
+            for names in [
+                encoded.clone(),
+                [encoded.as_slice(), dns.as_slice()].concat(),
+                [dns.as_slice(), encoded.as_slice()].concat(),
+            ] {
+                for key in [false, true] {
+                    for critical in [false, true] {
+                        let mut body = Vec::new();
+                        if key {
+                            push_tlv(&mut body, 0x80, &[1, 2]);
+                        }
+                        push_tlv(&mut body, T_CTX1, &names);
+                        push_tlv(&mut body, 0x82, &[1]);
+                        let mut value = Vec::new();
+                        push_tlv(&mut value, T_SEQUENCE, &body);
+                        let mut extension = Vec::new();
+                        push_ext(&mut extension, OID_EXT_AKI, critical, &value);
+                        let mut extensions = Vec::new();
+                        push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                        let result = parse_extensions(&extensions);
+                        if accepted {
+                            assert_eq!(
+                                result.unwrap().aki,
+                                if key { Some(&[1, 2][..]) } else { None }
+                            );
+                        } else {
+                            assert_eq!(
+                                result.err().unwrap().kind(),
+                                ErrorKind::BadCertificate,
+                                "payload={payload:?}, key={key}, critical={critical}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-048: AKI directoryName wrappers and RDN attributes are complete
+    /// and ordered, even in entries following another valid issuer name.
+    #[test]
+    fn authority_key_identifier_directory_names_require_complete_ordered_names() {
+        let attribute = |oid: &[u8], value: &[u8]| {
+            let mut body = Vec::new();
+            push_tlv(&mut body, T_OID, oid);
+            body.extend_from_slice(value);
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, T_SEQUENCE, &body);
+            encoded
+        };
+        let name = |attributes: &[u8]| {
+            let mut rdn = Vec::new();
+            push_tlv(&mut rdn, T_SET, attributes);
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, T_SEQUENCE, &rdn);
+            encoded
+        };
+        let a = attribute(&[0x2a, 3], &[T_UTF8, 1, b'A']);
+        let b = attribute(&[0x2a, 4], &[T_UTF8, 1, b'B']);
+        let mut trailing = encode_name("Issuer");
+        trailing.extend_from_slice(&[T_NULL, 0]);
+        let mut cases = alloc::vec![
+            (encode_name("Issuer"), true),
+            (encode_name("É issuer"), true),
+            (alloc::vec![T_SEQUENCE, 0], true), // Empty RDNSequence is a Name.
+            (name(&a), true),
+            (name(&[a.clone(), b.clone()].concat()), true),
+            (name(&[b, a].concat()), false),
+            (name(&attribute(&[0x2a, 3], &[0x9f, 31, 0])), true),
+            (Vec::new(), false),
+            (alloc::vec![T_SET, 0], false),
+            (alloc::vec![T_SEQUENCE, 1, T_SET], false),
+            (trailing, false),
+            (name(&[]), false),
+            (name(&[T_SEQUENCE, 0]), false),
+            (name(&attribute(&[], &[T_NULL, 0])), false),
+            (name(&attribute(&[0x2a, 0x81], &[T_NULL, 0])), false),
+            (name(&attribute(&[0x80, 0], &[T_NULL, 0])), false),
+            (name(&attribute(&[0x2a, 3], &[])), false),
+            (name(&attribute(&[0x2a, 3], &[T_NULL, 0, T_NULL, 0])), false),
+        ];
+        let mut two_names = encode_name("Issuer");
+        two_names.extend_from_slice(&encode_name("Other"));
+        cases.push((two_names, false));
+        let mut dns = Vec::new();
+        push_tlv(&mut dns, T_GN_DNS, b"issuer.example");
+        for (directory, accepted) in cases {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, 0xa4, &directory);
+            for names in [
+                encoded.clone(),
+                [encoded.as_slice(), dns.as_slice()].concat(),
+                [dns.as_slice(), encoded.as_slice()].concat(),
+            ] {
+                for key in [false, true] {
+                    for critical in [false, true] {
+                        let mut body = Vec::new();
+                        if key {
+                            push_tlv(&mut body, 0x80, &[1, 2]);
+                        }
+                        push_tlv(&mut body, T_CTX1, &names);
+                        push_tlv(&mut body, 0x82, &[1]);
+                        let mut value = Vec::new();
+                        push_tlv(&mut value, T_SEQUENCE, &body);
+                        let mut extension = Vec::new();
+                        push_ext(&mut extension, OID_EXT_AKI, critical, &value);
+                        let mut extensions = Vec::new();
+                        push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                        let result = parse_extensions(&extensions);
+                        if accepted {
+                            assert_eq!(
+                                result.unwrap().aki,
+                                if key { Some(&[1, 2][..]) } else { None }
+                            );
+                        } else {
+                            assert_eq!(
+                                result.err().unwrap().kind(),
+                                ErrorKind::BadCertificate,
+                                "directory={directory:?}, key={key}, critical={critical}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Synthetic fixed-width string fixtures test X.690's two/four-octet forms.
+    #[test]
+    fn edi_party_name_fixed_width_strings_require_complete_code_units() {
+        let field = |wrapper, string_tag, value: &[u8]| {
+            let mut string = Vec::new();
+            push_tlv(&mut string, string_tag, value);
+            let mut out = Vec::new();
+            push_tlv(&mut out, wrapper, &string);
+            out
+        };
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for (tag, unit) in [(0x1e, &[0, b'P'][..]), (0x1c, &[0, 0, 0, b'P'][..])] {
+            let complete = unit.repeat(4);
+            for len in 0..=complete.len() {
+                let value = &complete[..len];
+                let accepted = len > 0 && len % unit.len() == 0;
+                for wrapper in [T_CTX0, T_CTX1] {
+                    let mut fields = if wrapper == T_CTX0 {
+                        field(T_CTX0, tag, value)
+                    } else {
+                        field(T_CTX0, T_UTF8, b"assigner")
+                    };
+                    fields.extend_from_slice(&if wrapper == T_CTX1 {
+                        field(T_CTX1, tag, value)
+                    } else {
+                        field(T_CTX1, T_UTF8, b"party")
+                    });
+                    let mut name = Vec::new();
+                    push_tlv(&mut name, 0xa5, &fields);
+                    for critical in [false, true] {
+                        for first in [false, true] {
+                            let mut names = if first { name.clone() } else { control.clone() };
+                            names.extend_from_slice(if first { &control } else { &name });
+                            let mut encoded_names = Vec::new();
+                            push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                            let mut extension = Vec::new();
+                            push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                            let mut extensions = Vec::new();
+                            push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                            let result = parse_extensions(&extensions);
+                            if accepted {
+                                assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                            } else {
+                                assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Other string encodings do not inherit the fixed-width checks.
+        for tag in [T_T61, T_PRINTABLE, T_UTF8] {
+            let mut string = Vec::new();
+            push_tlv(&mut string, tag, b"abc");
+            assert!(check_directory_string(&string).is_ok());
+        }
+    }
+
+    /// X.680's PrintableString table supplies the independent accepted alphabet.
+    #[test]
+    fn edi_party_name_printablestrings_require_the_asn1_repertoire() {
+        let alphabet =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '()+,-./:=?";
+        let field = |wrapper, value: &[u8]| {
+            let mut string = Vec::new();
+            push_tlv(&mut string, T_PRINTABLE, value);
+            let mut out = Vec::new();
+            push_tlv(&mut out, wrapper, &string);
+            out
+        };
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for byte in 0..=u8::MAX {
+            let accepted = alphabet.contains(&byte);
+            for value in [
+                alloc::vec![byte],
+                alloc::vec![byte, b'A'],
+                alloc::vec![b'A', byte],
+            ] {
+                for wrapper in [T_CTX0, T_CTX1] {
+                    let mut fields = if wrapper == T_CTX0 {
+                        field(T_CTX0, &value)
+                    } else {
+                        field(T_CTX0, b"assigner")
+                    };
+                    fields.extend_from_slice(&field(
+                        T_CTX1,
+                        if wrapper == T_CTX1 { &value } else { b"party" },
+                    ));
+                    let mut name = Vec::new();
+                    push_tlv(&mut name, 0xa5, &fields);
+                    for critical in [false, true] {
+                        for first in [false, true] {
+                            let mut names = if first { name.clone() } else { control.clone() };
+                            names.extend_from_slice(if first { &control } else { &name });
+                            let mut encoded_names = Vec::new();
+                            push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                            let mut extension = Vec::new();
+                            push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                            let mut extensions = Vec::new();
+                            push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                            let result = parse_extensions(&extensions);
+                            if accepted {
+                                assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                            } else {
+                                assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // These ASCII characters are valid UTF8String, outside PrintableString's set.
+        let mut string = Vec::new();
+        push_tlv(&mut string, T_UTF8, b"agent@example_test");
+        assert!(check_directory_string(&string).is_ok());
+    }
+
+    /// Synthetic UTF-8 fixtures cover invalid sequences independently of DER framing.
+    #[test]
+    fn edi_party_name_utf8strings_require_well_formed_utf8() {
+        let cases: &[(&[u8], bool)] = &[
+            (b"party", true),
+            (&[0], true),
+            (&[0x7f], true),
+            (&[0xc2, 0x80], true),
+            (&[0xdf, 0xbf], true),
+            (&[0xe0, 0xa0, 0x80], true),
+            (&[0xed, 0x9f, 0xbf], true),
+            (&[0xee, 0x80, 0x80], true),
+            (&[0xef, 0xbf, 0xbf], true),
+            (&[0xf0, 0x90, 0x80, 0x80], true),
+            (&[0xf4, 0x8f, 0xbf, 0xbf], true),
+            (&[0x80], false),
+            (&[0xbf], false),
+            (&[0xc0, 0x80], false),
+            (&[0xc1, 0xbf], false),
+            (&[0xc2], false),
+            (&[0xc2, b'A'], false),
+            (&[0xe0, 0x9f, 0xbf], false),
+            (&[0xe1, 0x80], false),
+            (&[0xed, 0xa0, 0x80], false),
+            (&[0xed, 0xbf, 0xbf], false),
+            (&[0xf0, 0x8f, 0xbf, 0xbf], false),
+            (&[0xf1, 0x80, 0x80], false),
+            (&[0xf4, 0x90, 0x80, 0x80], false),
+            (&[0xf5, 0x80, 0x80, 0x80], false),
+            (&[0xf8, 0x88, 0x80, 0x80, 0x80], false),
+            (&[0xff], false),
+            (&[b'p', 0x80], false),
+        ];
+        let field = |wrapper, value: &[u8]| {
+            let mut string = Vec::new();
+            push_tlv(&mut string, T_UTF8, value);
+            let mut out = Vec::new();
+            push_tlv(&mut out, wrapper, &string);
+            out
+        };
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for &(value, accepted) in cases {
+            for wrapper in [T_CTX0, T_CTX1] {
+                let mut fields = if wrapper == T_CTX0 {
+                    field(T_CTX0, value)
+                } else {
+                    field(T_CTX0, b"assigner")
+                };
+                fields.extend_from_slice(&field(
+                    T_CTX1,
+                    if wrapper == T_CTX1 { value } else { b"party" },
+                ));
+                let mut name = Vec::new();
+                push_tlv(&mut name, 0xa5, &fields);
+                for critical in [false, true] {
+                    for first in [false, true] {
+                        let mut names = if first { name.clone() } else { control.clone() };
+                        names.extend_from_slice(if first { &control } else { &name });
+                        let mut encoded_names = Vec::new();
+                        push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                        let mut extension = Vec::new();
+                        push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                        let mut extensions = Vec::new();
+                        push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                        let result = parse_extensions(&extensions);
+                        if accepted {
+                            assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                        } else {
+                            assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                        }
+                    }
+                }
+            }
+        }
+        // TeletexString uses a different encoding and is not subject to UTF-8 checks.
+        let mut string = Vec::new();
+        push_tlv(&mut string, T_T61, &[0xe9]);
+        assert!(check_directory_string(&string).is_ok());
+    }
+
+    /// Synthetic fixtures cover EDI party fields and DirectoryString choices.
+    #[test]
+    fn edi_party_name_sans_require_ordered_complete_string_fields() {
+        let field = |tag: u8, string_tag: u8, value: &[u8]| {
+            let mut string = Vec::new();
+            push_tlv(&mut string, string_tag, value);
+            let mut out = Vec::new();
+            push_tlv(&mut out, tag, &string);
+            out
+        };
+        let party = field(T_CTX1, T_UTF8, b"party");
+        let assigner = field(T_CTX0, T_UTF8, b"assigner");
+        let mut cases = Vec::new();
+        for (tag, value) in [
+            (T_T61, &b"party"[..]),
+            (T_PRINTABLE, &b"Party 1"[..]),
+            (0x1c, &[0, 0, 0, b'P'][..]),
+            (T_UTF8, &[0xc3, 0xa9][..]),
+            (0x1e, &[0, b'P'][..]),
+        ] {
+            let valid_party = field(T_CTX1, tag, value);
+            cases.push((valid_party.clone(), true));
+            let mut assigned = field(T_CTX0, tag, value);
+            assigned.extend_from_slice(&valid_party);
+            cases.push((assigned, true));
+            for wrapper in [T_CTX0, T_CTX1] {
+                let empty = field(wrapper, tag, &[]);
+                let mut invalid = if wrapper == T_CTX0 {
+                    empty.clone()
+                } else {
+                    assigner.clone()
+                };
+                invalid.extend_from_slice(if wrapper == T_CTX0 { &party } else { &empty });
+                cases.push((invalid, false));
+            }
+        }
+        // Invalid string choices and malformed explicit wrappers at either field.
+        for value in [
+            &[][..],
+            &[T_IA5, 1, b'p'][..],
+            &[T_OCTET_STRING, 1, b'p'][..],
+            &[T_NULL, 0][..],
+            &[T_UTF8][..],
+            &[T_UTF8, 2, b'p'][..],
+            &[T_UTF8, 0x80, b'p', 0, 0][..],
+            &[T_UTF8, 1, b'p', T_UTF8, 1, b'q'][..],
+            &[T_UTF8, 1, b'p', 0xff][..],
+            &[T_UTF8 | 0x20, 1, b'p'][..],
+        ] {
+            for wrapper in [T_CTX0, T_CTX1] {
+                let mut invalid_field = Vec::new();
+                push_tlv(&mut invalid_field, wrapper, value);
+                let mut invalid = if wrapper == T_CTX0 {
+                    invalid_field.clone()
+                } else {
+                    assigner.clone()
+                };
+                invalid.extend_from_slice(if wrapper == T_CTX0 {
+                    &party
+                } else {
+                    &invalid_field
+                });
+                cases.push((invalid, false));
+            }
+        }
+        for fields in [
+            Vec::new(),
+            assigner.clone(),
+            [party.clone(), assigner.clone()].concat(),
+            [assigner.clone(), assigner.clone(), party.clone()].concat(),
+            [party.clone(), party.clone()].concat(),
+            [assigner.clone(), party.clone(), party.clone()].concat(),
+            [party.clone(), alloc::vec![T_NULL, 0]].concat(),
+            alloc::vec![0x81, 1, b'p'],
+        ] {
+            cases.push((fields, false));
+        }
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for (value, accepted) in cases {
+            for critical in [false, true] {
+                for first in [false, true] {
+                    let mut name = Vec::new();
+                    push_tlv(&mut name, 0xa5, &value);
+                    let mut names = if first { name.clone() } else { control.clone() };
+                    names.extend_from_slice(if first { &control } else { &name });
+                    let mut encoded_names = Vec::new();
+                    push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                    let mut extensions = Vec::new();
+                    push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                    let result = parse_extensions(&extensions);
+                    if accepted {
+                        assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                    } else {
+                        assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Synthetic fixtures cover AnotherName framing from RFC 5280's ASN.1 module.
+    #[test]
+    fn other_name_sans_require_an_oid_and_one_explicit_value() {
+        let encode = |oid: &[u8], value: &[u8]| {
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_OID, oid);
+            push_tlv(&mut out, T_CTX0, value);
+            out
+        };
+        let valid = encode(&[0x2a, 3], &[T_NULL, 0]);
+        let mut cases = alloc::vec![(valid.clone(), true)];
+        let mut large_tag = alloc::vec![0xdf];
+        large_tag.extend_from_slice(&[0x81; 32]);
+        large_tag.extend_from_slice(&[0, 0]);
+        let mut long_value = Vec::new();
+        push_tlv(&mut long_value, T_OCTET_STRING, &[0x55; 128]);
+        for value in [
+            &[T_UTF8, 2, 0xc3, 0xa9][..],
+            &[T_SEQUENCE, 0][..],
+            &[0x9f, 31, 0][..],
+            &[0xbf, 0x81, 0, 0][..],
+            large_tag.as_slice(),
+            long_value.as_slice(),
+        ] {
+            cases.push((encode(&[0x2a, 3], value), true));
+        }
+        for value in [
+            &[][..],
+            &[T_NULL][..],
+            &[T_OCTET_STRING, 1][..],
+            &[T_NULL, 0, T_NULL, 0][..],
+            &[T_NULL, 0, 0xff][..],
+            &[0, 0][..],
+            &[0x20, 0][..],
+            &[0x9f][..],
+            &[0x9f, 0x81][..],
+            &[0x9f, 0x80, 31, 0][..],
+            &[0x9f, 30, 0][..],
+            &[T_SEQUENCE, 0x80, 0, 0][..],
+            &[T_NULL, 0x81, 0][..],
+        ] {
+            cases.push((encode(&[0x2a, 3], value), false));
+        }
+        for oid in [&[][..], &[0x81][..], &[0x2a, 0x80, 0][..]] {
+            cases.push((encode(oid, &[T_NULL, 0]), false));
+        }
+        let mut trailing = valid.clone();
+        trailing.extend_from_slice(&[T_NULL, 0]);
+        let mut duplicate = valid.clone();
+        duplicate.extend_from_slice(&valid);
+        cases.extend([
+            (Vec::new(), false),
+            (alloc::vec![T_OID, 2, 0x2a, 3], false),
+            (alloc::vec![T_CTX0, 2, T_NULL, 0], false),
+            (alloc::vec![T_OID, 2, 0x2a, 3, 0x80, 2, T_NULL, 0], false),
+            (trailing, false),
+            (duplicate, false),
+        ]);
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for (value, accepted) in cases {
+            for critical in [false, true] {
+                for first in [false, true] {
+                    let mut name = Vec::new();
+                    push_tlv(&mut name, T_CTX0, &value);
+                    let mut names = if first { name.clone() } else { control.clone() };
+                    names.extend_from_slice(if first { &control } else { &name });
+                    let mut encoded_names = Vec::new();
+                    push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                    let mut extensions = Vec::new();
+                    push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                    let result = parse_extensions(&extensions);
+                    if accepted {
+                        assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                    } else {
+                        assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Synthetic RDN fixtures distinguish full-TLV ordering from OID/value ordering.
+    #[test]
+    fn directory_name_rdn_attributes_require_der_order() {
+        let attribute = |oid: &[u8], text: &[u8]| {
+            let mut body = Vec::new();
+            push_tlv(&mut body, T_OID, oid);
+            push_tlv(&mut body, T_UTF8, text);
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_SEQUENCE, &body);
+            out
+        };
+        let short = attribute(&[0x2a, 9], b"A");
+        let medium = attribute(&[0x2a, 1], b"BB");
+        let long = attribute(&[0x2a, 2], b"CCC");
+        let mut sets = Vec::new();
+        for (order, accepted) in [
+            ([0, 1, 2], true),
+            ([0, 2, 1], false),
+            ([1, 0, 2], false),
+            ([1, 2, 0], false),
+            ([2, 0, 1], false),
+            ([2, 1, 0], false),
+        ] {
+            let attributes = [&short, &medium, &long];
+            let body = order
+                .into_iter()
+                .flat_map(|i| attributes[i].iter().copied())
+                .collect::<Vec<_>>();
+            sets.push((alloc::vec![body], accepted));
+        }
+        let a = attribute(&[0x2a, 1], b"A");
+        let b = attribute(&[0x2a, 1], b"B");
+        let other_oid = attribute(&[0x2a, 2], b"A");
+        let long_form = attribute(&[0x2a, 1], &[b'A'; 128]);
+        sets.extend([
+            (alloc::vec![[a.clone(), b.clone()].concat()], true),
+            (alloc::vec![[b.clone(), a.clone()].concat()], false),
+            (alloc::vec![[a.clone(), other_oid.clone()].concat()], true),
+            (alloc::vec![[other_oid, a.clone()].concat()], false),
+            (alloc::vec![[a.clone(), a.clone()].concat()], true),
+            (alloc::vec![[a.clone(), long_form.clone()].concat()], true),
+            (alloc::vec![[long_form, a.clone()].concat()], false),
+            // RDNSequence preserves its own order; sorting restarts for each set.
+            (alloc::vec![long.clone(), short.clone()], true),
+            (
+                alloc::vec![[a.clone(), b.clone()].concat(), [medium, short].concat()],
+                false,
+            ),
+        ]);
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for (sets, accepted) in sets {
+            let mut rdns = Vec::new();
+            for set in sets {
+                push_tlv(&mut rdns, T_SET, &set);
+            }
+            let mut value = Vec::new();
+            push_tlv(&mut value, T_SEQUENCE, &rdns);
+            let mut directory = Vec::new();
+            push_tlv(&mut directory, 0xa4, &value);
+            for critical in [false, true] {
+                for first in [false, true] {
+                    let mut names = if first {
+                        directory.clone()
+                    } else {
+                        control.clone()
+                    };
+                    names.extend_from_slice(if first { &control } else { &directory });
+                    let mut encoded_names = Vec::new();
+                    push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                    let mut extensions = Vec::new();
+                    push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                    let result = parse_extensions(&extensions);
+                    if accepted {
+                        assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                    } else {
+                        assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Synthetic Name fixtures cover RDN and AttributeTypeAndValue framing.
+    #[test]
+    fn directory_name_sans_require_complete_rdn_and_attribute_fields() {
+        let attribute = |oid: &[u8], value: &[u8]| {
+            let mut body = Vec::new();
+            push_tlv(&mut body, T_OID, oid);
+            body.extend_from_slice(value);
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_SEQUENCE, &body);
+            out
+        };
+        let name = |attributes: &[u8]| {
+            let mut rdn = Vec::new();
+            push_tlv(&mut rdn, T_SET, attributes);
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_SEQUENCE, &rdn);
+            out
+        };
+        let first = attribute(&[0x2a, 3], &[T_NULL, 0]);
+        let second = attribute(&[0x2a, 4], &[0x9f, 31, 1, 0x55]);
+        let mut sorted = [first.clone(), second.clone()];
+        sorted.sort();
+        let mut rdns = Vec::new();
+        for attr in &sorted {
+            push_tlv(&mut rdns, T_SET, attr);
+        }
+        let mut multiple_rdns = Vec::new();
+        push_tlv(&mut multiple_rdns, T_SEQUENCE, &rdns);
+        let mut cases = alloc::vec![
+            (encode_name("Directory SAN"), true),
+            (encode_name("É directory"), true),
+            (name(&first), true),
+            (name(&second), true),
+            (name(&sorted.concat()), true),
+            (multiple_rdns, true),
+            (alloc::vec![T_SEQUENCE, 0], false),
+            (name(&[]), false),
+            (name(&[T_SEQUENCE, 0]), false),
+            (name(&[T_OCTET_STRING, 0]), false),
+            (name(&[T_SEQUENCE, 2, T_NULL, 0]), false),
+            (name(&[T_SEQUENCE, 4, T_OID, 2, 0x2a, 3]), false),
+            (alloc::vec![T_SEQUENCE, 2, T_SEQUENCE, 0], false),
+        ];
+        for oid in [&[][..], &[0x81][..], &[0x2a, 0x80, 0][..]] {
+            cases.push((name(&attribute(oid, &[T_NULL, 0])), false));
+        }
+        for value in [
+            &[][..],
+            &[T_NULL][..],
+            &[T_OCTET_STRING, 1][..],
+            &[T_NULL, 0, T_NULL, 0][..],
+            &[T_NULL, 0, 0xff][..],
+            &[0, 0][..],
+            &[0x9f, 0x81][..],
+        ] {
+            cases.push((name(&attribute(&[0x2a, 3], value)), false));
+        }
+        let mut truncated = first.clone();
+        truncated.pop();
+        cases.push((name(&truncated), false));
+        let mut late_bad_attribute = first.clone();
+        late_bad_attribute.extend_from_slice(&attribute(&[0x2a, 4], &[T_NULL]));
+        cases.push((name(&late_bad_attribute), false));
+        let mut late_bad_rdn = rdns;
+        push_tlv(&mut late_bad_rdn, T_SET, &[]);
+        let mut late_bad_name = Vec::new();
+        push_tlv(&mut late_bad_name, T_SEQUENCE, &late_bad_rdn);
+        cases.push((late_bad_name, false));
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for (value, accepted) in cases {
+            for critical in [false, true] {
+                for first in [false, true] {
+                    let mut directory = Vec::new();
+                    push_tlv(&mut directory, 0xa4, &value);
+                    let mut names = if first {
+                        directory.clone()
+                    } else {
+                        control.clone()
+                    };
+                    names.extend_from_slice(if first { &control } else { &directory });
+                    let mut encoded_names = Vec::new();
+                    push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                    let mut extensions = Vec::new();
+                    push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                    let result = parse_extensions(&extensions);
+                    if accepted {
+                        assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                    } else {
+                        assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Synthetic directoryName fixtures test its explicit Name wrapper framing.
+    #[test]
+    fn directory_name_sans_require_one_complete_name_sequence() {
+        let named = encode_name("Directory SAN");
+        let unicode = encode_name("É directory");
+        let mut trailing = named.clone();
+        trailing.extend_from_slice(&[T_NULL, 0]);
+        let mut duplicate = named.clone();
+        duplicate.extend_from_slice(&named);
+        let mut truncated = named.clone();
+        truncated.pop();
+        let cases: &[(&[u8], bool)] = &[
+            (&named, true),
+            (&unicode, true),
+            (&[T_SEQUENCE, 0], false),
+            (&[], false),
+            (&[T_SET, 0], false),
+            (&[T_OCTET_STRING, 0], false),
+            (&[T_SEQUENCE], false),
+            (&[T_SEQUENCE, 1], false),
+            (&[T_SEQUENCE, 0x80, 0, 0], false),
+            (&truncated, false),
+            (&trailing, false),
+            (&duplicate, false),
+        ];
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for &(value, accepted) in cases {
+            for critical in [false, true] {
+                for first in [false, true] {
+                    let mut name = Vec::new();
+                    push_tlv(&mut name, 0xa4, value);
+                    let mut names = if first { name.clone() } else { control.clone() };
+                    names.extend_from_slice(if first { &control } else { &name });
+                    let mut encoded_names = Vec::new();
+                    push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                    let mut extensions = Vec::new();
+                    push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                    let result = parse_extensions(&extensions);
+                    if accepted {
+                        assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                    } else {
+                        assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Synthetic OID fixtures exercise X.690 section 8.19's base-128 encoding rules.
+    #[test]
+    fn registered_id_sans_require_complete_minimal_oids() {
+        let mut large_arc = alloc::vec![0x81; 32];
+        large_arc.push(0);
+        let cases: &[(&[u8], bool)] = &[
+            (&[0], true),
+            (&[0x2a, 3], true),
+            (&[0x81, 0], true),
+            (&[0x2a, 0x81, 0], true),
+            (&[0x2a, 0x86, 0x47], true),
+            (&large_arc, true),
+            (&[], false),
+            (&[0x81], false),
+            (&[0x2a, 0x81], false),
+            (&[0x80, 0], false),
+            (&[0x2a, 0x80, 0], false),
+            (&[0x2a, 0x81, 0, 0x80, 1], false),
+        ];
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for &(value, accepted) in cases {
+            for critical in [false, true] {
+                for first in [false, true] {
+                    let mut name = Vec::new();
+                    push_tlv(&mut name, 0x88, value);
+                    let mut names = if first { name.clone() } else { control.clone() };
+                    names.extend_from_slice(if first { &control } else { &name });
+                    let mut encoded_names = Vec::new();
+                    push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                    let mut extensions = Vec::new();
+                    push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                    let result = parse_extensions(&extensions);
+                    if accepted {
+                        assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                    } else {
+                        assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Synthetic IA5String fixtures cover value checks independently of tag validation.
+    #[test]
+    fn subject_alt_name_ia5strings_require_nonempty_ascii() {
+        let extension = |names: &[u8], critical: bool| {
+            let mut value = Vec::new();
+            push_tlv(&mut value, T_SEQUENCE, names);
+            let mut entry = Vec::new();
+            push_ext(&mut entry, OID_EXT_SAN, critical, &value);
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_SEQUENCE, &entry);
+            out
+        };
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for (tag, valid) in [
+            (0x81, &b"agent@example.test"[..]),
+            (T_GN_DNS, &b"example.test"[..]),
+            (0x86, &b"https://example.test/path"[..]),
+        ] {
+            let mut high_byte_after_ascii = valid.to_vec();
+            high_byte_after_ascii.push(0x80);
+            for (value, accepted) in [
+                (valid, true),
+                (&[][..], false),
+                (&[0x80][..], false),
+                (&[0xff][..], false),
+                (&[0xc3, 0xa9][..], false),
+                (high_byte_after_ascii.as_slice(), false),
+            ] {
+                for critical in [false, true] {
+                    for first in [false, true] {
+                        let mut name = Vec::new();
+                        push_tlv(&mut name, tag, value);
+                        let mut names = if first { name.clone() } else { control.clone() };
+                        names.extend_from_slice(if first { &control } else { &name });
+                        let encoded = extension(&names, critical);
+                        let result = parse_extensions(&encoded);
+                        if accepted {
+                            assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                        } else {
+                            assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                        }
+                    }
+                }
+            }
+        }
+        // directoryName carries a Name, including UTF8String values, rather than IA5String.
+        let mut directory = Vec::new();
+        push_tlv(&mut directory, 0xa4, &encode_name("É directory"));
+        for critical in [false, true] {
+            let encoded = extension(&directory, critical);
+            assert_eq!(
+                parse_extensions(&encoded).unwrap().san,
+                Some(directory.as_slice())
+            );
+        }
+    }
+
+    /// Tag-focused fixtures cover GeneralName's choices from RFC 5280 section 4.2.1.6.
+    #[test]
+    fn subject_alt_names_require_defined_choice_tags() {
+        let choices = [
+            (0xa0, alloc::vec![6, 2, 0x2a, 3, 0xa0, 2, 5, 0]),
+            (0x81, b"agent@example.test".to_vec()),
+            (0x82, b"example.test".to_vec()),
+            (0xa3, alloc::vec![T_SEQUENCE, 0]),
+            (0xa4, encode_name("Directory SAN")),
+            (
+                0xa5,
+                alloc::vec![0xa1, 7, T_UTF8, 5, b'p', b'a', b'r', b't', b'y'],
+            ),
+            (0x86, b"https://example.test/".to_vec()),
+            (0x87, alloc::vec![192, 0, 2, 1]),
+            (0x88, alloc::vec![0x2a, 3]),
+        ];
+        let mut dns = Vec::new();
+        push_tlv(&mut dns, T_GN_DNS, b"control.example");
+        for tag in 0..=u8::MAX {
+            let choice = choices.iter().find(|(valid_tag, _)| *valid_tag == tag);
+            let value = choice.map_or(&b"unused"[..], |(_, value)| value.as_slice());
+            for critical in [false, true] {
+                for first in [false, true] {
+                    let mut name = Vec::new();
+                    push_tlv(&mut name, tag, value);
+                    let mut names = if first { name.clone() } else { dns.clone() };
+                    names.extend_from_slice(if first { &dns } else { &name });
+                    let mut encoded_names = Vec::new();
+                    push_tlv(&mut encoded_names, T_SEQUENCE, &names);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_SAN, critical, &encoded_names);
+                    let mut extensions = Vec::new();
+                    push_tlv(&mut extensions, T_SEQUENCE, &extension);
+                    let result = parse_extensions(&extensions);
+                    if choice.is_some() {
+                        assert_eq!(result.unwrap().san, Some(names.as_slice()));
+                    } else {
+                        assert_eq!(
+                            result.unwrap_err().kind(),
+                            ErrorKind::BadCertificate,
+                            "tag={tag:#x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-016: empty SAN lists fail for either criticality; absent SAN
+    /// and nonempty DNS/IP/mixed lists remain valid.
+    #[test]
+    fn subject_alt_name_requires_a_nonempty_name_list() {
+        let mut dns = Vec::new();
+        push_tlv(&mut dns, T_GN_DNS, b"server.example");
+        let mut ip = Vec::new();
+        push_tlv(&mut ip, T_GN_IP, &[192, 0, 2, 1]);
+        let mut mixed = dns.clone();
+        mixed.extend_from_slice(&ip);
+        for critical in [false, true] {
+            for names in [&[][..], dns.as_slice(), ip.as_slice(), mixed.as_slice()] {
+                let mut value = Vec::new();
+                push_tlv(&mut value, T_SEQUENCE, names);
+                let mut entry = Vec::new();
+                push_ext(&mut entry, OID_EXT_SAN, critical, &value);
+                let mut encoded = Vec::new();
+                push_tlv(&mut encoded, T_SEQUENCE, &entry);
+                let result = parse_extensions(&encoded);
+                if names.is_empty() {
+                    assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
+                } else {
+                    assert_eq!(result.unwrap().san, Some(names));
+                }
+            }
+        }
+        let mut value = Vec::new();
+        push_tlv(&mut value, T_BIT_STRING, &[7, 0x80]);
+        let mut entry = Vec::new();
+        push_ext(&mut entry, OID_EXT_KU, true, &value);
+        let mut encoded = Vec::new();
+        push_tlv(&mut encoded, T_SEQUENCE, &entry);
+        assert!(parse_extensions(&encoded).unwrap().san.is_none());
+    }
+
+    /// REQ-X509-064: IP lengths and every prefix or mask hole are validated
+    /// during parsing in both lists, including later bases and either criticality.
+    #[test]
+    fn name_constraint_ip_bases_require_address_mask_encoding() {
+        let wrap = |tag, body: &[u8]| {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, tag, body);
+            encoded
+        };
+        let control = wrap(T_SEQUENCE, &wrap(T_GN_DNS, b"example.test"));
+        let mut basic = Vec::new();
+        push_ext(
+            &mut basic,
+            OID_EXT_BC,
+            true,
+            &[T_SEQUENCE, 3, T_BOOLEAN, 1, 0xff],
+        );
+        let mut cases = Vec::new();
+        for length in 0..=65 {
+            if length != 8 && length != 32 {
+                cases.push((alloc::vec![0; length], false));
+            }
+        }
+        for width in [4usize, 16] {
+            for prefix in 0..=width * 8 {
+                let mut base = alloc::vec![0xa5; width];
+                for byte in 0..width {
+                    let bits = prefix.saturating_sub(byte * 8).min(8);
+                    base.push(if bits == 0 { 0 } else { 0xff << (8 - bits) });
+                }
+                cases.push((base, true));
+            }
+            for hole in 0..width * 8 - 1 {
+                let mut base = alloc::vec![0; width];
+                let mut mask = alloc::vec![0xff; width];
+                mask[hole / 8] &= !(0x80 >> (hole % 8));
+                base.extend_from_slice(&mask);
+                cases.push((base, false));
+            }
+        }
+        for (base, accepted) in cases {
+            let subtree = wrap(T_SEQUENCE, &wrap(T_GN_IP, &base));
+            for list in [
+                subtree.clone(),
+                [subtree.as_slice(), control.as_slice()].concat(),
+                [control.as_slice(), subtree.as_slice()].concat(),
+            ] {
+                for field in [T_CTX0, T_CTX1] {
+                    let body = wrap(field, &list);
+                    let value = wrap(T_SEQUENCE, &body);
+                    for critical in [false, true] {
+                        let mut extensions = basic.clone();
+                        push_ext(&mut extensions, OID_EXT_NC, critical, &value);
+                        let encoded = wrap(T_SEQUENCE, &extensions);
+                        let result = parse_extensions(&encoded);
+                        if accepted {
+                            assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                            apply_name_constraints(&body, &[]).unwrap();
+                        } else {
+                            assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-063: every high byte fails in IA5 constraint bases regardless of
+    /// list position or criticality; ASCII and empty strings retain their policy.
+    #[test]
+    fn name_constraint_ia5strings_require_ascii() {
+        let wrap = |tag, body: &[u8]| {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, tag, body);
+            encoded
+        };
+        let control = wrap(T_SEQUENCE, &wrap(T_GN_DNS, b"example.test"));
+        let mut basic = Vec::new();
+        push_ext(
+            &mut basic,
+            OID_EXT_BC,
+            true,
+            &[T_SEQUENCE, 3, T_BOOLEAN, 1, 0xff],
+        );
+        let mut values = alloc::vec![Vec::new(), (0..=0x7f).collect::<Vec<u8>>()];
+        for byte in 0x80..=0xff {
+            values.push(alloc::vec![byte]);
+            values.push(alloc::vec![b'a', byte]);
+        }
+        for tag in [0x81, T_GN_DNS, 0x86] {
+            for value in &values {
+                let subtree = wrap(T_SEQUENCE, &wrap(tag, value));
+                for list in [
+                    subtree.clone(),
+                    [subtree.as_slice(), control.as_slice()].concat(),
+                    [control.as_slice(), subtree.as_slice()].concat(),
+                ] {
+                    for field in [T_CTX0, T_CTX1] {
+                        let body = wrap(field, &list);
+                        let extension_value = wrap(T_SEQUENCE, &body);
+                        for critical in [false, true] {
+                            let mut extensions = basic.clone();
+                            push_ext(&mut extensions, OID_EXT_NC, critical, &extension_value);
+                            let encoded = wrap(T_SEQUENCE, &extensions);
+                            let result = parse_extensions(&encoded);
+                            if value.is_ascii() {
+                                assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                                let evaluated = apply_name_constraints(&body, &[]);
+                                if tag == T_GN_DNS {
+                                    assert!(evaluated.is_ok());
+                                } else {
+                                    assert_eq!(
+                                        evaluated.unwrap_err().kind(),
+                                        ErrorKind::UnsupportedCertificate
+                                    );
+                                }
+                            } else {
+                                assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-062: EDI constraint fields and strings are checked in both lists,
+    /// including later bases; valid unsupported forms retain evaluation policy.
+    #[test]
+    fn name_constraint_edi_names_require_ordered_valid_strings() {
+        let wrap = |tag, body: &[u8]| {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, tag, body);
+            encoded
+        };
+        let assigner = wrap(T_CTX0, &[T_UTF8, 1, b'A']);
+        let party = wrap(T_CTX1, &[T_UTF8, 1, b'P']);
+        let control = wrap(T_SEQUENCE, &wrap(T_GN_DNS, b"example.test"));
+        let mut basic = Vec::new();
+        push_ext(
+            &mut basic,
+            OID_EXT_BC,
+            true,
+            &[T_SEQUENCE, 3, T_BOOLEAN, 1, 0xff],
+        );
+        let mut cases = alloc::vec![
+            (party.clone(), true),
+            ([assigner.clone(), party.clone()].concat(), true),
+            (Vec::new(), false),
+            (assigner.clone(), false),
+            ([party.clone(), assigner.clone()].concat(), false),
+            ([assigner.clone(), assigner, party.clone()].concat(), false),
+            ([party.clone(), party.clone()].concat(), false),
+            ([party.clone(), alloc::vec![T_NULL, 0]].concat(), false),
+            (alloc::vec![T_UTF8, 1, b'P'], false),
+            (wrap(T_CTX1, &[T_UTF8, 2, b'P']), false),
+            (wrap(T_CTX1, &[T_UTF8, 1, b'P', T_NULL, 0]), false),
+        ];
+        for (string, accepted) in [
+            (alloc::vec![T_UTF8, 2, 0xc3, 0x89], true),
+            (alloc::vec![T_PRINTABLE, 3, b'A', b'+', b'1'], true),
+            (alloc::vec![T_T61, 1, 0xff], true),
+            (alloc::vec![0x1e, 2, 0, b'P'], true),
+            (alloc::vec![0x1c, 4, 0, 0, 0, b'P'], true),
+            (alloc::vec![T_UTF8, 0], false),
+            (alloc::vec![T_UTF8, 1, 0xff], false),
+            (alloc::vec![T_PRINTABLE, 1, b'@'], false),
+            (alloc::vec![T_PRINTABLE, 1, 0xff], false),
+            (alloc::vec![0x1e, 1, 0], false),
+            (alloc::vec![0x1c, 3, 0, 0, 0], false),
+            (alloc::vec![T_NULL, 0], false),
+        ] {
+            cases.push((wrap(T_CTX1, &string), accepted));
+            cases.push(([wrap(T_CTX0, &string), party.clone()].concat(), accepted));
+        }
+        for (base, accepted) in cases {
+            let subtree = wrap(T_SEQUENCE, &wrap(0xa5, &base));
+            for list in [
+                subtree.clone(),
+                [subtree.as_slice(), control.as_slice()].concat(),
+                [control.as_slice(), subtree.as_slice()].concat(),
+            ] {
+                for field in [T_CTX0, T_CTX1] {
+                    let body = wrap(field, &list);
+                    let value = wrap(T_SEQUENCE, &body);
+                    for critical in [false, true] {
+                        let mut extensions = basic.clone();
+                        push_ext(&mut extensions, OID_EXT_NC, critical, &value);
+                        let encoded = wrap(T_SEQUENCE, &extensions);
+                        let result = parse_extensions(&encoded);
+                        if accepted {
+                            assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                            assert_eq!(
+                                apply_name_constraints(&body, &[]).unwrap_err().kind(),
+                                ErrorKind::UnsupportedCertificate
+                            );
+                        } else {
+                            assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-061: every otherName constraint base is checked during parse,
+    /// including later entries and both permitted and excluded subtree lists.
+    #[test]
+    fn name_constraint_other_names_require_complete_fields() {
+        let wrap = |tag, body: &[u8]| {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, tag, body);
+            encoded
+        };
+        let other = |oid: &[u8], value: &[u8]| [wrap(T_OID, oid), wrap(T_CTX0, value)].concat();
+        let control = wrap(T_SEQUENCE, &wrap(T_GN_DNS, b"example.test"));
+        let valid = other(&[0x2a, 3], &[T_NULL, 0]);
+        let mut basic = Vec::new();
+        push_ext(
+            &mut basic,
+            OID_EXT_BC,
+            true,
+            &[T_SEQUENCE, 3, T_BOOLEAN, 1, 0xff],
+        );
+        for (base, accepted) in [
+            (valid.clone(), true),
+            (other(&[0x2a, 0x81, 0], &[T_UTF8, 1, b'A']), true),
+            (other(&[0x2a, 3], &[0x9f, 31, 0]), true),
+            (Vec::new(), false),
+            (other(&[], &[T_NULL, 0]), false),
+            (other(&[0x2a, 0x80, 1], &[T_NULL, 0]), false),
+            (other(&[0x2a, 0x81], &[T_NULL, 0]), false),
+            (wrap(T_OID, &[0x2a, 3]), false),
+            (other(&[0x2a, 3], &[]), false),
+            (other(&[0x2a, 3], &[T_NULL, 0, T_NULL, 0]), false),
+            (other(&[0x2a, 3], &[T_UTF8, 2, b'A']), false),
+            (other(&[0x2a, 3], &[0x9f, 30, 0]), false),
+            (
+                [wrap(T_OID, &[0x2a, 3]), wrap(T_CTX1, &[T_NULL, 0])].concat(),
+                false,
+            ),
+            ([valid, alloc::vec![T_NULL, 0]].concat(), false),
+            (
+                [wrap(T_CTX0, &[T_NULL, 0]), wrap(T_OID, &[0x2a, 3])].concat(),
+                false,
+            ),
+        ] {
+            let subtree = wrap(T_SEQUENCE, &wrap(T_CTX0, &base));
+            for list in [
+                subtree.clone(),
+                [subtree.as_slice(), control.as_slice()].concat(),
+                [control.as_slice(), subtree.as_slice()].concat(),
+            ] {
+                for field in [T_CTX0, T_CTX1] {
+                    let body = wrap(field, &list);
+                    let value = wrap(T_SEQUENCE, &body);
+                    for critical in [false, true] {
+                        let mut extensions = basic.clone();
+                        push_ext(&mut extensions, OID_EXT_NC, critical, &value);
+                        let encoded = wrap(T_SEQUENCE, &extensions);
+                        let result = parse_extensions(&encoded);
+                        if accepted {
+                            assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                            assert_eq!(
+                                apply_name_constraints(&body, &[]).unwrap_err().kind(),
+                                ErrorKind::UnsupportedCertificate
+                            );
+                        } else {
+                            assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-060: malformed directoryName constraint bases fail during parse
+    /// in either list, including after valid bases and malformed RDN attributes.
+    #[test]
+    fn name_constraint_directory_names_require_complete_ordered_names() {
+        let wrap = |tag, body: &[u8]| {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, tag, body);
+            encoded
+        };
+        let attribute = |oid: &[u8], value: &[u8]| {
+            wrap(T_SEQUENCE, &[wrap(T_OID, oid).as_slice(), value].concat())
+        };
+        let name = |attributes: &[u8]| wrap(T_SEQUENCE, &wrap(T_SET, attributes));
+        let a = attribute(&[0x2a, 3], &[T_UTF8, 1, b'A']);
+        let b = attribute(&[0x2a, 4], &[T_UTF8, 1, b'B']);
+        let control = wrap(T_SEQUENCE, &wrap(T_GN_DNS, b"example.test"));
+        let mut trailing = encode_name("Issuer");
+        trailing.extend_from_slice(&[T_NULL, 0]);
+        let mut basic = Vec::new();
+        push_ext(
+            &mut basic,
+            OID_EXT_BC,
+            true,
+            &[T_SEQUENCE, 3, T_BOOLEAN, 1, 0xff],
+        );
+        for (directory, accepted) in [
+            (encode_name("Issuer"), true),
+            (encode_name("É issuer"), true),
+            (alloc::vec![T_SEQUENCE, 0], true),
+            (name(&[a.clone(), b.clone()].concat()), true),
+            (name(&attribute(&[0x2a, 3], &[0x9f, 31, 0])), true),
+            (name(&[b, a].concat()), false),
+            (Vec::new(), false),
+            (alloc::vec![T_SET, 0], false),
+            (alloc::vec![T_SEQUENCE, 1, T_SET], false),
+            (trailing, false),
+            (name(&[]), false),
+            (name(&[T_SEQUENCE, 0]), false),
+            (name(&attribute(&[], &[T_NULL, 0])), false),
+            (name(&attribute(&[0x2a, 0x81], &[T_NULL, 0])), false),
+            (name(&attribute(&[0x2a, 3], &[])), false),
+            (name(&attribute(&[0x2a, 3], &[T_NULL, 0, T_NULL, 0])), false),
+        ] {
+            let subtree = wrap(T_SEQUENCE, &wrap(0xa4, &directory));
+            for list in [
+                subtree.clone(),
+                [subtree.as_slice(), control.as_slice()].concat(),
+                [control.as_slice(), subtree.as_slice()].concat(),
+            ] {
+                for field in [T_CTX0, T_CTX1] {
+                    let body = wrap(field, &list);
+                    let value = wrap(T_SEQUENCE, &body);
+                    for critical in [false, true] {
+                        let mut extensions = basic.clone();
+                        push_ext(&mut extensions, OID_EXT_NC, critical, &value);
+                        let encoded = wrap(T_SEQUENCE, &extensions);
+                        let result = parse_extensions(&encoded);
+                        if accepted {
+                            assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                            assert_eq!(
+                                apply_name_constraints(&body, &[]).unwrap_err().kind(),
+                                ErrorKind::UnsupportedCertificate
+                            );
+                        } else {
+                            assert_eq!(
+                                result.err().unwrap().kind(),
+                                ErrorKind::BadCertificate,
+                                "directory={directory:?}, field={field}, critical={critical}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-059: malformed registeredID OIDs fail before unsupported-form
+    /// evaluation, including bases following another subtree in either list.
+    #[test]
+    fn name_constraint_registered_ids_require_minimal_oids() {
+        let mut dns = Vec::new();
+        push_tlv(&mut dns, T_GN_DNS, b"example.test");
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_SEQUENCE, &dns);
+        let mut basic = Vec::new();
+        push_ext(
+            &mut basic,
+            OID_EXT_BC,
+            true,
+            &[T_SEQUENCE, 3, T_BOOLEAN, 1, 0xff],
+        );
+        for (oid, expected_error) in [
+            (&[][..], Some("empty OBJECT IDENTIFIER")),
+            (
+                &[0x80, 0][..],
+                Some("nonminimal OBJECT IDENTIFIER subidentifier"),
+            ),
+            (
+                &[0x2a, 0x80, 1][..],
+                Some("nonminimal OBJECT IDENTIFIER subidentifier"),
+            ),
+            (
+                &[0x81][..],
+                Some("truncated OBJECT IDENTIFIER subidentifier"),
+            ),
+            (
+                &[0x2a, 0x81][..],
+                Some("truncated OBJECT IDENTIFIER subidentifier"),
+            ),
+            (&[0][..], None),
+            (&[0x2a, 0x81, 0][..], None),
+            (&[0x88, 0x80, 0x80, 0x80, 0x80, 0][..], None),
+        ] {
+            let mut base = Vec::new();
+            push_tlv(&mut base, 0x88, oid);
+            let mut subtree = Vec::new();
+            push_tlv(&mut subtree, T_SEQUENCE, &base);
+            for list in [
+                subtree.clone(),
+                [subtree.as_slice(), control.as_slice()].concat(),
+                [control.as_slice(), subtree.as_slice()].concat(),
+            ] {
+                for field in [T_CTX0, T_CTX1] {
+                    let mut body = Vec::new();
+                    push_tlv(&mut body, field, &list);
+                    let mut value = Vec::new();
+                    push_tlv(&mut value, T_SEQUENCE, &body);
+                    for critical in [false, true] {
+                        let mut extensions = basic.clone();
+                        push_ext(&mut extensions, OID_EXT_NC, critical, &value);
+                        let mut encoded = Vec::new();
+                        push_tlv(&mut encoded, T_SEQUENCE, &extensions);
+                        let result = parse_extensions(&encoded);
+                        if let Some(context) = expected_error {
+                            let error = result.err().unwrap();
+                            assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                            assert_eq!(error.context(), context);
+                        } else {
+                            assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                            assert_eq!(
+                                apply_name_constraints(&body, &[]).unwrap_err().kind(),
+                                ErrorKind::UnsupportedCertificate
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-058: malformed distance INTEGERs fail during parsing in either
+    /// field and list, while arbitrarily wide canonical positive values survive.
+    #[test]
+    fn name_constraint_distances_require_nonnegative_minimal_integers() {
+        let mut base = Vec::new();
+        push_tlv(&mut base, T_GN_DNS, b"example.test");
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_SEQUENCE, &base);
+        let mut basic = Vec::new();
+        push_ext(
+            &mut basic,
+            OID_EXT_BC,
+            true,
+            &[T_SEQUENCE, 3, T_BOOLEAN, 1, 0xff],
+        );
+        let mut wide = alloc::vec![0x80; 128];
+        wide.insert(0, 0);
+        for (distance, accepted) in [
+            (alloc::vec![0], true),
+            (alloc::vec![1], true),
+            (alloc::vec![0x7f], true),
+            (alloc::vec![0, 0x80], true),
+            (alloc::vec![1, 0], true),
+            (alloc::vec![1; 9], true),
+            (wide, true),
+            (Vec::new(), false),
+            (alloc::vec![0xff], false),
+            (alloc::vec![0x80], false),
+            (alloc::vec![0xff, 0x7f], false),
+            (alloc::vec![0, 0], false),
+            (alloc::vec![0, 1], false),
+            (alloc::vec![0, 0x7f], false),
+            (alloc::vec![0, 0, 0x80], false),
+        ] {
+            for tag in [0x80, 0x81] {
+                let mut body = base.clone();
+                push_tlv(&mut body, tag, &distance);
+                let mut subtree = Vec::new();
+                push_tlv(&mut subtree, T_SEQUENCE, &body);
+                for list in [
+                    subtree.clone(),
+                    [subtree.as_slice(), control.as_slice()].concat(),
+                    [control.as_slice(), subtree.as_slice()].concat(),
+                ] {
+                    for field in [T_CTX0, T_CTX1] {
+                        let mut body = Vec::new();
+                        push_tlv(&mut body, field, &list);
+                        let mut value = Vec::new();
+                        push_tlv(&mut value, T_SEQUENCE, &body);
+                        for critical in [false, true] {
+                            let mut extensions = basic.clone();
+                            push_ext(&mut extensions, OID_EXT_NC, critical, &value);
+                            let mut encoded = Vec::new();
+                            push_tlv(&mut encoded, T_SEQUENCE, &extensions);
+                            let result = parse_extensions(&encoded);
+                            if accepted {
+                                assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                                // Existing evaluation policy still refuses distance fields.
+                                assert_eq!(
+                                    apply_name_constraints(&body, &[]).unwrap_err().kind(),
+                                    ErrorKind::UnsupportedCertificate
+                                );
+                            } else {
+                                assert_eq!(
+                                    result.err().unwrap().kind(),
+                                    ErrorKind::BadCertificate,
+                                    "distance={distance:?}, tag={tag}, field={field}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-057: every subtree is framed completely, including entries
+    /// following a valid subtree in either list and optional distance fields.
+    #[test]
+    fn name_constraint_subtrees_require_complete_ordered_fields() {
+        let wrap = |body: &[u8]| {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, T_SEQUENCE, body);
+            encoded
+        };
+        let mut dns = Vec::new();
+        push_tlv(&mut dns, T_GN_DNS, b"example.test");
+        let valid = wrap(&dns);
+        let min = [0x80, 1, 0];
+        let max = [0x81, 1, 1];
+        let mut basic = Vec::new();
+        push_ext(
+            &mut basic,
+            OID_EXT_BC,
+            true,
+            &[T_SEQUENCE, 3, T_BOOLEAN, 1, 0xff],
+        );
+        let cases = [
+            (valid.clone(), true),
+            (wrap(&[dns.as_slice(), &min].concat()), true),
+            (wrap(&[dns.as_slice(), &max].concat()), true),
+            (wrap(&[dns.as_slice(), &min, &max].concat()), true),
+            (wrap(&[0x88, 2, 0x2a, 3]), true), // Defined but unsupported constraint form.
+            (wrap(&[]), false),
+            (alloc::vec![T_SET, 0], false),
+            (alloc::vec![T_SEQUENCE], false),
+            (wrap(&[T_GN_DNS, 2, b'A']), false),
+            (wrap(&[T_NULL, 0]), false),
+            (wrap(&[0xa2, 0]), false),
+            (wrap(&[dns.as_slice(), dns.as_slice()].concat()), false),
+            (wrap(&[dns.as_slice(), &max, &min].concat()), false),
+            (wrap(&[dns.as_slice(), &min, &min].concat()), false),
+            (wrap(&[dns.as_slice(), &max, &max].concat()), false),
+            (wrap(&[dns.as_slice(), &[T_CTX0, 0]].concat()), false),
+            (wrap(&[dns.as_slice(), &[T_CTX1, 0]].concat()), false),
+            (wrap(&[dns.as_slice(), &[T_NULL, 0]].concat()), false),
+            (wrap(&[dns.as_slice(), &[0x80, 2, 0]].concat()), false),
+        ];
+        for (encoded_subtree, accepted) in cases {
+            for list in [
+                encoded_subtree.clone(),
+                [encoded_subtree.as_slice(), valid.as_slice()].concat(),
+                [valid.as_slice(), encoded_subtree.as_slice()].concat(),
+            ] {
+                for field in [T_CTX0, T_CTX1] {
+                    let mut body = Vec::new();
+                    push_tlv(&mut body, field, &list);
+                    let mut value = Vec::new();
+                    push_tlv(&mut value, T_SEQUENCE, &body);
+                    for critical in [false, true] {
+                        let mut extensions = basic.clone();
+                        push_ext(&mut extensions, OID_EXT_NC, critical, &value);
+                        let mut encoded = Vec::new();
+                        push_tlv(&mut encoded, T_SEQUENCE, &extensions);
+                        let result = parse_extensions(&encoded);
+                        if accepted {
+                            assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                        } else {
+                            assert_eq!(
+                                result.err().unwrap().kind(),
+                                ErrorKind::BadCertificate,
+                                "subtree={encoded_subtree:?}, field={field}, critical={critical}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-056: malformed name-constraint list wrappers fail during
+    /// extension parsing, before any chain evaluation can be skipped.
+    #[test]
+    fn name_constraint_list_wrappers_are_validated_during_parse() {
+        let mut base = Vec::new();
+        push_tlv(&mut base, T_GN_DNS, b"example.test");
+        let mut subtree = Vec::new();
+        push_tlv(&mut subtree, T_SEQUENCE, &base);
+        let mut permitted = Vec::new();
+        push_tlv(&mut permitted, T_CTX0, &subtree);
+        let mut excluded = Vec::new();
+        push_tlv(&mut excluded, T_CTX1, &subtree);
+        let mut basic = Vec::new();
+        push_ext(
+            &mut basic,
+            OID_EXT_BC,
+            true,
+            &[T_SEQUENCE, 3, T_BOOLEAN, 1, 0xff],
+        );
+        for (body, accepted) in [
+            (permitted.clone(), true),
+            (excluded.clone(), true),
+            ([permitted.clone(), excluded.clone()].concat(), true),
+            (Vec::new(), false),
+            (alloc::vec![T_CTX0, 0], false),
+            (alloc::vec![T_CTX1, 0], false),
+            ([permitted.clone(), alloc::vec![T_CTX1, 0]].concat(), false),
+            ([alloc::vec![T_CTX0, 0], excluded.clone()].concat(), false),
+            ([excluded.clone(), permitted.clone()].concat(), false),
+            ([permitted.clone(), permitted.clone()].concat(), false),
+            ([excluded.clone(), excluded.clone()].concat(), false),
+            ([permitted.clone(), alloc::vec![T_NULL, 0]].concat(), false),
+            (alloc::vec![T_CTX0], false),
+            (alloc::vec![T_CTX0, 2, T_SEQUENCE], false),
+        ] {
+            for critical in [false, true] {
+                let mut value = Vec::new();
+                push_tlv(&mut value, T_SEQUENCE, &body);
+                let mut constraint = Vec::new();
+                push_ext(&mut constraint, OID_EXT_NC, critical, &value);
+                for first in [false, true] {
+                    let entries = if first {
+                        [basic.as_slice(), constraint.as_slice()].concat()
+                    } else {
+                        [constraint.as_slice(), basic.as_slice()].concat()
+                    };
+                    let mut encoded = Vec::new();
+                    push_tlv(&mut encoded, T_SEQUENCE, &entries);
+                    let result = parse_extensions(&encoded);
+                    if accepted {
+                        assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                    } else {
+                        assert_eq!(
+                            result.err().unwrap().kind(),
+                            ErrorKind::BadCertificate,
+                            "body={body:?}, critical={critical}, first={first}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-055: nameConstraints requires cA regardless of criticality,
+    /// permitted/excluded choice, or the order of its basicConstraints sibling.
+    #[test]
+    fn name_constraints_require_ca_basic_constraints() {
+        let mut base = Vec::new();
+        push_tlv(&mut base, T_GN_DNS, b"example.test");
+        let mut subtree = Vec::new();
+        push_tlv(&mut subtree, T_SEQUENCE, &base);
+        for field in [T_CTX0, T_CTX1] {
+            let mut body = Vec::new();
+            push_tlv(&mut body, field, &subtree);
+            let mut value = Vec::new();
+            push_tlv(&mut value, T_SEQUENCE, &body);
+            for critical in [false, true] {
+                let mut constraint = Vec::new();
+                push_ext(&mut constraint, OID_EXT_NC, critical, &value);
+                for ca in [None, Some(None), Some(Some(false)), Some(Some(true))] {
+                    for basic_critical in [false, true] {
+                        let mut basic = Vec::new();
+                        if let Some(ca) = ca {
+                            let mut body = Vec::new();
+                            if let Some(ca) = ca {
+                                push_tlv(&mut body, T_BOOLEAN, &[if ca { 0xff } else { 0 }]);
+                            }
+                            let mut encoded = Vec::new();
+                            push_tlv(&mut encoded, T_SEQUENCE, &body);
+                            push_ext(&mut basic, OID_EXT_BC, basic_critical, &encoded);
+                        }
+                        for first in [false, true] {
+                            let entries = if first {
+                                [basic.as_slice(), constraint.as_slice()].concat()
+                            } else {
+                                [constraint.as_slice(), basic.as_slice()].concat()
+                            };
+                            let mut encoded = Vec::new();
+                            push_tlv(&mut encoded, T_SEQUENCE, &entries);
+                            let result = parse_extensions(&encoded);
+                            if ca == Some(Some(true)) {
+                                assert_eq!(result.unwrap().name_constraints, Some(body.as_slice()));
+                            } else {
+                                let error = result.err().unwrap();
+                                assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                                assert_eq!(
+                                    error.context(),
+                                    "nameConstraints requires CA basicConstraints"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // An ordinary non-CA extension set without nameConstraints remains valid.
+        let mut entry = Vec::new();
+        push_ext(&mut entry, OID_EXT_KU, true, &[T_BIT_STRING, 2, 7, 0x80]);
+        let mut encoded = Vec::new();
+        push_tlv(&mut encoded, T_SEQUENCE, &entry);
+        assert!(parse_extensions(&encoded)
+            .unwrap()
+            .name_constraints
+            .is_none());
+    }
+
+    /// REQ-X509-054: certificate-signing usage requires cA even without a path
+    /// limit, with absent/default/false constraints and either extension order.
+    #[test]
+    fn certificate_signing_usage_requires_ca_basic_constraints() {
+        for basic_ca in [None, Some(None), Some(Some(false)), Some(Some(true))] {
+            for usage in [
+                None,
+                Some(KU_DIGITAL_SIGNATURE),
+                Some(KU_CRL_SIGN),
+                Some(KU_KEY_CERT_SIGN),
+                Some(KU_KEY_CERT_SIGN | KU_DIGITAL_SIGNATURE | KU_CRL_SIGN),
+            ] {
+                for basic_critical in [false, true] {
+                    for usage_critical in [false, true] {
+                        for basic_first in [false, true] {
+                            let mut basic = Vec::new();
+                            if let Some(ca) = basic_ca {
+                                let mut body = Vec::new();
+                                if let Some(ca) = ca {
+                                    push_tlv(&mut body, T_BOOLEAN, &[if ca { 0xff } else { 0 }]);
+                                }
+                                let mut value = Vec::new();
+                                push_tlv(&mut value, T_SEQUENCE, &body);
+                                push_ext(&mut basic, OID_EXT_BC, basic_critical, &value);
+                            }
+                            let mut key_usage = Vec::new();
+                            if let Some(usage) = usage {
+                                let mut value = Vec::new();
+                                push_tlv(&mut value, T_BIT_STRING, &key_usage_bits(usage));
+                                push_ext(&mut key_usage, OID_EXT_KU, usage_critical, &value);
+                            }
+                            // Keep the Extensions sequence nonempty for absent controls.
+                            let mut entries = Vec::new();
+                            push_ext(&mut entries, &[0x2a, 3], false, &[T_NULL, 0]);
+                            if basic_first {
+                                entries.extend_from_slice(&basic);
+                            }
+                            entries.extend_from_slice(&key_usage);
+                            if !basic_first {
+                                entries.extend_from_slice(&basic);
+                            }
+                            let mut encoded = Vec::new();
+                            push_tlv(&mut encoded, T_SEQUENCE, &entries);
+                            let result = parse_extensions(&encoded);
+                            let signing = usage.is_some_and(|ku| ku & KU_KEY_CERT_SIGN != 0);
+                            if !signing || basic_ca == Some(Some(true)) {
+                                let parsed = result.unwrap();
+                                assert_eq!(parsed.key_usage, usage);
+                                assert_eq!(
+                                    parsed.basic,
+                                    basic_ca.map(|ca| (ca.unwrap_or(false), None))
+                                );
+                            } else {
+                                let error = result.err().unwrap();
+                                assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                                assert_eq!(
+                                    error.context(),
+                                    "keyCertSign requires CA basicConstraints"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-015: path-length restrictions require cA and cannot
+    /// conflict with present KeyUsage, regardless of extension ordering.
+    #[test]
+    fn path_length_requires_ca_and_signing_usage() {
+        for ca in [None, Some(false), Some(true)] {
+            for path in [None, Some(0), Some(1)] {
+                for usage in [None, Some(KU_DIGITAL_SIGNATURE), Some(KU_KEY_CERT_SIGN)] {
+                    for basic_first in [false, true] {
+                        let mut body = Vec::new();
+                        if let Some(ca) = ca {
+                            push_tlv(&mut body, T_BOOLEAN, &[if ca { 0xff } else { 0 }]);
+                        }
+                        if let Some(path) = path {
+                            push_tlv(&mut body, T_INTEGER, &[path]);
+                        }
+                        let mut value = Vec::new();
+                        push_tlv(&mut value, T_SEQUENCE, &body);
+                        let mut basic = Vec::new();
+                        push_ext(&mut basic, OID_EXT_BC, true, &value);
+                        let mut key_usage = Vec::new();
+                        if let Some(usage) = usage {
+                            let mut value = Vec::new();
+                            push_tlv(&mut value, T_BIT_STRING, &key_usage_bits(usage));
+                            push_ext(&mut key_usage, OID_EXT_KU, true, &value);
+                        }
+                        let mut entries = Vec::new();
+                        if basic_first {
+                            entries.extend_from_slice(&basic);
+                        }
+                        entries.extend_from_slice(&key_usage);
+                        if !basic_first {
+                            entries.extend_from_slice(&basic);
+                        }
+                        let mut encoded = Vec::new();
+                        push_tlv(&mut encoded, T_SEQUENCE, &entries);
+                        let result = parse_extensions(&encoded);
+                        let allowed = (path.is_none()
+                            || (ca == Some(true)
+                                && usage.is_none_or(|usage| usage & KU_KEY_CERT_SIGN != 0)))
+                            && (usage.is_none_or(|usage| usage & KU_KEY_CERT_SIGN == 0)
+                                || ca == Some(true));
+                        assert_eq!(
+                            result.is_ok(),
+                            allowed,
+                            "ca={ca:?}, path={path:?}, usage={usage:?}, basic_first={basic_first}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-014: trailing fields cannot be hidden outside the parsed
+    /// Extensions sequence, even when its individual entries are valid.
+    #[test]
+    fn extensions_wrapper_refuses_trailing_bytes() {
+        let mut value = Vec::new();
+        push_tlv(&mut value, T_BIT_STRING, &[7, 0x80]);
+        let mut entry = Vec::new();
+        push_ext(&mut entry, OID_EXT_KU, true, &value);
+        let mut encoded = Vec::new();
+        push_tlv(&mut encoded, T_SEQUENCE, &entry);
+        assert_eq!(
+            parse_extensions(&encoded).unwrap().key_usage,
+            Some(KU_DIGITAL_SIGNATURE)
+        );
+        for suffix in [
+            &[0x05, 0][..],
+            &[T_SEQUENCE, 0][..],
+            &[T_SEQUENCE][..],
+            &[0][..],
+            encoded.as_slice(),
+        ] {
+            let mut trailing = encoded.clone();
+            trailing.extend_from_slice(suffix);
+            assert_eq!(
+                parse_extensions(&trailing).err().unwrap().kind(),
+                ErrorKind::BadCertificate
+            );
+        }
+    }
+
+    /// REQ-X509-010: present EKU requires at least one purpose; absence and
+    /// well-formed single or multiple purposes remain permitted.
+    #[test]
+    fn extended_key_usage_requires_a_nonempty_purpose_list() {
+        for critical in [false, true] {
+            for purposes in [
+                &[][..],
+                &[OID_KP_SERVER_AUTH][..],
+                &[OID_KP_SERVER_AUTH, OID_KP_CLIENT_AUTH][..],
+                &[OID_ANY_EKU][..],
+            ] {
+                let mut body = Vec::new();
+                for oid in purposes {
+                    push_tlv(&mut body, T_OID, oid);
+                }
+                let mut value = Vec::new();
+                push_tlv(&mut value, T_SEQUENCE, &body);
+                let mut entry = Vec::new();
+                push_ext(&mut entry, OID_EXT_EKU, critical, &value);
+                let mut extensions = Vec::new();
+                push_tlv(&mut extensions, T_SEQUENCE, &entry);
+                let result = parse_extensions(&extensions);
+                if purposes.is_empty() {
+                    assert!(result.is_err(), "accepted empty EKU, critical={critical}");
+                } else {
+                    assert_eq!(result.unwrap().eku, Some(body.as_slice()));
+                }
+            }
+        }
+        let mut value = Vec::new();
+        push_tlv(&mut value, T_BIT_STRING, &[7, 0x80]);
+        let mut entry = Vec::new();
+        push_ext(&mut entry, OID_EXT_KU, true, &value);
+        let mut extensions = Vec::new();
+        push_tlv(&mut extensions, T_SEQUENCE, &entry);
+        assert!(parse_extensions(&extensions).unwrap().eku.is_none());
+    }
+
+    /// REQ-X509-009: padding cannot assert a usage and zero-use extensions
+    /// are refused. Unknown named bits remain ignorable for compatibility.
+    #[test]
+    fn key_usage_padding_and_empty_values_are_refused() {
+        for (bits, expected) in [
+            (alloc::vec![7, 0x80], Some(KU_DIGITAL_SIGNATURE)),
+            (alloc::vec![5, 0x20], Some(1 << 2)),
+            (alloc::vec![6, 0, 0x40], Some(0)), // unknown bit 9
+            (alloc::vec![7, 0x81], None),
+            (alloc::vec![7, 1], None),
+            (alloc::vec![5, 0x21], None),
+            (alloc::vec![7, 0x80, 1], None),
+            (alloc::vec![0, 0], None),
+            (alloc::vec![7, 0], None),
+            (alloc::vec![0, 0, 0], None),
+            (alloc::vec![8, 0x80], None),
+            (alloc::vec![0], None),
+            (Vec::new(), None),
+        ] {
+            let mut value = Vec::new();
+            push_tlv(&mut value, T_BIT_STRING, &bits);
+            let mut entry = Vec::new();
+            push_ext(&mut entry, OID_EXT_KU, true, &value);
+            let mut extensions = Vec::new();
+            push_tlv(&mut extensions, T_SEQUENCE, &entry);
+            let result = parse_extensions(&extensions);
+            match expected {
+                Some(usage) => assert_eq!(result.unwrap().key_usage, Some(usage)),
+                None => assert!(result.is_err(), "accepted {bits:?}"),
+            }
+        }
+    }
+
     #[test]
     fn key_usage_encoding_drops_trailing_zero_bits() {
         assert_eq!(key_usage_bits(KU_DIGITAL_SIGNATURE), [7, 0x80]);
@@ -2152,6 +5037,1144 @@ mod chain_tests {
 
     const NOW: u64 = 1_800_000_000;
     const DAY: u64 = 86_400;
+
+    /// REQ-X509-067: signed certificates refuse malformed SPKI fields during
+    /// parsing without restricting structurally valid unknown key algorithms.
+    #[test]
+    fn received_public_key_info_requires_complete_fields() {
+        let wrap = |tag, body: &[u8]| {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, tag, body);
+            encoded
+        };
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::Ed25519, &mut r).unwrap();
+        let original = self_signed(&params("SPKI fixture", &[], false), &key, &mut r).unwrap();
+        let parsed = Certificate::parse(&original).unwrap();
+        let mut fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        let mut prefix = Vec::new();
+        for _ in 0..6 {
+            prefix.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        fields.expect(T_SEQUENCE).unwrap();
+        let mut tail = Vec::new();
+        while !fields.is_empty() {
+            tail.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        let unknown = wrap(T_SEQUENCE, &wrap(T_OID, &[0x2a, 3]));
+        let mut cases = alloc::vec![(key.spki().to_vec(), true)];
+        for (bits, accepted) in [
+            (alloc::vec![0], true),
+            (alloc::vec![0, 0xff], true),
+            (alloc::vec![7, 0x80], true),
+            (Vec::new(), false),
+            (alloc::vec![1], false),
+            (alloc::vec![8, 0], false),
+            (alloc::vec![1, 1], false),
+            (alloc::vec![7, 0x81], false),
+        ] {
+            cases.push((
+                wrap(
+                    T_SEQUENCE,
+                    &[unknown.clone(), wrap(T_BIT_STRING, &bits)].concat(),
+                ),
+                accepted,
+            ));
+        }
+        let bits = wrap(T_BIT_STRING, &[0, 1]);
+        for algorithm in [
+            wrap(T_SEQUENCE, &[]),
+            wrap(T_SEQUENCE, &wrap(T_OID, &[])),
+            wrap(T_SEQUENCE, &wrap(T_OID, &[0x2a, 0x81])),
+            wrap(
+                T_SEQUENCE,
+                &[wrap(T_OID, &[0x2a, 3]), alloc::vec![T_NULL, 0, T_NULL, 0]].concat(),
+            ),
+            wrap(T_NULL, &[]),
+        ] {
+            cases.push((wrap(T_SEQUENCE, &[algorithm, bits.clone()].concat()), false));
+        }
+        for body in [
+            Vec::new(),
+            unknown.clone(),
+            [unknown.clone(), wrap(T_OCTET_STRING, &[1])].concat(),
+            [unknown.clone(), bits.clone(), bits.clone()].concat(),
+            [unknown, bits, alloc::vec![T_NULL, 0]].concat(),
+        ] {
+            cases.push((wrap(T_SEQUENCE, &body), false));
+        }
+        for (spki, accepted) in cases {
+            let tbs = wrap(
+                T_SEQUENCE,
+                &[prefix.as_slice(), spki.as_slice(), tail.as_slice()].concat(),
+            );
+            let signature = key.sign(SignatureScheme::Ed25519, &tbs, &mut r).unwrap();
+            sign::verify(
+                SignatureScheme::Ed25519,
+                &PublicKey::from_spki(key.spki()).unwrap(),
+                &tbs,
+                &signature,
+            )
+            .unwrap();
+            let der = wrap(
+                T_SEQUENCE,
+                &[
+                    tbs,
+                    alg_id(SignatureScheme::Ed25519).unwrap(),
+                    wrap(T_BIT_STRING, &[alloc::vec![0], signature].concat()),
+                ]
+                .concat(),
+            );
+            let result = Certificate::parse(&der);
+            if accepted {
+                let cert = result.unwrap();
+                assert_eq!(cert.spki_der(), spki.as_slice());
+                check_signature(&cert, key.spki(), &opts()).unwrap();
+            } else {
+                assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
+            }
+        }
+    }
+
+    #[test]
+    fn certificate_issuance_refuses_unusable_subject_public_keys() {
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let root = self_signed(&params("Root", &[], true), &root_key, &mut r).unwrap();
+        let pp = params("Subject", &["subject.example"], false);
+        let assemble = |alg: &[u8], bits: &[u8]| {
+            let mut body = alg.to_vec();
+            push_tlv(&mut body, T_BIT_STRING, bits);
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_SEQUENCE, &body);
+            out
+        };
+        for &kind in KeyKind::ALL {
+            let key = SigningKey::generate(kind, &mut r).unwrap();
+            let valid = issue(&pp, key.spki(), &root, &root_key, &mut r).unwrap();
+            let cert = Certificate::parse(&valid).unwrap();
+            assert_eq!(cert.spki, key.spki());
+            cert.subject_public_key().unwrap();
+            check_signature(&cert, root_key.spki(), &opts()).unwrap();
+
+            let mut spki = Der::new(key.spki()).nested(T_SEQUENCE).unwrap();
+            let alg = spki.expect_raw(T_SEQUENCE).unwrap();
+            let bits = spki.expect(T_BIT_STRING).unwrap();
+            spki.finish().unwrap();
+            let mut longer = bits.to_vec();
+            longer.push(0);
+            let mut unused = bits.to_vec();
+            unused[0] = 1;
+            let mut trailing = key.spki().to_vec();
+            trailing.push(0);
+            let mut unknown_alg_body = Vec::new();
+            push_tlv(&mut unknown_alg_body, T_OID, &[0x2a, 3, 4]);
+            let mut unknown_alg = Vec::new();
+            push_tlv(&mut unknown_alg, T_SEQUENCE, &unknown_alg_body);
+            for malformed in [
+                assemble(alg, &bits[..bits.len() - 1]),
+                assemble(alg, &longer),
+                assemble(alg, &unused),
+                trailing,
+                assemble(&unknown_alg, bits),
+                Vec::new(),
+            ] {
+                let error = issue(&pp, &malformed, &root, &root_key, &mut r).unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::InvalidConfig, "{kind:?}: {error}");
+                assert_eq!(error.context(), "subject public key is not usable");
+            }
+        }
+    }
+
+    /// Published SPKI and method-1 identifier from RFC 7093 section 3:
+    /// https://www.rfc-editor.org/rfc/rfc7093.html#section-3
+    #[test]
+    fn key_identifier_matches_rfc7093_method_one() {
+        let mut spki = [0u8; 91];
+        ic_core::codec::hex_decode(
+            concat!(
+                "3059301306072A8648CE3D020106082A8648CE3D030107034200",
+                "047F7F35A79794C950060B8029FC8F363A",
+                "28F11159692D9D34E6AC948190434735",
+                "F833B1A66652DC514337AFF7F5C9C75D",
+                "670C019D95A5D639B72744C64A9128BB"
+            )
+            .as_bytes(),
+            &mut spki,
+        )
+        .unwrap();
+        let mut expected = [0u8; 20];
+        ic_core::codec::hex_decode(b"BF37B3E5808FD46D54B28E846311BCCE1CAD2E1A", &mut expected)
+            .unwrap();
+        assert_eq!(key_identifier(&spki).unwrap(), expected);
+
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let root = self_signed(&params("Root", &[], true), &root_key, &mut r).unwrap();
+        let leaf = issue(
+            &params("Subject", &["subject.example"], false),
+            &spki,
+            &root,
+            &root_key,
+            &mut r,
+        )
+        .unwrap();
+        let cert = Certificate::parse(&leaf).unwrap();
+        assert_eq!(cert.spki, spki);
+        assert_eq!(cert.ext.ski, Some(expected.as_slice()));
+        let issuer = Certificate::parse(&root).unwrap();
+        assert_eq!(cert.ext.aki, issuer.ext.ski);
+        check_signature(&cert, root_key.spki(), &opts()).unwrap();
+    }
+
+    #[test]
+    fn certificate_issuance_validates_every_dns_alternative_name() {
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let root = self_signed(&params("Root", &[], true), &root_key, &mut r).unwrap();
+        let subject_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let mut cases: Vec<(String, bool)> = [
+            ("subject.example", true),
+            ("*.example.com", true),
+            ("", false),
+            ("bad..example", false),
+            ("-bad.example", false),
+            ("bad-.example", false),
+            ("bad.example.", false),
+            ("bad name.example", false),
+            ("bad\0.example", false),
+            ("é.example", false),
+            ("sub.*.example", false),
+            ("partial*.example", false),
+        ]
+        .into_iter()
+        .map(|(name, valid)| (String::from(name), valid))
+        .collect();
+        cases.push((alloc::format!("{}.example", "a".repeat(63)), true));
+        cases.push((alloc::format!("{}.example", "a".repeat(64)), false));
+        for (last, valid) in [(61, true), (62, false)] {
+            cases.push((
+                alloc::format!(
+                    "{}.{}.{}.{}",
+                    "a".repeat(63),
+                    "b".repeat(63),
+                    "c".repeat(63),
+                    "d".repeat(last)
+                ),
+                valid,
+            ));
+        }
+        for (name, valid) in cases {
+            for names in [
+                alloc::vec![name.as_str()],
+                alloc::vec!["control.example", name.as_str()],
+                alloc::vec![name.as_str(), "control.example"],
+            ] {
+                for issued in [false, true] {
+                    let pp = params("Named subject", &names, false);
+                    let result = if issued {
+                        issue(&pp, subject_key.spki(), &root, &root_key, &mut r)
+                    } else {
+                        self_signed(&pp, &subject_key, &mut r)
+                    };
+                    if valid {
+                        let der = result.unwrap();
+                        let cert = Certificate::parse(&der).unwrap();
+                        assert_eq!(cert.dns_names(), names);
+                        let signer = if issued { &root_key } else { &subject_key };
+                        check_signature(&cert, signer.spki(), &opts()).unwrap();
+                    } else {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.kind(), ErrorKind::InvalidConfig);
+                        assert_eq!(
+                            error.context(),
+                            "invalid DNS name in certificate parameters"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-069: X.680's BMPString repertoire excludes surrogate cells and
+    /// FFFE/FFFF. Signed SAN fixtures exercise both EDI fields and list orders.
+    #[test]
+    fn edi_party_name_bmpstrings_require_the_asn1_repertoire() {
+        // X.680 (2015) section 41.15 defines the BMP subset; Rust's Unicode
+        // scalar conversion independently classifies surrogate cells.
+        for code in 0..=u16::MAX {
+            let mut string = Vec::new();
+            push_tlv(&mut string, 0x1e, &code.to_be_bytes());
+            let expected = char::from_u32(u32::from(code)).is_some() && code < 0xfffe;
+            assert_eq!(
+                check_directory_string(&string).is_ok(),
+                expected,
+                "{code:04x}"
+            );
+        }
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let issuer = self_signed(&params("EDI issuer", &[], true), &key, &mut r).unwrap();
+        let ca = Certificate::parse(&issuer).unwrap();
+        let public = ca.subject_public_key().unwrap();
+        let identifier = key_identifier(ca.spki).unwrap();
+        let field = |wrapper, tag, value: &[u8]| {
+            let mut string = Vec::new();
+            push_tlv(&mut string, tag, value);
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, wrapper, &string);
+            encoded
+        };
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        for (code, accepted) in [
+            (0x0000u16, true),
+            (0x0041, true),
+            (0xd7ff, true),
+            (0xe000, true),
+            (0xfffd, true),
+            (0xd800, false),
+            (0xdbff, false),
+            (0xdc00, false),
+            (0xdfff, false),
+            (0xfffe, false),
+            (0xffff, false),
+        ] {
+            let bytes = code.to_be_bytes();
+            for value in [
+                bytes.to_vec(),
+                [bytes.as_slice(), &[0, 0x41]].concat(),
+                [&[0, 0x41], bytes.as_slice()].concat(),
+            ] {
+                for wrapper in [T_CTX0, T_CTX1] {
+                    let mut edi = if wrapper == T_CTX0 {
+                        field(T_CTX0, 0x1e, &value)
+                    } else {
+                        field(T_CTX0, T_UTF8, b"assigner")
+                    };
+                    edi.extend_from_slice(&field(
+                        T_CTX1,
+                        if wrapper == T_CTX1 { 0x1e } else { T_UTF8 },
+                        if wrapper == T_CTX1 { &value } else { b"party" },
+                    ));
+                    let mut name = Vec::new();
+                    push_tlv(&mut name, 0xa5, &edi);
+                    for critical in [false, true] {
+                        for names in [
+                            [name.clone(), control.clone()].concat(),
+                            [control.clone(), name.clone()].concat(),
+                        ] {
+                            let mut san = Vec::new();
+                            push_tlv(&mut san, T_SEQUENCE, &names);
+                            let mut extension = Vec::new();
+                            push_ext(&mut extension, OID_EXT_SAN, critical, &san);
+                            let encoded = build(
+                                &params("EDI leaf", &[], false),
+                                key.spki(),
+                                ca.subject,
+                                &identifier,
+                                &key,
+                                &mut r,
+                                &[extension],
+                            )
+                            .unwrap();
+                            let mut certificate = Der::new(&encoded).nested(T_SEQUENCE).unwrap();
+                            let tbs = certificate.expect_raw(T_SEQUENCE).unwrap();
+                            let scheme =
+                                scheme_from_alg(certificate.expect(T_SEQUENCE).unwrap()).unwrap();
+                            let signature =
+                                whole_bits(certificate.expect(T_BIT_STRING).unwrap()).unwrap();
+                            sign::verify(scheme, &public, tbs, signature).unwrap();
+                            let result = Certificate::parse(&encoded);
+                            if accepted {
+                                let certificate = result.unwrap();
+                                assert_eq!(certificate.ext.san, Some(names.as_slice()));
+                                check_signature(&certificate, ca.spki, &opts()).unwrap();
+                            } else {
+                                let error = result.err().unwrap();
+                                assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                                assert_eq!(
+                                    error.context(),
+                                    "invalid DirectoryString BMPString character"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // A UTF-16 surrogate pair is also outside BMPString's repertoire.
+        let mut pair = Vec::new();
+        push_tlv(&mut pair, 0x1e, &[0xd8, 0, 0xdc, 0]);
+        assert!(check_directory_string(&pair).is_err());
+    }
+
+    /// REQ-X509-068: received KeyUsage omits trailing zero named bits per
+    /// RFC 5280 Appendix B; unknown bit positions remain parseable.
+    #[test]
+    fn received_key_usage_requires_minimal_named_bit_encoding() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original = self_signed(&params("KeyUsage CA", &[], true), &key, &mut r).unwrap();
+        let parsed = Certificate::parse(&original).unwrap();
+        let scheme = parsed.signature_scheme().unwrap();
+        let public = PublicKey::from_spki(key.spki()).unwrap();
+        let mut outer = Der::new(&original).nested(T_SEQUENCE).unwrap();
+        outer.expect(T_SEQUENCE).unwrap();
+        let algorithm = outer.expect_raw(T_SEQUENCE).unwrap();
+        let mut fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        let mut required = Vec::new();
+        while fields.peek() != Some(T_CTX3) {
+            required.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        let mut extensions = Der::new(fields.expect(T_CTX3).unwrap())
+            .nested(T_SEQUENCE)
+            .unwrap();
+        let mut retained = Vec::new();
+        while !extensions.is_empty() {
+            let encoded = extensions.expect_raw(T_SEQUENCE).unwrap();
+            let mut entry = Der::new(encoded).nested(T_SEQUENCE).unwrap();
+            if entry.expect(T_OID).unwrap() != OID_EXT_KU {
+                retained.extend_from_slice(encoded);
+            }
+        }
+        let mut cases = alloc::vec![
+            (
+                key_usage_bits(KU_DIGITAL_SIGNATURE | KU_KEY_CERT_SIGN | KU_CRL_SIGN),
+                true
+            ),
+            (alloc::vec![6, 0, 0x40], true),
+            (alloc::vec![0, 0, 1], true),
+            (alloc::vec![7, 0, 0, 0x80], true),
+            (alloc::vec![0, 0x80], false),
+            (alloc::vec![6, 0x80], false),
+            (alloc::vec![0, 0, 0x40], false),
+            (alloc::vec![7, 0x80, 0], false),
+            (alloc::vec![0, 0x80, 1, 0], false),
+            (alloc::vec![0, 0x80, 0, 0, 0], false),
+        ];
+        for unused in 0u8..8 {
+            cases.push((alloc::vec![unused, 1u8 << unused], true));
+            if unused != 7 {
+                cases.push((alloc::vec![unused, 1u8 << (unused + 1)], false));
+            }
+        }
+        for (usage, accepted) in cases {
+            for critical in [false, true] {
+                let mut value = Vec::new();
+                push_tlv(&mut value, T_BIT_STRING, &usage);
+                let mut extension = Vec::new();
+                push_ext(&mut extension, OID_EXT_KU, critical, &value);
+                for entries in [
+                    [extension.clone(), retained.clone()].concat(),
+                    [retained.clone(), extension.clone()].concat(),
+                ] {
+                    let mut list = Vec::new();
+                    push_tlv(&mut list, T_SEQUENCE, &entries);
+                    let mut body = required.clone();
+                    push_tlv(&mut body, T_CTX3, &list);
+                    let mut tbs = Vec::new();
+                    push_tlv(&mut tbs, T_SEQUENCE, &body);
+                    let signature = key.sign(scheme, &tbs, &mut r).unwrap();
+                    sign::verify(scheme, &public, &tbs, &signature).unwrap();
+                    let mut content = tbs;
+                    content.extend_from_slice(algorithm);
+                    let mut bits = alloc::vec![0];
+                    bits.extend_from_slice(&signature);
+                    push_tlv(&mut content, T_BIT_STRING, &bits);
+                    let mut encoded = Vec::new();
+                    push_tlv(&mut encoded, T_SEQUENCE, &content);
+                    let result = Certificate::parse(&encoded);
+                    if accepted {
+                        let cert = result.unwrap();
+                        assert!(cert.ext.key_usage.is_some());
+                        check_signature(&cert, key.spki(), &opts()).unwrap();
+                    } else {
+                        let error = result.err().unwrap();
+                        assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                        assert_eq!(error.context(), "keyUsage has trailing zero named bits");
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-053: empty subjects require a critical SAN on received certificates,
+    /// while named subjects can omit SANs or use either criticality.
+    #[test]
+    fn empty_certificate_subjects_require_a_critical_san() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original = self_signed(&params("Named", &[], false), &key, &mut r).unwrap();
+        let parsed = Certificate::parse(&original).unwrap();
+        let scheme = parsed.signature_scheme().unwrap();
+        let public = PublicKey::from_spki(key.spki()).unwrap();
+        let mut outer = Der::new(&original).nested(T_SEQUENCE).unwrap();
+        outer.expect(T_SEQUENCE).unwrap();
+        let algorithm = outer.expect_raw(T_SEQUENCE).unwrap();
+        let mut fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        let mut required = Vec::new();
+        while fields.peek() != Some(T_CTX3) {
+            required.push(fields.tlv().unwrap().2);
+        }
+        let retained = Der::new(fields.expect(T_CTX3).unwrap())
+            .expect(T_SEQUENCE)
+            .unwrap();
+        let mut dns = Vec::new();
+        push_tlv(&mut dns, T_GN_DNS, b"subject.example");
+        let mut ip = Vec::new();
+        push_tlv(&mut ip, T_GN_IP, &[192, 0, 2, 1]);
+        let mut other = Vec::new();
+        push_tlv(
+            &mut other,
+            T_CTX0,
+            &[T_OID, 2, 0x2a, 3, T_CTX0, 2, T_NULL, 0],
+        );
+        for empty_subject in [false, true] {
+            for names in [&dns, &ip, &other] {
+                // Absent SAN, omitted critical flag, explicit FALSE, and TRUE.
+                for critical in [None, Some(None), Some(Some(false)), Some(Some(true))] {
+                    let mut extensions = retained.to_vec();
+                    if let Some(flag) = critical {
+                        let mut value = Vec::new();
+                        push_tlv(&mut value, T_SEQUENCE, names);
+                        let mut body = Vec::new();
+                        push_tlv(&mut body, T_OID, OID_EXT_SAN);
+                        if let Some(flag) = flag {
+                            push_tlv(&mut body, T_BOOLEAN, &[if flag { 0xff } else { 0 }]);
+                        }
+                        push_tlv(&mut body, T_OCTET_STRING, &value);
+                        push_tlv(&mut extensions, T_SEQUENCE, &body);
+                    }
+                    let mut body = Vec::new();
+                    for (i, field) in required.iter().enumerate() {
+                        body.extend_from_slice(if empty_subject && i == 5 {
+                            &[T_SEQUENCE, 0]
+                        } else {
+                            field
+                        });
+                    }
+                    let mut sequence = Vec::new();
+                    push_tlv(&mut sequence, T_SEQUENCE, &extensions);
+                    push_tlv(&mut body, T_CTX3, &sequence);
+                    let mut tbs = Vec::new();
+                    push_tlv(&mut tbs, T_SEQUENCE, &body);
+                    let signature = key.sign(scheme, &tbs, &mut r).unwrap();
+                    sign::verify(scheme, &public, &tbs, &signature).unwrap();
+                    let mut content = tbs;
+                    content.extend_from_slice(algorithm);
+                    let mut bits = alloc::vec![0];
+                    bits.extend_from_slice(&signature);
+                    push_tlv(&mut content, T_BIT_STRING, &bits);
+                    let mut encoded = Vec::new();
+                    push_tlv(&mut encoded, T_SEQUENCE, &content);
+                    let result = Certificate::parse(&encoded);
+                    if !empty_subject || critical == Some(Some(true)) {
+                        let cert = result.unwrap();
+                        assert_eq!(cert.ext.san.is_some(), critical.is_some());
+                        assert_eq!(cert.ext.san_critical, critical == Some(Some(true)));
+                    } else {
+                        let error = result.err().unwrap();
+                        assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                        assert_eq!(
+                            error.context(),
+                            "empty certificate subject requires a critical subjectAltName"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn certificate_issuance_requires_a_subject_or_alternative_name() {
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let root = self_signed(&params("Root", &[], true), &root_key, &mut r).unwrap();
+        let subject_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let v4 = [IpAddr::V4([192, 0, 2, 1])];
+        let mut v6_octets = [0; 16];
+        v6_octets[15] = 1;
+        let v6 = [IpAddr::V6(v6_octets)];
+        for name in ["", "Named subject"] {
+            for dns in [&[][..], &["subject.example"][..]] {
+                for ips in [&[][..], &v4[..], &v6[..]] {
+                    let mut pp = params(name, dns, false);
+                    pp.ip_addresses = ips;
+                    let result = issue(&pp, subject_key.spki(), &root, &root_key, &mut r);
+                    if name.is_empty() && dns.is_empty() && ips.is_empty() {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.kind(), ErrorKind::InvalidConfig);
+                        assert_eq!(
+                            error.context(),
+                            "a certificate needs a subject name or an alternative name"
+                        );
+                    } else {
+                        let der = result.unwrap();
+                        let cert = Certificate::parse(&der).unwrap();
+                        assert_eq!(
+                            Der::new(cert.subject)
+                                .expect(T_SEQUENCE)
+                                .unwrap()
+                                .is_empty(),
+                            name.is_empty()
+                        );
+                        check_signature(&cert, root_key.spki(), &opts()).unwrap();
+                        assert_eq!(cert.ext.san.is_some(), !dns.is_empty() || !ips.is_empty());
+                        if !dns.is_empty() {
+                            verify_name(&der, &ServerName::parse("subject.example").unwrap())
+                                .unwrap();
+                        }
+                        for ip in ips {
+                            verify_name(&der, &ServerName::Ip(*ip)).unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn certificate_issuance_requires_ca_for_path_length() {
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let root = self_signed(&params("Root", &[], true), &root_key, &mut r).unwrap();
+        let subject_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        for ca in [false, true] {
+            for issued in [false, true] {
+                for path_len in [None, Some(0), Some(127), Some(128), Some(255)] {
+                    let mut pp = params("Subject", &["subject.example"], ca);
+                    pp.path_len = path_len;
+                    let result = if issued {
+                        issue(&pp, subject_key.spki(), &root, &root_key, &mut r)
+                    } else {
+                        self_signed(&pp, &subject_key, &mut r)
+                    };
+                    if !ca && path_len.is_some() {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.kind(), ErrorKind::InvalidConfig);
+                        assert_eq!(error.context(), "certificate path length requires a CA");
+                    } else {
+                        let der = result.unwrap();
+                        let cert = Certificate::parse(&der).unwrap();
+                        assert_eq!(cert.ext.basic, Some((ca, path_len.map(u64::from))));
+                        let signer = if issued { &root_key } else { &subject_key };
+                        check_signature(&cert, signer.spki(), &opts()).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-065: signed reversed intervals fail during parsing while equal
+    /// endpoints and increasing intervals retain inclusive validity semantics.
+    #[test]
+    fn received_certificates_refuse_reversed_validity_intervals() {
+        let mut r = rng();
+        for kind in [KeyKind::Ed25519, KeyKind::EcdsaP256, KeyKind::MlDsa65] {
+            let key = SigningKey::generate(kind, &mut r).unwrap();
+            for ca in [false, true] {
+                let mut pp = params("Subject", &["subject.example"], ca);
+                pp.not_before = NOW;
+                pp.not_after = NOW + 10;
+                let original = self_signed(&pp, &key, &mut r).unwrap();
+                let mut from = Vec::new();
+                encode_time(&mut from, NOW + 10).unwrap();
+                for end in [NOW - 1, NOW, NOW + 1] {
+                    let mut to = Vec::new();
+                    encode_time(&mut to, end).unwrap();
+                    let der = resign(&original, &key, &from, &to);
+                    // Establish that rejection is independent of signature validity.
+                    let mut outer = Der::new(&der);
+                    let mut cert = outer.nested(T_SEQUENCE).unwrap();
+                    let tbs = cert.expect_raw(T_SEQUENCE).unwrap();
+                    let scheme = scheme_from_alg(cert.expect(T_SEQUENCE).unwrap()).unwrap();
+                    let signature = whole_bits(cert.expect(T_BIT_STRING).unwrap()).unwrap();
+                    sign::verify(
+                        scheme,
+                        &PublicKey::from_spki(key.spki()).unwrap(),
+                        tbs,
+                        signature,
+                    )
+                    .unwrap();
+                    let result = Certificate::parse(&der);
+                    if end < NOW {
+                        let error = result.err().unwrap();
+                        assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                        assert_eq!(
+                            error.context(),
+                            "certificate validity ends before it begins"
+                        );
+                    } else {
+                        let parsed = result.unwrap();
+                        assert_eq!(parsed.not_before(), NOW);
+                        assert_eq!(parsed.not_after(), end);
+                        parsed.check_validity(NOW).unwrap();
+                        parsed.check_validity(end).unwrap();
+                        assert_eq!(
+                            parsed.check_validity(NOW - 1).unwrap_err().kind(),
+                            ErrorKind::CertificateExpired
+                        );
+                        assert_eq!(
+                            parsed.check_validity(end + 1).unwrap_err().kind(),
+                            ErrorKind::CertificateExpired
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn certificate_issuance_refuses_reversed_validity_intervals() {
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let root = self_signed(&params("Root", &[], true), &root_key, &mut r).unwrap();
+        let subject_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        for ca in [false, true] {
+            for issued in [false, true] {
+                for end in [NOW - 1, NOW, NOW + 1] {
+                    let mut pp = params("Subject", &["subject.example"], ca);
+                    pp.not_before = NOW;
+                    pp.not_after = end;
+                    let result = if issued {
+                        issue(&pp, subject_key.spki(), &root, &root_key, &mut r)
+                    } else {
+                        self_signed(&pp, &subject_key, &mut r)
+                    };
+                    if end < NOW {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.kind(), ErrorKind::InvalidConfig);
+                        assert_eq!(
+                            error.context(),
+                            "certificate validity ends before it begins"
+                        );
+                    } else {
+                        let der = result.unwrap();
+                        let cert = Certificate::parse(&der).unwrap();
+                        assert_eq!(cert.not_before(), NOW);
+                        assert_eq!(cert.not_after(), end);
+                        let signer = if issued { &root_key } else { &subject_key };
+                        check_signature(&cert, signer.spki(), &opts()).unwrap();
+                        cert.check_validity(NOW).unwrap();
+                        cert.check_validity(end).unwrap();
+                        assert_eq!(
+                            cert.check_validity(NOW - 1).unwrap_err().kind(),
+                            ErrorKind::CertificateExpired
+                        );
+                        assert_eq!(
+                            cert.check_validity(end + 1).unwrap_err().kind(),
+                            ErrorKind::CertificateExpired
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issuance_requires_a_named_issuer_certificate() {
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let root = self_signed(&params("Root", &[], true), &root_key, &mut r).unwrap();
+        let issuer_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let leaf_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        for cn in ["", "Named issuer"] {
+            let issuer = issue(
+                &params(cn, &["issuer.example"], true),
+                issuer_key.spki(),
+                &root,
+                &root_key,
+                &mut r,
+            )
+            .unwrap();
+            let parsed = Certificate::parse(&issuer).unwrap();
+            assert_eq!(
+                Der::new(parsed.subject)
+                    .expect(T_SEQUENCE)
+                    .unwrap()
+                    .is_empty(),
+                cn.is_empty()
+            );
+            let result = issue(
+                &params("", &["leaf.example"], false),
+                leaf_key.spki(),
+                &issuer,
+                &issuer_key,
+                &mut r,
+            );
+            if cn.is_empty() {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::InvalidConfig);
+                assert_eq!(error.context(), "issuer certificate subject name is empty");
+            } else {
+                let der = result.unwrap();
+                let leaf = Certificate::parse(&der).unwrap();
+                assert_eq!(leaf.issuer, parsed.subject);
+                assert!(Der::new(leaf.subject)
+                    .expect(T_SEQUENCE)
+                    .unwrap()
+                    .is_empty());
+                assert_eq!(leaf.dns_names(), ["leaf.example"]);
+            }
+        }
+    }
+
+    #[test]
+    fn self_signed_issuance_requires_a_named_issuer() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        for ca in [false, true] {
+            for dns in [&[][..], &["server.example"][..]] {
+                let error = self_signed(&params("", dns, ca), &key, &mut r).unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::InvalidConfig);
+                assert_eq!(error.context(), "self-signed issuer name is empty");
+                let good = self_signed(&params("Named issuer", dns, ca), &key, &mut r).unwrap();
+                let cert = Certificate::parse(&good).unwrap();
+                assert_eq!(cert.issuer, cert.subject);
+                assert!(!Der::new(cert.issuer).expect(T_SEQUENCE).unwrap().is_empty());
+            }
+        }
+        let ca = self_signed(&params("CA", &[], true), &key, &mut r).unwrap();
+        let leaf_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let leaf = issue(
+            &params("", &["server.example"], false),
+            leaf_key.spki(),
+            &ca,
+            &key,
+            &mut r,
+        )
+        .unwrap();
+        let leaf = Certificate::parse(&leaf).unwrap();
+        assert!(Der::new(leaf.subject)
+            .expect(T_SEQUENCE)
+            .unwrap()
+            .is_empty());
+        assert_eq!(leaf.dns_names(), ["server.example"]);
+    }
+
+    #[test]
+    fn certificate_names_require_complete_ordered_rdn_attributes() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let root = self_signed(&params("Root", &[], true), &key, &mut r).unwrap();
+        let original = issue(
+            &params("", &["subject.example"], false),
+            key.spki(),
+            &root,
+            &key,
+            &mut r,
+        )
+        .unwrap();
+        let parsed = Certificate::parse(&original).unwrap();
+        let mut outer = Der::new(&original).nested(T_SEQUENCE).unwrap();
+        outer.expect(T_SEQUENCE).unwrap();
+        let algorithm = outer.expect_raw(T_SEQUENCE).unwrap();
+        let mut tbs_fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        let mut fields = Vec::new();
+        while !tbs_fields.is_empty() {
+            fields.push(tbs_fields.tlv().unwrap().2);
+        }
+        let attribute = |oid: &[u8], value: &[u8]| {
+            let mut body = Vec::new();
+            push_tlv(&mut body, T_OID, oid);
+            body.extend_from_slice(value);
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_SEQUENCE, &body);
+            out
+        };
+        let name = |attributes: &[u8]| {
+            let mut rdn = Vec::new();
+            push_tlv(&mut rdn, T_SET, attributes);
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_SEQUENCE, &rdn);
+            out
+        };
+        let a = attribute(&[0x2a, 3], &[T_NULL, 0]);
+        let b = attribute(&[0x2a, 4], &[T_NULL, 0]);
+        let mut cases = alloc::vec![
+            (encode_name("Named fixture"), true),
+            (encode_name("É fixture"), true),
+            (alloc::vec![T_SEQUENCE, 0], true),
+            (name(&a), true),
+            (name(&attribute(&[0x2a, 3], &[0x9f, 31, 0])), true),
+            (name(&[a.clone(), b.clone()].concat()), true),
+            (name(&[b, a.clone()].concat()), false),
+            (name(&[]), false),
+            (alloc::vec![T_SEQUENCE, 2, T_SEQUENCE, 0], false),
+            (name(&[T_SEQUENCE, 0]), false),
+            (name(&[T_SEQUENCE, 2, T_NULL, 0]), false),
+        ];
+        for oid in [&[][..], &[0x81][..], &[0x2a, 0x80, 0][..]] {
+            cases.push((name(&attribute(oid, &[T_NULL, 0])), false));
+        }
+        for value in [
+            &[][..],
+            &[T_NULL][..],
+            &[T_NULL, 0, T_NULL, 0][..],
+            &[0, 0][..],
+        ] {
+            cases.push((name(&attribute(&[0x2a, 3], value)), false));
+        }
+        let mut late_bad_attribute = a;
+        late_bad_attribute.extend_from_slice(&attribute(&[0x2a, 4], &[T_NULL]));
+        cases.push((name(&late_bad_attribute), false));
+        for (replacement, valid) in cases {
+            for issuer in [false, true] {
+                let index = if issuer { 3 } else { 5 };
+                let mut body = Vec::new();
+                for (i, field) in fields.iter().enumerate() {
+                    body.extend_from_slice(if i == index { &replacement } else { field });
+                }
+                let mut tbs = Vec::new();
+                push_tlv(&mut tbs, T_SEQUENCE, &body);
+                let signature = key
+                    .sign(parsed.signature_scheme().unwrap(), &tbs, &mut r)
+                    .unwrap();
+                let mut content = tbs;
+                content.extend_from_slice(algorithm);
+                let mut bits = alloc::vec![0];
+                bits.extend_from_slice(&signature);
+                push_tlv(&mut content, T_BIT_STRING, &bits);
+                let mut encoded = Vec::new();
+                push_tlv(&mut encoded, T_SEQUENCE, &content);
+                let result = Certificate::parse(&encoded);
+                if valid && !(issuer && replacement == [T_SEQUENCE, 0]) {
+                    let cert = result.unwrap();
+                    assert_eq!(if issuer { cert.issuer } else { cert.subject }, replacement);
+                    check_signature(&cert, key.spki(), &opts()).unwrap();
+                } else {
+                    assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn certificate_issuer_names_must_be_nonempty() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original = self_signed(&params("Issuer fixture", &[], false), &key, &mut r).unwrap();
+        let parsed = Certificate::parse(&original).unwrap();
+        let mut outer = Der::new(&original).nested(T_SEQUENCE).unwrap();
+        outer.expect(T_SEQUENCE).unwrap();
+        let algorithm = outer.expect_raw(T_SEQUENCE).unwrap();
+        let mut fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        let mut prefix = Vec::new();
+        for _ in 0..3 {
+            prefix.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        let original_issuer = fields.expect_raw(T_SEQUENCE).unwrap();
+        let mut tail = Vec::new();
+        while !fields.is_empty() {
+            tail.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        for issuer in [original_issuer, &[T_SEQUENCE, 0][..]] {
+            let mut body = prefix.clone();
+            body.extend_from_slice(issuer);
+            body.extend_from_slice(&tail);
+            let mut tbs = Vec::new();
+            push_tlv(&mut tbs, T_SEQUENCE, &body);
+            let signature = key
+                .sign(parsed.signature_scheme().unwrap(), &tbs, &mut r)
+                .unwrap();
+            let mut content = tbs;
+            content.extend_from_slice(algorithm);
+            let mut bits = alloc::vec![0];
+            bits.extend_from_slice(&signature);
+            push_tlv(&mut content, T_BIT_STRING, &bits);
+            let mut der = Vec::new();
+            push_tlv(&mut der, T_SEQUENCE, &content);
+            if issuer == original_issuer {
+                assert_eq!(Certificate::parse(&der).unwrap().issuer, issuer);
+            } else {
+                let error = Certificate::parse(&der).unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                assert_eq!(error.context(), "empty certificate issuer name");
+            }
+        }
+    }
+
+    /// REQ-X509-013: issuer-signed certificates reject redundant positive
+    /// and negative sign octets, retaining necessary sign octets and bounds.
+    #[test]
+    fn serial_numbers_require_minimal_integer_encoding() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original = self_signed(&params("Serial fixture", &[], false), &key, &mut r).unwrap();
+        let parsed = Certificate::parse(&original).unwrap();
+        let mut cert = Der::new(&original).nested(T_SEQUENCE).unwrap();
+        cert.expect(T_SEQUENCE).unwrap();
+        let algorithm = cert.expect_raw(T_SEQUENCE).unwrap();
+        let mut fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        let version = fields.expect_raw(T_CTX0).unwrap();
+        fields.expect(T_INTEGER).unwrap();
+        let mut tail = Vec::new();
+        while !fields.is_empty() {
+            tail.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        for (serial, accepted) in [
+            (alloc::vec![1], true),
+            (alloc::vec![0x7f], true),
+            (alloc::vec![0, 0x80], true),
+            (alloc::vec![0xff, 0x7f], true),
+            // Existing compatibility for canonical zero and negative values.
+            (alloc::vec![0], true),
+            (alloc::vec![0xff], true),
+            (alloc::vec![0, 1], false),
+            (alloc::vec![0, 0], false),
+            (alloc::vec![0, 0x7f], false),
+            (alloc::vec![0xff, 0xff], false),
+            (alloc::vec![0xff, 0x80], false),
+            (alloc::vec![0, 0, 0x80], false),
+            (Vec::new(), false),
+            (alloc::vec![1; 22], false),
+        ] {
+            let mut body = version.to_vec();
+            push_tlv(&mut body, T_INTEGER, &serial);
+            body.extend_from_slice(&tail);
+            let mut tbs = Vec::new();
+            push_tlv(&mut tbs, T_SEQUENCE, &body);
+            let signature = key
+                .sign(parsed.signature_scheme().unwrap(), &tbs, &mut r)
+                .unwrap();
+            let mut content = tbs;
+            content.extend_from_slice(algorithm);
+            let mut bits = alloc::vec![0];
+            bits.extend_from_slice(&signature);
+            push_tlv(&mut content, T_BIT_STRING, &bits);
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, T_SEQUENCE, &content);
+            let result = Certificate::parse(&encoded);
+            if accepted {
+                assert_eq!(result.unwrap().serial(), serial.as_slice());
+            } else {
+                assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+            }
+        }
+    }
+
+    #[test]
+    fn certificate_versions_require_minimal_integer_encoding() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original = self_signed(&params("Version fixture", &[], false), &key, &mut r).unwrap();
+        let parsed = Certificate::parse(&original).unwrap();
+        let mut outer = Der::new(&original).nested(T_SEQUENCE).unwrap();
+        outer.expect(T_SEQUENCE).unwrap();
+        let algorithm = outer.expect_raw(T_SEQUENCE).unwrap();
+        let mut fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        fields.expect(T_CTX0).unwrap();
+        let mut required = Vec::new();
+        for _ in 0..6 {
+            required.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        for version in [0, 1, 2] {
+            for redundant in [false, true] {
+                let bytes = if redundant {
+                    alloc::vec![0, version]
+                } else {
+                    alloc::vec![version]
+                };
+                let mut integer = Vec::new();
+                push_tlv(&mut integer, T_INTEGER, &bytes);
+                let mut body = Vec::new();
+                push_tlv(&mut body, T_CTX0, &integer);
+                body.extend_from_slice(&required);
+                let mut tbs = Vec::new();
+                push_tlv(&mut tbs, T_SEQUENCE, &body);
+                let signature = key
+                    .sign(parsed.signature_scheme().unwrap(), &tbs, &mut r)
+                    .unwrap();
+                let mut content = tbs;
+                content.extend_from_slice(algorithm);
+                let mut bits = alloc::vec![0];
+                bits.extend_from_slice(&signature);
+                push_tlv(&mut content, T_BIT_STRING, &bits);
+                let mut der = Vec::new();
+                push_tlv(&mut der, T_SEQUENCE, &content);
+                let result = Certificate::parse(&der);
+                if redundant {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                    assert_eq!(error.context(), "nonminimal non-negative INTEGER");
+                } else {
+                    check_signature(&result.unwrap(), key.spki(), &opts()).unwrap();
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-011: implicit and explicit v1 reject either unique ID;
+    /// v2/v3 accept them, and v1 without either remains parseable.
+    /// REQ-X509-012: both unique-ID fields reject malformed BIT STRING contents.
+    #[test]
+    fn unique_identifiers_require_v2_or_v3() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original = self_signed(&params("Version fixture", &[], false), &key, &mut r).unwrap();
+        let parsed = Certificate::parse(&original).unwrap();
+        let mut cert = Der::new(&original).nested(T_SEQUENCE).unwrap();
+        cert.expect(T_SEQUENCE).unwrap();
+        let algorithm = cert.expect_raw(T_SEQUENCE).unwrap();
+        let mut fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        fields.expect(T_CTX0).unwrap();
+        let mut required = Vec::new();
+        for _ in 0..6 {
+            required.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        fields.expect(T_CTX3).unwrap();
+        fields.finish().unwrap();
+        for (uid, valid) in [
+            (&[7, 0x80][..], true),
+            (&[0, 0xff][..], true),
+            (&[0][..], true),
+            (&[][..], false),
+            (&[8, 0][..], false),
+            (&[1][..], false),
+            (&[7, 0x81][..], false),
+            (&[1, 0xff][..], false),
+        ] {
+            for version in [None, Some(0), Some(1), Some(2)] {
+                for (issuer, subject) in
+                    [(false, false), (true, false), (false, true), (true, true)]
+                {
+                    let mut body = Vec::new();
+                    if let Some(version) = version {
+                        let mut encoded = Vec::new();
+                        push_tlv(&mut encoded, T_INTEGER, &[version]);
+                        push_tlv(&mut body, T_CTX0, &encoded);
+                    }
+                    body.extend_from_slice(&required);
+                    if issuer {
+                        push_tlv(&mut body, T_ISSUER_UID, uid);
+                    }
+                    if subject {
+                        push_tlv(&mut body, T_SUBJECT_UID, uid);
+                    }
+                    let mut tbs = Vec::new();
+                    push_tlv(&mut tbs, T_SEQUENCE, &body);
+                    let signature = key
+                        .sign(parsed.signature_scheme().unwrap(), &tbs, &mut r)
+                        .unwrap();
+                    let mut content = tbs;
+                    content.extend_from_slice(algorithm);
+                    let mut bits = alloc::vec![0];
+                    bits.extend_from_slice(&signature);
+                    push_tlv(&mut content, T_BIT_STRING, &bits);
+                    let mut encoded = Vec::new();
+                    push_tlv(&mut encoded, T_SEQUENCE, &content);
+                    let result = Certificate::parse(&encoded);
+                    let allowed = !(issuer || subject) || (valid && matches!(version, Some(1 | 2)));
+                    assert_eq!(
+                        result.is_ok(),
+                        allowed,
+                        "version={version:?}, issuer={issuer}, subject={subject}, uid={uid:?}"
+                    );
+                }
+            }
+        }
+    }
 
     fn rng() -> ic_drbg::Rng {
         ic_drbg::Rng::from_os().unwrap()
@@ -2490,6 +6513,206 @@ mod chain_tests {
         (cert, key)
     }
 
+    /// REQ-X509-045: opaque AKI serial references still obey DER INTEGER
+    /// encoding, with and without key IDs, in signed certificates.
+    #[test]
+    fn authority_key_identifier_serials_require_minimal_integer_encoding() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let issuer = Certificate::parse(&p.int).unwrap();
+        let key_id = key_identifier(issuer.spki).unwrap();
+        let template = Certificate::parse(&p.leaf).unwrap();
+        let scheme = template.signature_scheme().unwrap();
+        let issuer_key = issuer.subject_public_key().unwrap();
+        let mut fields = Der::new(template.tbs).nested(T_SEQUENCE).unwrap();
+        let mut required = Vec::new();
+        while fields.peek() != Some(T_CTX3) {
+            required.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        let mut extensions = Der::new(fields.expect(T_CTX3).unwrap())
+            .nested(T_SEQUENCE)
+            .unwrap();
+        let mut retained = Vec::new();
+        while !extensions.is_empty() {
+            let encoded = extensions.expect_raw(T_SEQUENCE).unwrap();
+            let mut extension = Der::new(encoded).nested(T_SEQUENCE).unwrap();
+            if extension.expect(T_OID).unwrap() != OID_EXT_AKI {
+                retained.extend_from_slice(encoded);
+            }
+        }
+        let mut r = rng();
+        let mut issuer_names = Vec::new();
+        push_tlv(&mut issuer_names, T_GN_DNS, b"issuer.example");
+        for (serial, expected_error) in [
+            (&[][..], Some("empty authority certificate serial number")),
+            (
+                &[0, 0][..],
+                Some("nonminimal authority certificate serial number"),
+            ),
+            (
+                &[0, 0x7f][..],
+                Some("nonminimal authority certificate serial number"),
+            ),
+            (
+                &[0xff, 0x80][..],
+                Some("nonminimal authority certificate serial number"),
+            ),
+            (
+                &[0xff, 0xff][..],
+                Some("nonminimal authority certificate serial number"),
+            ),
+            (&[0][..], None),
+            (&[1][..], None),
+            (&[0x7f][..], None),
+            (&[0x80][..], None),
+            (&[0xff][..], None),
+            (&[0, 0x80][..], None),
+            (&[0xff, 0x7f][..], None),
+            (&[1, 0][..], None),
+        ] {
+            for key in [false, true] {
+                for critical in [false, true] {
+                    let mut body = Vec::new();
+                    if key {
+                        push_tlv(&mut body, 0x80, &key_id);
+                    }
+                    push_tlv(&mut body, T_CTX1, &issuer_names);
+                    push_tlv(&mut body, 0x82, serial);
+                    let mut value = Vec::new();
+                    push_tlv(&mut value, T_SEQUENCE, &body);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_AKI, critical, &value);
+                    let mut entries = retained.clone();
+                    entries.extend_from_slice(&extension);
+                    let mut extensions = Vec::new();
+                    push_tlv(&mut extensions, T_SEQUENCE, &entries);
+                    let mut body = required.clone();
+                    push_tlv(&mut body, T_CTX3, &extensions);
+                    let mut tbs = Vec::new();
+                    push_tlv(&mut tbs, T_SEQUENCE, &body);
+                    let signature = p.int_key.sign(scheme, &tbs, &mut r).unwrap();
+                    sign::verify(scheme, &issuer_key, &tbs, &signature).unwrap();
+                    let mut content = tbs;
+                    push_tlv(&mut content, T_SEQUENCE, template.sig_alg);
+                    let mut bits = alloc::vec![0];
+                    bits.extend_from_slice(&signature);
+                    push_tlv(&mut content, T_BIT_STRING, &bits);
+                    let mut leaf = Vec::new();
+                    push_tlv(&mut leaf, T_SEQUENCE, &content);
+                    let parsed = Certificate::parse(&leaf);
+                    if let Some(context) = expected_error {
+                        let error = parsed.err().unwrap();
+                        assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                        assert_eq!(error.context(), context);
+                        assert_eq!(
+                            err(verify_chain(&leaf, &[&p.int], &p.roots, &opts())),
+                            ErrorKind::BadCertificate,
+                        );
+                    } else {
+                        assert_eq!(
+                            parsed.unwrap().ext.aki,
+                            if key { Some(key_id.as_slice()) } else { None }
+                        );
+                        verify_chain(&leaf, &[&p.int], &p.roots, &opts()).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-042: malformed purposes are refused before usage checking,
+    /// including those following a recognized purpose in a signed certificate.
+    #[test]
+    fn extended_key_usage_oids_require_complete_minimal_encodings() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let issuer = Certificate::parse(&p.int).unwrap();
+        let ki = key_identifier(issuer.spki_der()).unwrap();
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let mut parameters = params("eku", &["eku.example.com"], false);
+        parameters.usage = &[];
+        for (oid, valid) in [
+            (&[][..], false),
+            (&[0x80, 0][..], false),
+            (&[0x2a, 0x80, 1][..], false),
+            (&[0x81][..], false),
+            (&[0x2a, 0x81][..], false),
+            (&[0][..], true),
+            (&[0x2a, 0x81, 0][..], true),
+            (&[0x88, 0x80, 0x80, 0x80, 0x80, 0][..], true),
+        ] {
+            for critical in [false, true] {
+                for position in 0..=2 {
+                    let mut purposes = alloc::vec![OID_KP_SERVER_AUTH, OID_KP_CLIENT_AUTH];
+                    purposes.insert(position, oid);
+                    let mut body = Vec::new();
+                    for purpose in purposes {
+                        push_tlv(&mut body, T_OID, purpose);
+                    }
+                    let mut value = Vec::new();
+                    push_tlv(&mut value, T_SEQUENCE, &body);
+                    let mut extension = Vec::new();
+                    push_ext(&mut extension, OID_EXT_EKU, critical, &value);
+                    let leaf = build(
+                        &parameters,
+                        key.spki(),
+                        issuer.subject_der(),
+                        &ki,
+                        &p.int_key,
+                        &mut r,
+                        &[extension],
+                    )
+                    .unwrap();
+                    let parsed = Certificate::parse(&leaf);
+                    if valid {
+                        assert_eq!(parsed.unwrap().ext.eku, Some(body.as_slice()));
+                        for usage in [Usage::ServerAuth, Usage::ClientAuth] {
+                            let options = VerifyOptions::new(NOW, usage, ALL);
+                            verify_chain(&leaf, &[&p.int], &p.roots, &options).unwrap();
+                        }
+                    } else {
+                        assert_eq!(parsed.err().unwrap().kind(), ErrorKind::BadCertificate);
+                        assert_eq!(
+                            err(verify_chain(&leaf, &[&p.int], &p.roots, &opts())),
+                            ErrorKind::BadCertificate,
+                            "oid={oid:?}, critical={critical}, position={position}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-041: even unknown noncritical extension OIDs must be valid DER.
+    #[test]
+    fn certificate_extension_oids_require_complete_minimal_encodings() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        for (oid, valid) in [
+            (&[][..], false),
+            (&[0x80, 0][..], false),
+            (&[0x2a, 0x80, 1][..], false),
+            (&[0x81][..], false),
+            (&[0x2a, 0x81][..], false),
+            (&[0][..], true),
+            (&[0x2a, 0x81, 0][..], true),
+            (&[0x88, 0x80, 0x80, 0x80, 0x80, 0][..], true),
+        ] {
+            for critical in [false, true] {
+                let mut extra = Vec::new();
+                push_ext(&mut extra, oid, critical, &[0x05, 0]);
+                let (leaf, _) = with_extra(extra, &p.int, &p.int_key, false);
+                let result = Certificate::parse(&leaf);
+                if valid {
+                    assert_eq!(result.unwrap().ext.unknown_critical, critical);
+                    if !critical {
+                        verify_chain(&leaf, &[&p.int], &p.roots, &opts()).unwrap();
+                    }
+                } else {
+                    assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
+                }
+            }
+        }
+    }
+
     #[test]
     fn unknown_critical_extensions_fail_closed() {
         let p = pki([KeyKind::EcdsaP256; 3]);
@@ -2588,6 +6811,34 @@ mod chain_tests {
         );
     }
 
+    #[test]
+    fn name_constraints_require_nonempty_subtree_lists() {
+        let mut general_name = Vec::new();
+        push_tlv(&mut general_name, T_GN_DNS, b"example.com");
+        let mut subtree = Vec::new();
+        push_tlv(&mut subtree, T_SEQUENCE, &general_name);
+        for permitted in [None, Some(&[][..]), Some(subtree.as_slice())] {
+            for excluded in [None, Some(&[][..]), Some(subtree.as_slice())] {
+                let mut body = Vec::new();
+                if let Some(p) = permitted {
+                    push_tlv(&mut body, T_CTX0, p);
+                }
+                if let Some(e) = excluded {
+                    push_tlv(&mut body, T_CTX1, e);
+                }
+                let valid = (permitted.is_some() || excluded.is_some())
+                    && !permitted.is_some_and(|p| p.is_empty())
+                    && !excluded.is_some_and(|e| e.is_empty());
+                let result = apply_name_constraints(&body, &[]);
+                if valid {
+                    result.unwrap();
+                } else {
+                    assert_eq!(result.unwrap_err().kind(), ErrorKind::BadCertificate);
+                }
+            }
+        }
+    }
+
     /// NameConstraints with `permitted` and `excluded` general subtrees
     /// (tag, base) on a fresh intermediate under the fixture's.
     fn constrained(
@@ -2668,6 +6919,70 @@ mod chain_tests {
         );
     }
 
+    /// REQ-X509-044: every IPv4/IPv6 prefix is valid; a hole in the mask is
+    /// refused in permitted and excluded lists, even without subjects.
+    #[test]
+    fn ip_name_constraint_masks_require_contiguous_prefix_bits() {
+        let constraint = |base: &[u8], excluded: bool| {
+            let mut name = Vec::new();
+            push_tlv(&mut name, T_GN_IP, base);
+            let mut subtree = Vec::new();
+            push_tlv(&mut subtree, T_SEQUENCE, &name);
+            let mut body = Vec::new();
+            push_tlv(&mut body, if excluded { T_CTX1 } else { T_CTX0 }, &subtree);
+            body
+        };
+        for width in [4usize, 16] {
+            for prefix in 0..=width * 8 {
+                let mut base = alloc::vec![0xa5; width];
+                for byte in 0..width {
+                    let bits = prefix.saturating_sub(byte * 8).min(8);
+                    base.push(if bits == 0 { 0 } else { 0xff << (8 - bits) });
+                }
+                for excluded in [false, true] {
+                    apply_name_constraints(&constraint(&base, excluded), &[]).unwrap();
+                }
+            }
+            for hole in 0..width * 8 - 1 {
+                let mut base = alloc::vec![0; width];
+                let mut mask = alloc::vec![0xff; width];
+                mask[hole / 8] &= !(0x80 >> (hole % 8));
+                base.extend_from_slice(&mask);
+                for excluded in [false, true] {
+                    let error =
+                        apply_name_constraints(&constraint(&base, excluded), &[]).unwrap_err();
+                    assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                    assert_eq!(error.context(), "noncontiguous IP name constraint mask");
+                }
+            }
+        }
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        for width in [4usize, 16] {
+            for hole in [0, 7, width * 8 - 2] {
+                let mut base = alloc::vec![0; width];
+                let mut mask = alloc::vec![0xff; width];
+                mask[hole / 8] &= !(0x80 >> (hole % 8));
+                base.extend_from_slice(&mask);
+                for excluded in [false, true] {
+                    for malformed_first in [false, true] {
+                        let mut entries = alloc::vec![(T_GN_DNS, &b"example.com"[..])];
+                        entries.insert(if malformed_first { 0 } else { 1 }, (T_GN_IP, &base));
+                        let ca = if excluded {
+                            constrained(&p, &[], &entries)
+                        } else {
+                            constrained(&p, &entries, &[])
+                        };
+                        // The malformed CA is refused before issuing a leaf.
+                        assert_eq!(
+                            Certificate::parse(&ca.0).err().unwrap().kind(),
+                            ErrorKind::BadCertificate
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// IP subtrees are address and mask; they apply to addresses of their own
     /// family only.
     #[test]
@@ -2698,13 +7013,29 @@ mod chain_tests {
         // A malformed IP subtree (neither 8 nor 32 bytes) fails closed.
         let bad = constrained(&p, &[(T_GN_IP, &[10, 0, 0, 0])], &[]);
         assert_eq!(
-            under(&p, &bad, &["a.example.com"], &["10.1.2.3"]),
-            Err(ErrorKind::UnsupportedCertificate)
+            Certificate::parse(&bad.0).err().unwrap().kind(),
+            ErrorKind::BadCertificate
         );
     }
 
     /// An RSASSA-PSS AlgorithmIdentifier body with the given parameters.
     fn pss_alg(hash: &[u8], mgf: &[u8], mgf_hash: &[u8], salt: u8, trailer: Option<u8>) -> Vec<u8> {
+        pss_alg_integers(
+            hash,
+            mgf,
+            mgf_hash,
+            &[salt],
+            trailer.as_ref().map(core::slice::from_ref),
+        )
+    }
+
+    fn pss_alg_integers(
+        hash: &[u8],
+        mgf: &[u8],
+        mgf_hash: &[u8],
+        salt: &[u8],
+        trailer: Option<&[u8]>,
+    ) -> Vec<u8> {
         let mut halg = Vec::new();
         push_tlv(&mut halg, T_OID, hash);
         push_tlv(&mut halg, T_NULL, &[]);
@@ -2722,17 +7053,203 @@ mod chain_tests {
         push_tlv(&mut mseq, T_SEQUENCE, &mgfb);
         push_tlv(&mut params, T_CTX1, &mseq);
         let mut sint = Vec::new();
-        push_tlv(&mut sint, T_INTEGER, &[salt]);
+        push_tlv(&mut sint, T_INTEGER, salt);
         push_tlv(&mut params, T_CTX2, &sint);
         if let Some(t) = trailer {
             let mut ti = Vec::new();
-            push_tlv(&mut ti, T_INTEGER, &[t]);
+            push_tlv(&mut ti, T_INTEGER, t);
             push_tlv(&mut params, T_CTX3, &ti);
         }
         let mut body = Vec::new();
         push_tlv(&mut body, T_OID, OID_RSA_PSS);
         push_tlv(&mut body, T_SEQUENCE, &params);
         body
+    }
+
+    /// REQ-X509-066: matching malformed signature identifiers fail at parse
+    /// time; supported identifiers and well-formed unknown parameters survive.
+    #[test]
+    fn certificate_signature_identifiers_require_complete_fields() {
+        let wrap = |tag, body: &[u8]| {
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, tag, body);
+            encoded
+        };
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::Ed25519, &mut r).unwrap();
+        let original = self_signed(&params("Algorithm fixture", &[], false), &key, &mut r).unwrap();
+        let parsed = Certificate::parse(&original).unwrap();
+        let mut fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        let version = fields.expect_raw(T_CTX0).unwrap();
+        let serial = fields.expect_raw(T_INTEGER).unwrap();
+        fields.expect(T_SEQUENCE).unwrap();
+        let mut tail = Vec::new();
+        while !fields.is_empty() {
+            tail.extend_from_slice(fields.tlv().unwrap().2);
+        }
+        let unknown = wrap(T_OID, &[0x2a, 3]);
+        let known = wrap(T_OID, OID_ED25519);
+        for (algorithm, accepted, supported) in [
+            (known, true, true),
+            (unknown.clone(), true, false),
+            (
+                [unknown.clone(), alloc::vec![T_NULL, 0]].concat(),
+                true,
+                false,
+            ),
+            (
+                [unknown.clone(), alloc::vec![0x9f, 31, 0]].concat(),
+                true,
+                false,
+            ),
+            (Vec::new(), false, false),
+            (wrap(T_OID, &[]), false, false),
+            (wrap(T_OID, &[0x2a, 0x80, 1]), false, false),
+            (wrap(T_OID, &[0x2a, 0x81]), false, false),
+            (alloc::vec![T_NULL, 0], false, false),
+            (
+                [unknown.clone(), alloc::vec![T_NULL, 0, T_NULL, 0]].concat(),
+                false,
+                false,
+            ),
+            (
+                [unknown.clone(), alloc::vec![T_OCTET_STRING, 2, 1]].concat(),
+                false,
+                false,
+            ),
+            ([unknown, alloc::vec![0x9f, 30, 0]].concat(), false, false),
+        ] {
+            let encoded_algorithm = wrap(T_SEQUENCE, &algorithm);
+            let body = [
+                version,
+                serial,
+                encoded_algorithm.as_slice(),
+                tail.as_slice(),
+            ]
+            .concat();
+            let tbs = wrap(T_SEQUENCE, &body);
+            let signature = key.sign(SignatureScheme::Ed25519, &tbs, &mut r).unwrap();
+            sign::verify(
+                SignatureScheme::Ed25519,
+                &PublicKey::from_spki(key.spki()).unwrap(),
+                &tbs,
+                &signature,
+            )
+            .unwrap();
+            let bits = [alloc::vec![0], signature].concat();
+            let der = wrap(
+                T_SEQUENCE,
+                &[tbs, encoded_algorithm, wrap(T_BIT_STRING, &bits)].concat(),
+            );
+            let result = Certificate::parse(&der);
+            if accepted {
+                let cert = result.unwrap();
+                if supported {
+                    assert_eq!(cert.signature_scheme().unwrap(), SignatureScheme::Ed25519);
+                } else {
+                    assert_eq!(
+                        cert.signature_scheme().unwrap_err().kind(),
+                        ErrorKind::UnsupportedCertificate
+                    );
+                }
+            } else {
+                assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
+            }
+        }
+    }
+
+    /// REQ-X509-043: malformed identifiers have precise structural errors at
+    /// every signature OID location; well-formed unknown algorithms stay unsupported.
+    #[test]
+    fn signature_algorithm_oids_require_complete_minimal_encodings() {
+        for (oid, structural_error) in [
+            (&[][..], Some("empty OBJECT IDENTIFIER")),
+            (
+                &[0x80, 0][..],
+                Some("nonminimal OBJECT IDENTIFIER subidentifier"),
+            ),
+            (
+                &[0x2a, 0x80, 1][..],
+                Some("nonminimal OBJECT IDENTIFIER subidentifier"),
+            ),
+            (
+                &[0x81][..],
+                Some("truncated OBJECT IDENTIFIER subidentifier"),
+            ),
+            (
+                &[0x2a, 0x81][..],
+                Some("truncated OBJECT IDENTIFIER subidentifier"),
+            ),
+            (&[0][..], None),
+            (&[0x2a, 0x81, 0][..], None),
+            (&[0x88, 0x80, 0x80, 0x80, 0x80, 0][..], None),
+        ] {
+            for (hash, salt) in [(OID_SHA256, 32), (OID_SHA384, 48), (OID_SHA512, 64)] {
+                let mut top = Vec::new();
+                push_tlv(&mut top, T_OID, oid);
+                for (location, algorithm) in [
+                    ("signature", top),
+                    ("message hash", pss_alg(oid, OID_MGF1, hash, salt, None)),
+                    ("mask generator", pss_alg(hash, oid, hash, salt, None)),
+                    ("mask hash", pss_alg(hash, OID_MGF1, oid, salt, None)),
+                ] {
+                    let error = scheme_from_alg(&algorithm).unwrap_err();
+                    if let Some(context) = structural_error {
+                        assert_eq!(
+                            error.kind(),
+                            ErrorKind::BadCertificate,
+                            "location={location}, oid={oid:?}"
+                        );
+                        assert_eq!(error.context(), context);
+                    } else {
+                        assert_eq!(error.kind(), ErrorKind::UnsupportedCertificate);
+                    }
+                }
+            }
+        }
+        for scheme in [
+            SignatureScheme::EcdsaSecp256r1Sha256,
+            SignatureScheme::EcdsaSecp384r1Sha384,
+            SignatureScheme::EcdsaSecp521r1Sha512,
+            SignatureScheme::Ed25519,
+            SignatureScheme::MlDsa65,
+            SignatureScheme::MlDsa87,
+            SignatureScheme::RsaPssRsaeSha256,
+            SignatureScheme::RsaPssRsaeSha384,
+            SignatureScheme::RsaPssRsaeSha512,
+        ] {
+            let encoded = alg_id(scheme).unwrap();
+            let body = Der::new(&encoded).expect(T_SEQUENCE).unwrap();
+            assert_eq!(scheme_from_alg(body).unwrap(), scheme);
+        }
+    }
+
+    #[test]
+    fn rsa_pss_parameters_require_minimal_integer_encoding() {
+        for (hash, salt, scheme) in [
+            (OID_SHA256, 32, SignatureScheme::RsaPssRsaeSha256),
+            (OID_SHA384, 48, SignatureScheme::RsaPssRsaeSha384),
+            (OID_SHA512, 64, SignatureScheme::RsaPssRsaeSha512),
+        ] {
+            for redundant_salt in [false, true] {
+                for trailer in [None, Some(&[1][..]), Some(&[0, 1][..])] {
+                    let salt = if redundant_salt {
+                        alloc::vec![0, salt]
+                    } else {
+                        alloc::vec![salt]
+                    };
+                    let alg = pss_alg_integers(hash, OID_MGF1, hash, &salt, trailer);
+                    let result = scheme_from_alg(&alg);
+                    if redundant_salt || trailer == Some(&[0, 1][..]) {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.kind(), ErrorKind::BadCertificate);
+                        assert_eq!(error.context(), "nonminimal non-negative INTEGER");
+                    } else {
+                        assert_eq!(result.unwrap(), scheme);
+                    }
+                }
+            }
+        }
     }
 
     /// REQ-X509-005: RSA-PSS certificate signatures are accepted only with the

@@ -194,6 +194,8 @@ fn cnsa2_interoperates_with_openssl_both_ways() {
         "-verify_hostname",
         "server.test",
         "-brief",
+        // Wait for the server echo and close after stdin reaches EOF.
+        "-ign_eof",
     ];
     args.extend_from_slice(OSSL_CNSA2);
     let mut child = Command::new("openssl")

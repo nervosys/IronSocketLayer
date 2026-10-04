@@ -1,6 +1,6 @@
 # IronSocketLayer
 
-**Agentic-first TLS 1.3 and QUIC-TLS in pure Rust, over [IronCrypto](../AgenticCrypto), with a machine-readable ontology.**
+**Agentic-first TLS 1.3 and QUIC-TLS in pure Rust, over [IronCrypto](../IronCrypto), with a machine-readable ontology.**
 
 Post-quantum by default. Sans-I/O. `no_std`. No C, no `unsafe` in this repository, no third-party
 dependencies. Every cryptographic operation is IronCrypto's; IronSocketLayer
@@ -229,7 +229,7 @@ $ cargo clippy --workspace --all-targets
 $ cargo build -p iron-socket-layer --no-default-features --target thumbv7em-none-eabihf
 ```
 
-IronCrypto is expected at `../AgenticCrypto` (path dependencies with a version
+IronCrypto is expected at `../IronCrypto` (path dependencies with a version
 pin, so the workspace also resolves from a registry once published).
 
 ## License
