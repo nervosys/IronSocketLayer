@@ -59,8 +59,9 @@ The review found and fixed real defects:
 Known leniencies left in place deliberately: explicitly encoded DER DEFAULT
 values (a v1 certificate version, a name-constraint minimum of 0) are
 accepted, as many real CAs emit them; a byKey OCSP responder ID is not
-compared to the signer's key hash (IronCrypto provides no SHA-1), though the
-signature is still verified against an authorized key. P-521 keys are now
+compared to the signer's key hash, because IronCrypto excludes SHA-1
+permanently (its maintainers decided this on 2026-10-05); the signature is
+still verified against an authorized key. P-521 keys are now
 read by ic_pkix alone, like P-256 and P-384, so a P-521 scalar missing its
 leading zero octet is refused.
 

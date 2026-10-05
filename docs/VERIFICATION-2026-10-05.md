@@ -153,7 +153,14 @@ fixed engine's path: `fixed::Connection::client` 7,936 bytes (it builds the
 `fixed::hello_fingerprint` 1,840, `fixed::Connection::install_handshake`
 1,800. These are single frames, not a call-chain worst case: no call-graph
 tool was available, and the path search recurses (bounded at depth 8).
-IronCrypto's own frames are not in this object.
+IronCrypto's own frames are not in this object. IronCrypto commit 46d082a absorbs the HMAC pads in place and keeps
+SHA-384/512 key setup out of line. It reports, for a linked Cortex-M4 binary
+with fat LTO at full call depth, HMAC-SHA384 down from 11,072 to 7,888 bytes
+and HKDF-SHA384 extract-and-expand from 14,824 to 11,440. Our unlinked
+per-function frames for the HKDF wrappers stay about 5.3 KB. That is one
+1.7 KiB HMAC-SHA384 state and its working space: moving each hash's state
+into its own out-of-line function was tried here and gained nothing, so
+it was not kept.
 
 Host peak thread stack, Linux x86_64 under WSL, release build, rustc 1.95.0,
 from `cargo run --release --example fixed_stack`. Each figure is the smallest

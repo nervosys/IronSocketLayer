@@ -398,6 +398,10 @@ pub fn verify_response(
         name.finish().map_err(wrap)?;
     }
     // REQ-OCSP-015: byKey explicitly wraps exactly one 20-byte SHA-1 hash.
+    // The hash is not compared with the signer's key: IronCrypto excludes
+    // SHA-1 permanently, by its maintainers' decision. Identity rests on the
+    // signature, which must verify under the issuer's key or a delegate the
+    // issuer certified for OCSP signing (REQ-OCSP-001).
     if rid_tag == T_CTX2 {
         let mut key_hash = Der::new(rid_value);
         if key_hash.expect(T_OCTET_STRING).map_err(wrap)?.len() != 20 {
