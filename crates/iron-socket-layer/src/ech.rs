@@ -471,6 +471,90 @@ mod tests {
         list
     }
 
+    // An X25519, HKDF-SHA256/AES-128-GCM ECHConfig with the given key and name.
+    fn config_list_keyed(public_key: &[u8], public_name: &[u8]) -> Vec<u8> {
+        let mut contents = alloc::vec![7];
+        put_u16(&mut contents, hpke::KEM_X25519_SHA256);
+        put_vec(&mut contents, Prefix::U16, public_key).unwrap();
+        put_vec(&mut contents, Prefix::U16, &[0, 1, 0, 1]).unwrap();
+        put_u8(&mut contents, 0);
+        put_vec(&mut contents, Prefix::U8, public_name).unwrap();
+        put_u16(&mut contents, 0);
+        let mut config = Vec::new();
+        put_u16(&mut config, ECH_VERSION);
+        put_vec(&mut config, Prefix::U16, &contents).unwrap();
+        let mut list = Vec::new();
+        put_vec(&mut list, Prefix::U16, &config).unwrap();
+        list
+    }
+
+    /// REQ-ECH-008: an ECHConfig's public_key and public_name vectors are
+    /// nonempty (RFC 9849 §4), and the name is ASCII.
+    #[test]
+    fn ech_configuration_key_and_name_require_entries() {
+        let good = parse_config_list(&config_list_keyed(&[9; 32], b"public.test")).unwrap();
+        assert_eq!(good[0].public_name, "public.test");
+        let err = parse_config_list(&config_list_keyed(&[], b"public.test")).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err
+            .to_string()
+            .contains("ECHConfig with an empty public key"));
+        for name in [&b""[..], "pübl.test".as_bytes(), &[0xff, 0x2e]] {
+            let err = parse_config_list(&config_list_keyed(&[9; 32], name)).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::Decode, "{name:?}");
+            assert!(
+                err.to_string().contains("ECHConfig public_name"),
+                "{name:?}"
+            );
+        }
+    }
+
+    /// REQ-ECH-004: an X25519 configuration whose public key is not 32 bytes
+    /// (RFC 9180 §7.1: Npk = 32) parses but is unusable, so a client
+    /// refuses it rather than sending the name in the clear.
+    #[test]
+    fn an_x25519_key_of_the_wrong_length_is_unusable() {
+        let ok = config_list_keyed(&[9; 32], b"public.test");
+        assert_eq!(
+            parse_config_list(&ok).unwrap()[0].usable_suite(),
+            Some((hpke::KDF_HKDF_SHA256, hpke::AEAD_AES_128_GCM))
+        );
+        for len in [1, 31, 33, 65] {
+            let list = config_list_keyed(&alloc::vec![9; len], b"public.test");
+            assert_eq!(parse_config_list(&list).unwrap()[0].usable_suite(), None);
+            assert_eq!(
+                select_config(&list).unwrap_err().kind(),
+                ErrorKind::InvalidConfig
+            );
+        }
+    }
+
+    /// REQ-CFG-002: a server's ECH public_name must be a nonempty ASCII name
+    /// of at most 255 bytes; anything else is invalid_config.
+    #[test]
+    fn a_server_ech_public_name_must_be_valid() {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let longest = "a".repeat(255);
+        assert!(EchServer::generate(1, &longest, 0, &mut rng).is_ok());
+        for name in [String::new(), "a".repeat(256), String::from("pübl.test")] {
+            let err = EchServer::generate(1, &name, 0, &mut rng).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::InvalidConfig, "{name:?}");
+            assert_eq!(err.context(), "ECH public_name", "{name:?}");
+        }
+    }
+
+    /// REQ-ECH-005: an ech_outer_extensions list references at least one
+    /// extension (RFC 9849 §5.1: OuterExtensions<2..254>); an empty one is
+    /// illegal_parameter.
+    #[test]
+    fn inner_reconstruction_refuses_an_empty_outer_extensions_list() {
+        let outer = hello_body(&[5; 32], &[(10, b"groups")], 0);
+        let encoded = hello_body(&[], &[(EXT_ECH_OUTER_EXTENSIONS, &[0]), (EXT_ECH, &[1])], 0);
+        let err = reconstruct_inner(&encoded, &outer, &[5; 32]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::IllegalParameter);
+        assert!(err.to_string().contains("empty ech_outer_extensions"));
+    }
+
     /// REQ-ECH-008: nonempty wire lists can contain unsupported identifiers.
     #[test]
     fn ech_configuration_vectors_require_entries() {
