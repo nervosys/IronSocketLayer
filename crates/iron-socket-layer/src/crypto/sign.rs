@@ -1015,6 +1015,11 @@ impl KeyKind {
 /// seed: the keys and signatures are discarded, and callers' random sources
 /// are not consumed. Without `std` IronCrypto has no such tables and this does
 /// nothing.
+///
+/// IronCrypto after 0.2.7 (commit fc692e1) keeps the tables in statics, so
+/// their first use no longer allocates, and offers `ic_ec::prepare()`. Once
+/// the minimum IronCrypto version includes that, replace the body with a call
+/// to it. Until then this keeps the guarantee for 0.2.5 to 0.2.7.
 pub fn prepare_tables() -> Result<()> {
     #[cfg(feature = "std")]
     {
