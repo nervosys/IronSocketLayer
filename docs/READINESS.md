@@ -76,14 +76,16 @@ What the tests establish, on the host:
   initializes; a fresh process whose first curve use is inside a handshake
   makes no allocation (`tests/fixed_cold_start.rs`).
 * Any number of KeyUpdates in either direction leaves the connection up.
-* `robustness.rs` mutates all three flights for the fixed engine: no panic,
-  no allocation, every failure latched, and any pair that still connects
-  agrees on its exporter.
+* `robustness.rs` mutates all three flights for the fixed engine, from
+  seeded randomness: no panic, no allocation, every failure latched, any pair
+  that still connects agrees on its exporter, and an intact stream delivers
+  exactly.
 * `peer_closed()` distinguishes an authenticated close from truncation.
 * Mutations caught: removed record capacity check, an allocation in
   `receive`, removed early-data refusal, reverted empty-message fix, nonce
   consumed before the capacity check, two removed checks in the fixed path
-  search, skipped table preparation, and an ignored Finished check.
+  search, skipped table preparation, and an ignored Finished check (caught
+  by a unit test; flight mutation cannot reach that check).
 * Fuzzing the fixed server: see [the fuzz README](../fuzz/README.md).
 
 OpenSSL interoperability found two defects that the in-process tests had

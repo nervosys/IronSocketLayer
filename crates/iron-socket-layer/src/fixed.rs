@@ -2135,3 +2135,115 @@ fn cv_input(server: bool, hash: &[u8], out: &mut [u8; 146]) -> usize {
     out[98..98 + hash.len()].copy_from_slice(hash);
     98 + hash.len()
 }
+
+/// The Finished check cannot be reached by mutating flights: a changed
+/// ClientHello changes the keys, and a changed encrypted flight fails AEAD
+/// first. So the server's Finished handler is given a wrong verify_data
+/// directly, at the point a real handshake reaches it.
+#[cfg(all(test, feature = "std"))]
+mod finished_tests {
+    use super::*;
+    use crate::config::Profile;
+    use crate::crypto::sign::{KeyKind, SigningKey};
+    use crate::x509::{CertificateParams, RootStore};
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    fn pair() -> (ClientConfig, ServerConfig) {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let cert = x509::self_signed(
+            &CertificateParams {
+                subject_cn: "server.test",
+                dns_names: &["server.test"],
+                ip_addresses: &[],
+                not_before: now - 3600,
+                not_after: now + 3600,
+                is_ca: false,
+                path_len: None,
+                usage: &[Usage::ServerAuth],
+                serial: [1; 16],
+            },
+            &key,
+            &mut rng,
+        )
+        .unwrap();
+        let mut roots = RootStore::new();
+        roots.add_der(&cert).unwrap();
+        let mut cc = ClientConfig::new(Profile::Default, roots).unwrap();
+        cc.tickets = None;
+        let identity = Identity::new(vec![cert], key).unwrap();
+        let mut sc = ServerConfig::new(Profile::Default, identity).unwrap();
+        sc.tickets = None;
+        (cc, sc)
+    }
+
+    fn buffers() -> [Vec<u8>; 8] {
+        [16645, 32768, 65536, 32768, 32768, 3234, 1665, 32768].map(|n| vec![0u8; n])
+    }
+
+    fn storage(b: &mut [Vec<u8>; 8]) -> Storage<'_> {
+        let [record, handshake, outgoing, application, certificates, private_key, public_key, scratch] =
+            b;
+        Storage {
+            record,
+            handshake,
+            outgoing,
+            application,
+            certificates,
+            private_key,
+            public_key,
+            scratch,
+        }
+    }
+
+    fn flush(from: &mut Connection<'_>, to: &mut Connection<'_>) {
+        let n = from.outgoing().len();
+        to.receive(from.outgoing()).unwrap();
+        from.consume_outgoing(n).unwrap();
+    }
+
+    /// REQ-FIX-004: a client Finished whose verify_data does not match the
+    /// transcript is refused with decrypt_error, and the genuine one is
+    /// accepted at the same point.
+    #[test]
+    fn a_wrong_client_finished_is_refused() {
+        let (cc, sc) = pair();
+        for wrong in [false, true] {
+            let (mut cb, mut sb) = (buffers(), buffers());
+            let (mut cr, mut sr) = (
+                ic_drbg::Rng::from_os().unwrap(),
+                ic_drbg::Rng::from_os().unwrap(),
+            );
+            let mut c = Connection::client(
+                &cc,
+                "server.test",
+                &mut cr,
+                storage(&mut cb),
+                Limits::default(),
+            )
+            .unwrap();
+            let mut s =
+                Connection::server(&sc, &mut sr, storage(&mut sb), Limits::default()).unwrap();
+            flush(&mut c, &mut s);
+            flush(&mut s, &mut c);
+            assert!(c.is_connected());
+            assert_eq!(s.report().state, State::WaitFinished);
+            if wrong {
+                let len = s.hash_alg().unwrap().len();
+                let mut message = vec![20, 0, 0, len as u8];
+                message.resize(4 + len, 0x5a);
+                let error = s.on_finished(&message[4..], &message).unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::DecryptError);
+                assert!(!s.is_connected());
+            } else {
+                flush(&mut c, &mut s);
+                assert!(s.is_connected());
+            }
+        }
+    }
+}

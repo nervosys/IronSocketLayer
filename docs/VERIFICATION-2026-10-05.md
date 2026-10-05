@@ -199,5 +199,11 @@ needs a separate process because any earlier key generation hides the
 allocation.
 
 `tests/robustness.rs` now runs 1,500 seeded mutations across the three
-flights of a fixed-engine handshake. Ignoring the Finished check makes it
-fail; the in-process fixed tests did not catch that mutation.
+flights of a fixed-engine handshake. An earlier version of this report said
+it catches an ignored Finished check. That was wrong: the apparent catch was
+an intermittent false failure in the test, since fixed. Flight mutation
+cannot reach the Finished check, because a changed ClientHello changes the
+keys and a changed encrypted flight fails AEAD first. A unit test
+(`fixed::finished_tests::a_wrong_client_finished_is_refused`) now hands the
+server's Finished handler a wrong verify_data at the point a real handshake
+reaches it, and ignoring the check makes that test fail.
