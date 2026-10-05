@@ -272,18 +272,30 @@ thread: both constructors, the handshake, data both ways, KeyUpdate, an
 exporter and close_notify. Peak stack is found by painting the free stack.
 Allocations are counted after both constructors.
 
-| Signing keys | Group | Peak stack | Allocations after init |
-|---|---|---:|---:|
-| ECDSA P-256 | X25519 | 29,440 B | 0 |
-| ML-DSA-44 | ML-KEM-512 | 50,020 B | 0 |
-| ECDSA P-256, Ed25519 or ML-DSA-65 | X25519MLKEM768 | 55,844 B | 0 |
-| ECDSA P-384 or ML-DSA-87 | SecP384r1MLKEM1024 | 63,012 B | 0 |
-| ML-DSA-87 | ML-KEM-1024 | 63,012 B | 0 |
+Peak stack per session. "0.2.8" is IronCrypto 0.2.8; "2f95d30" is
+IronCrypto commit 2f95d30, which stops ML-KEM holding the matrix A (outputs
+unchanged). Every case made zero allocator calls after initialization on
+both.
 
-The key-exchange group, not the signature, now sets the peak. ML-DSA-87 and
-ECDSA P-384 peak identically, and X25519 alone needs about half what the
-ML-KEM groups do, so ML-KEM inside IronCrypto is the largest remaining
-consumer. A client whose handshake buffer cannot hold the server's flight
+| Signing keys | Group | 0.2.8 | 2f95d30 |
+|---|---|---:|---:|
+| ECDSA P-256 | X25519 | 29,440 B | 29,440 B |
+| ECDSA P-256 | X25519MLKEM768 | 55,844 B | 31,004 B |
+| Ed25519 | X25519MLKEM768 | 55,844 B | 31,608 B |
+| ECDSA P-384 | SecP384r1MLKEM1024 | 63,012 B | 31,996 B |
+| ML-DSA-44 | ML-KEM-512 | 50,020 B | 44,836 B |
+| ML-DSA-65 | X25519MLKEM768 | 55,844 B | 51,428 B |
+| ML-DSA-87 | SecP384r1MLKEM1024 | 63,012 B | 60,404 B |
+| ML-DSA-87 | ML-KEM-1024 | 63,012 B | 60,404 B |
+
+With 0.2.8 the key-exchange group set the peak: ML-KEM needed 20 to 34 KB.
+After 2f95d30 a session with classical or Ed25519 signatures needs about
+31 KB whatever the group, and ML-DSA signing sets the peak: 45 KB for
+ML-DSA-44 and 60 KB for ML-DSA-87. IronCrypto reports ML-KEM-1024's own peak
+on Cortex-M4, measured from the linked call graph, falling from 44,464 to
+14,220 bytes for keygen, from 25,400 to 7,300 for encapsulation and from
+28,296 to 9,804 for decapsulation. All tests and OpenSSL suites here pass
+on that commit. A client whose handshake buffer cannot hold the server's flight
 fails with `capacity-exceeded`, latched, with nothing queued. Adding one
 allocation inside the session makes the run fail, so the counter observes
 allocations.
