@@ -94,10 +94,15 @@ impl EchConfig {
 }
 
 /// Parse an `ECHConfigList`, skipping versions other than 0xfe0d.
+/// REQ-ECH-008: configuration and cipher-suite lists are nonempty, and
+/// configuration extension types are unique (RFC 9849 sections 4 and 4.2).
 pub fn parse_config_list(list: &[u8]) -> Result<Vec<EchConfig>> {
     let mut r = Reader::new(list);
     let mut body = r.sub16()?;
     r.finish()?;
+    if body.is_empty() {
+        return Err(bad("empty ECHConfigList"));
+    }
     let mut out = Vec::new();
     while !body.is_empty() {
         let start = body.rest();
@@ -115,6 +120,9 @@ pub fn parse_config_list(list: &[u8]) -> Result<Vec<EchConfig>> {
             return Err(bad("ECHConfig with an empty public key"));
         }
         let mut suites_r = c.sub16()?;
+        if suites_r.is_empty() {
+            return Err(bad("ECHConfig with an empty cipher_suites list"));
+        }
         let mut cipher_suites = Vec::new();
         while !suites_r.is_empty() {
             cipher_suites.push((suites_r.u16()?, suites_r.u16()?));
@@ -128,9 +136,14 @@ pub fn parse_config_list(list: &[u8]) -> Result<Vec<EchConfig>> {
         let mut exts = c.sub16()?;
         c.finish()?;
         let mut has_unknown_mandatory_extension = false;
+        let mut extension_types = Vec::new();
         while !exts.is_empty() {
             let ty = exts.u16()?;
             let _ = exts.vec16()?;
+            if extension_types.contains(&ty) {
+                return Err(bad("duplicate ECHConfig extension"));
+            }
+            extension_types.push(ty);
             // The high bit marks an extension a client must understand.
             if ty & 0x8000 != 0 {
                 has_unknown_mandatory_extension = true;
@@ -307,6 +320,8 @@ fn raw_parts(body: &[u8]) -> Result<(usize, RawExtensions<'_>)> {
 /// Rebuild the ClientHelloInner body from its encoding (§5.1): restore the
 /// outer `legacy_session_id`, expand `ech_outer_extensions` from the outer
 /// hello, and require the padding to be zero. `REQ-ECH-005`.
+/// REQ-ECH-006: reject duplicate ech_outer_extensions before expansion can
+/// erase them (RFC 9849 section 5.1 and RFC 8446 section 4.2).
 pub fn reconstruct_inner(
     encoded: &[u8],
     outer_body: &[u8],
@@ -327,6 +342,7 @@ pub fn reconstruct_inner(
     let (_, outer_exts) = raw_parts(outer_body)?;
     let mut exts = Vec::new();
     let mut outer_at = 0usize;
+    let mut saw_outer_extensions = false;
     while !block.is_empty() {
         let ty = block.u16()?;
         let body = block.vec16()?;
@@ -334,6 +350,10 @@ pub fn reconstruct_inner(
             exts.push((ty, body));
             continue;
         }
+        if saw_outer_extensions {
+            return Err(illegal("duplicate ech_outer_extensions"));
+        }
+        saw_outer_extensions = true;
         let mut refs = Reader::new(body);
         let mut list = refs.sub8()?;
         refs.finish()?;
@@ -427,6 +447,112 @@ mod tests {
         assert_eq!((101 + padding_len(101, None, 0)) % 32, 0);
     }
 
+    // RFC 9849 section 4's ECHConfigContents, with caller-controlled vectors.
+    fn config_list_with(suites: &[u8], extensions: &[(u16, &[u8])]) -> Vec<u8> {
+        let mut contents = alloc::vec![7];
+        put_u16(&mut contents, hpke::KEM_X25519_SHA256);
+        put_vec(&mut contents, Prefix::U16, &[9; 32]).unwrap();
+        put_vec(&mut contents, Prefix::U16, suites).unwrap();
+        put_u8(&mut contents, 0);
+        put_vec(&mut contents, Prefix::U8, b"public.test").unwrap();
+        nested(&mut contents, Prefix::U16, |out| {
+            for &(ty, value) in extensions {
+                put_u16(out, ty);
+                put_vec(out, Prefix::U16, value)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let mut config = Vec::new();
+        put_u16(&mut config, ECH_VERSION);
+        put_vec(&mut config, Prefix::U16, &contents).unwrap();
+        let mut list = Vec::new();
+        put_vec(&mut list, Prefix::U16, &config).unwrap();
+        list
+    }
+
+    /// REQ-ECH-008: nonempty wire lists can contain unsupported identifiers.
+    #[test]
+    fn ech_configuration_vectors_require_entries() {
+        let err = parse_config_list(&[0, 0]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.to_string().contains("empty ECHConfigList"));
+        assert_eq!(
+            select_config(&[0, 0]).unwrap_err().kind(),
+            ErrorKind::InvalidConfig
+        );
+        let err = parse_config_list(&config_list_with(&[], &[])).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.to_string().contains("empty cipher_suites list"));
+        for length in [1, 2, 3, 5, 6, 7] {
+            assert_eq!(
+                parse_config_list(&config_list_with(&alloc::vec![0; length], &[]))
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::Decode
+            );
+        }
+        let supported = [0, 1, 0, 1]; // HKDF-SHA256 and AES-128-GCM (RFC 9180).
+        assert_eq!(
+            parse_config_list(&config_list_with(&supported, &[])).unwrap()[0].cipher_suites,
+            [(1, 1)]
+        );
+        let mixed = [0xbe, 0xef, 0xbe, 0xef, 0, 1, 0, 1];
+        let list = config_list_with(&mixed, &[]);
+        assert_eq!(
+            parse_config_list(&list).unwrap()[0].cipher_suites,
+            [(0xbeef, 0xbeef), (1, 1)]
+        );
+        assert_eq!(select_config(&list).unwrap().1, (1, 1));
+        // A nonempty list with an unknown version and opaque contents remains
+        // structurally valid; unsupported versions are skipped before decoding.
+        assert!(parse_config_list(&[0, 5, 0xbe, 0xef, 0, 1, 7])
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            select_config(&[0, 5, 0xbe, 0xef, 0, 1, 7])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidConfig
+        );
+    }
+
+    /// REQ-ECH-008: duplicate types are forbidden within a configuration,
+    /// including unknown optional and mandatory types with different bodies.
+    #[test]
+    fn ech_configuration_extensions_require_unique_types() {
+        let suites = [0, 1, 0, 1];
+        for ty in [1, 0x8001, 0xffff] {
+            for separated in [false, true] {
+                let mut extensions: Vec<(u16, &[u8])> = alloc::vec![(ty, &[])];
+                if separated {
+                    extensions.push((2, b"other"));
+                }
+                extensions.push((ty, b"different"));
+                let err = parse_config_list(&config_list_with(&suites, &extensions)).unwrap_err();
+                assert_eq!(err.kind(), ErrorKind::Decode);
+                assert!(err.to_string().contains("duplicate ECHConfig extension"));
+            }
+            let list = config_list_with(&suites, &[(ty, b"opaque"), (2, &[])]);
+            let parsed = parse_config_list(&list).unwrap();
+            assert_eq!(parsed[0].has_unknown_mandatory_extension, ty & 0x8000 != 0);
+            if ty & 0x8000 == 0 {
+                select_config(&list).unwrap();
+            } else {
+                assert_eq!(
+                    select_config(&list).unwrap_err().kind(),
+                    ErrorKind::InvalidConfig
+                );
+            }
+            // The same type in separate configurations is allowed.
+            let mut configs = list[2..].to_vec();
+            configs.extend_from_slice(&list[2..]);
+            let mut combined = Vec::new();
+            put_vec(&mut combined, Prefix::U16, &configs).unwrap();
+            assert_eq!(parse_config_list(&combined).unwrap().len(), 2);
+        }
+    }
+
     fn hello_body(session_id: &[u8], exts: &[(u16, &[u8])], pad: usize) -> Vec<u8> {
         let mut b = alloc::vec![3, 3];
         b.extend_from_slice(&[9; 32]);
@@ -494,5 +620,49 @@ mod tests {
         assert!(reconstruct_inner(&self_ref, &outer, &[5; 32]).is_err());
         let with_sid = hello_body(&[1], &[], 0);
         assert!(reconstruct_inner(&with_sid, &outer, &[5; 32]).is_err());
+    }
+
+    /// REQ-ECH-006: disjoint references do not hide duplicate compression markers.
+    #[test]
+    fn inner_reconstruction_refuses_duplicate_compression_markers() {
+        let outer = hello_body(&[5; 32], &[(10, b"groups"), (51, b"shares")], 0);
+        for pad in [0, 7, 32] {
+            for separated in [false, true] {
+                let mut exts: Vec<(u16, &[u8])> =
+                    alloc::vec![(EXT_ECH_OUTER_EXTENSIONS, &[2, 0, 10]),];
+                if separated {
+                    exts.push((0xbeef, b"opaque"));
+                }
+                exts.push((EXT_ECH_OUTER_EXTENSIONS, &[2, 0, 51]));
+                exts.push((EXT_ECH, &[1]));
+                let encoded = hello_body(&[], &exts, pad);
+                let err = reconstruct_inner(&encoded, &outer, &[5; 32]).unwrap_err();
+                assert_eq!(err.kind(), ErrorKind::IllegalParameter);
+                assert!(err.to_string().contains("duplicate ech_outer_extensions"));
+            }
+            // One marker can reference both extensions, with or without padding.
+            let encoded = hello_body(
+                &[],
+                &[
+                    (EXT_ECH_OUTER_EXTENSIONS, &[4, 0, 10, 0, 51]),
+                    (EXT_ECH, &[1]),
+                ],
+                pad,
+            );
+            assert_eq!(
+                reconstruct_inner(&encoded, &outer, &[5; 32]).unwrap(),
+                hello_body(
+                    &[5; 32],
+                    &[(10, b"groups"), (51, b"shares"), (EXT_ECH, &[1])],
+                    0
+                )
+            );
+            // No compression marker remains legal too.
+            let encoded = hello_body(&[], &[(EXT_ECH, &[1])], pad);
+            assert_eq!(
+                reconstruct_inner(&encoded, &outer, &[5; 32]).unwrap(),
+                hello_body(&[5; 32], &[(EXT_ECH, &[1])], 0)
+            );
+        }
     }
 }

@@ -48,6 +48,8 @@ pub(crate) struct ServerHs {
     resumed: Option<TicketState>,
     /// HPKE context after accepting ECH in the first hello.
     ech_ctx: Option<hpke::Context>,
+    /// Cipher suite and configuration ID of the accepted outer hello.
+    ech_parameters: Option<((u16, u16), u8)>,
     ech_offered: bool,
     ech_accepted: bool,
     /// Whether the client advertised psk_dhe_ke, i.e. can use a ticket.
@@ -105,6 +107,7 @@ impl ServerHs {
             resumed: None,
             client_accepts_tickets: false,
             ech_ctx: None,
+            ech_parameters: None,
             ech_offered: false,
             ech_accepted: false,
             client_offers_pha: false,
@@ -444,6 +447,8 @@ impl ServerHs {
 
     /// Decrypt an ECH outer hello, returning the inner hello and its
     /// reconstructed bytes, or `None` to continue with the outer hello.
+    /// REQ-ECH-007: accepted ECH retries retain cipher_suite and config_id,
+    /// use empty enc, and require the extension (RFC 9849 section 7.1.1).
     fn open_ech(
         &mut self,
         outer: &ClientHello,
@@ -452,7 +457,7 @@ impl ServerHs {
         let Some(ech_ext) = &outer.ech else {
             if self.ech_accepted {
                 return Err(Error::new(
-                    ErrorKind::IllegalParameter,
+                    ErrorKind::MissingExtension,
                     "second ClientHello dropped ECH",
                 ));
             }
@@ -482,6 +487,12 @@ impl ServerHs {
             .ok_or(Error::new(ErrorKind::Decode, "ech payload"))?
             .fill(0);
         let encoded = if self.retried && self.ech_accepted {
+            if self.ech_parameters != Some((*suite, *config_id)) {
+                return Err(Error::new(
+                    ErrorKind::IllegalParameter,
+                    "second ECH hello changed cipher_suite or config_id",
+                ));
+            }
             // The second hello must reuse the context, with an empty enc.
             if !enc.is_empty() {
                 return Err(Error::new(
@@ -523,6 +534,7 @@ impl ServerHs {
             ));
         }
         self.ech_accepted = true;
+        self.ech_parameters = Some((*suite, *config_id));
         Ok(Some((
             inner,
             msgs::frame(HandshakeType::ClientHello, &inner_body)?,
@@ -1042,12 +1054,31 @@ impl ServerHs {
 
     /// ClientHello2 must be ClientHello1 with only the permitted changes
     /// (§4.1.2): the requested share and the cookie as sent. `REQ-MSG-005`.
+    /// REQ-MSG-015: a second ClientHello never carries an early_data indication.
+    /// REQ-MSG-016: decoded negotiation and capability extensions stay unchanged on retry.
     fn check_second_hello(&self, ch: &ClientHello) -> Result<()> {
         let first = self
             .first_hello
             .as_ref()
             .ok_or(Error::new(ErrorKind::Internal, "no first hello"))?;
         let illegal = |m| Error::new(ErrorKind::IllegalParameter, m);
+        if ch.early_data {
+            return Err(illegal("early_data in second ClientHello"));
+        }
+        if ch.server_name != first.server_name
+            || ch.groups != first.groups
+            || ch.sig_algs != first.sig_algs
+            || ch.sig_algs_cert != first.sig_algs_cert
+            || ch.versions != first.versions
+            || ch.alpn != first.alpn
+            || ch.quic_params != first.quic_params
+            || ch.record_size_limit != first.record_size_limit
+            || ch.status_request != first.status_request
+            || ch.post_handshake_auth != first.post_handshake_auth
+            || ch.psk_modes != first.psk_modes
+        {
+            return Err(illegal("second ClientHello changed an immutable extension"));
+        }
         if ch.random != first.random
             || ch.session_id != first.session_id
             || ch.suites != first.suites

@@ -7,7 +7,7 @@ dependency graph.
 
 | Target | What it reaches |
 |---|---|
-| `messages` | Every handshake-message decoder (ClientHello, ServerHello, EncryptedExtensions, CertificateRequest, Certificate, CertificateVerify, NewSessionTicket, KeyUpdate) and handshake framing, directly |
+| `messages` | Every handshake-message decoder (ClientHello, ServerHello, EncryptedExtensions, CertificateRequest, Certificate, CertificateVerify, NewSessionTicket, KeyUpdate), ECH inner hello reconstruction and handshake framing, directly |
 | `records` | The record framer |
 | `pki` | X.509 parsing, name checks and path validation, CRLs, OCSP responses, ECH configuration lists |
 | `tls_server` | A whole server connection with ECH, 0-RTT, an external PSK, optional client certificates, tickets and HelloRetryRequest cookies enabled |
@@ -28,6 +28,10 @@ consequences:
   then replays the TLS seeds along the targets' code path and fails unless
   they complete again. So `tls_client` starts from a server flight that
   decrypts, rather than from bytes that fail at the first AEAD check.
+
+The `messages` corpus also includes raw encoded inner hellos, including
+duplicate compression markers, to reach ECH reconstruction directly without
+requiring HPKE authentication.
 
 ## Running
 

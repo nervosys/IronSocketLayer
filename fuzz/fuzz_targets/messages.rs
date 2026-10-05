@@ -11,7 +11,13 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let _ = match sel % 9 {
-        0 => ClientHello::decode(body).map(drop),
+        0 => {
+            // Exercise encoded inner hellos without an HPKE authentication gate.
+            // Reusing the bytes as the outer also permits resolving references
+            // to extension types carried alongside the compression marker.
+            let _ = iron_socket_layer::ech::reconstruct_inner(body, body, &[]);
+            ClientHello::decode(body).map(drop)
+        }
         1 => ServerHello::decode(body).map(drop),
         2 => EncryptedExtensions::decode(body).map(drop),
         3 => CertificateRequest::decode(body).map(drop),

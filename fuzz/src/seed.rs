@@ -1,6 +1,7 @@
-//! Write seed inputs for every target into `corpus/<target>/`, recorded from
-//! real, successful handshakes between the fixture client and server. With
-//! the fixed clock and DRBG these are the exact bytes the targets would see.
+//! Write seed inputs for every target into `corpus/<target>/`. Most come from
+//! real, successful handshakes between the fixture client and server; raw ECH
+//! reconstruction cases reach the parser without HPKE authentication. With
+//! the fixed clock and DRBG the handshake seeds are the bytes the targets see.
 //!
 //! `cargo run --bin seed-corpus` from `fuzz/`.
 
@@ -8,6 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+use iron_socket_layer::codec::{nested, put_u16, put_vec, Prefix};
 use iron_socket_layer::config::ClientConfig;
 use iron_socket_layer::quic::{QuicConnection, Version};
 use iron_socket_layer::x509::{crl, ocsp};
@@ -49,6 +51,41 @@ fn tls(cc: Arc<ClientConfig>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
 
 fn refs(v: &[Vec<u8>]) -> Vec<&[u8]> {
     v.iter().map(|x| x.as_slice()).collect()
+}
+
+// Raw encoded hellos reach ECH reconstruction without requiring valid HPKE.
+// The messages target supplies these bytes as both inner and outer, so the
+// reference types must also be present in the extension list.
+fn ech_reconstruction_seed(duplicate: bool) -> Vec<u8> {
+    let mut body = vec![3, 3];
+    body.extend_from_slice(&[9; 32]);
+    body.extend_from_slice(&[0, 0, 2, 0x13, 1, 1, 0]);
+    let markers: &[(u16, &[u8])] = if duplicate {
+        &[(0xfd00, &[2, 0, 10]), (0xfd00, &[2, 0, 51])]
+    } else {
+        &[(0xfd00, &[4, 0, 10, 0, 51])]
+    };
+    nested(&mut body, Prefix::U16, |out| {
+        for &(ty, value) in [(10, &[0, 2, 0, 29][..]), (51, &[0, 0][..])]
+            .iter()
+            .chain(markers.iter())
+        {
+            put_u16(out, ty);
+            put_vec(out, Prefix::U16, value)?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let result = iron_socket_layer::ech::reconstruct_inner(&body, &body, &[]);
+    if duplicate {
+        assert_eq!(
+            result.unwrap_err().kind(),
+            iron_socket_layer::ErrorKind::IllegalParameter
+        );
+    } else {
+        result.unwrap();
+    }
+    with_sel(0, &body)
 }
 
 fn main() {
@@ -93,6 +130,16 @@ fn main() {
     // header stripped), and the record stream itself.
     let ch = &c1[0];
     write("messages", "clienthello", &with_sel(0, &ch[9..]));
+    write(
+        "messages",
+        "ech-inner-reconstruction",
+        &ech_reconstruction_seed(false),
+    );
+    write(
+        "messages",
+        "ech-duplicate-compression",
+        &ech_reconstruction_seed(true),
+    );
     write("messages", "framing", &with_sel(8, &ch[5..]));
     write("records", "clienthello", ch);
     write("records", "server-flights", &s1.concat());

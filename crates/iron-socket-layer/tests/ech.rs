@@ -154,3 +154,63 @@ fn ech_works_over_quic() {
     assert!(!c.is_handshaking(), "{:?}", c.error());
     assert_eq!(c.report().ech, "ech:accepted");
 }
+
+/// REQ-ECH-009: an accepted inner hello cannot receive outer retry configs.
+#[test]
+fn accepted_ech_refuses_retry_configurations() {
+    use iron_socket_layer::codec::Reader;
+    use iron_socket_layer::enums::HandshakeType;
+    use iron_socket_layer::msgs::{self, EncryptedExtensions};
+    use iron_socket_layer::quic::{QuicConnection, Version};
+    use iron_socket_layer::report::HandshakeState;
+    use iron_socket_layer::Level;
+
+    let (pki, ech, sc) = setup();
+    let cc = Arc::new(ech_client(&pki, ech.config_list()).with_alpn(&[b"h3"]));
+    let sc = Arc::new(sc.with_alpn(&[b"h3"]));
+    for version in [Version::V1, Version::V2] {
+        for retry in [None, Some(ech.config_list().to_vec()), Some(vec![0, 0])] {
+            let mut client = QuicConnection::client(cc.clone(), REAL, b"c", version).unwrap();
+            let mut server = QuicConnection::server(sc.clone(), b"s", version).unwrap();
+            let (level, hello) = client.write_handshake().unwrap();
+            server.read_handshake(level, &hello).unwrap();
+            let (level, hello) = server.write_handshake().unwrap();
+            assert_eq!(level, Level::Initial);
+            client.read_handshake(level, &hello).unwrap();
+            assert_eq!(client.report().ech, "ech:accepted");
+            let (level, flight) = server.write_handshake().unwrap();
+            assert_eq!(level, Level::Handshake);
+            if let Some(list) = retry {
+                let mut reader = Reader::new(&flight);
+                assert_eq!(
+                    HandshakeType::from_wire(reader.u8().unwrap()),
+                    HandshakeType::EncryptedExtensions
+                );
+                let mut ee = EncryptedExtensions::decode(reader.vec24().unwrap()).unwrap();
+                assert!(ee.ech_retry_configs.is_none());
+                ee.ech_retry_configs = Some(list);
+                let message =
+                    msgs::frame(HandshakeType::EncryptedExtensions, &ee.encode().unwrap()).unwrap();
+                let err = client.read_handshake(level, &message).unwrap_err();
+                assert_eq!(err.kind(), ErrorKind::UnsupportedExtension);
+                assert!(err.to_string().contains("without ECH rejection"));
+                assert_eq!(client.state(), HandshakeState::Failed);
+                assert_eq!(client.alert(), Some(AlertDescription::UnsupportedExtension));
+                assert_eq!(client.transport_error_code(), Some(0x016e));
+                assert_eq!(
+                    client.read_handshake(level, &flight).unwrap_err().kind(),
+                    ErrorKind::UnsupportedExtension
+                );
+            } else {
+                client.read_handshake(level, &flight).unwrap();
+                while let Some((level, finished)) = client.write_handshake() {
+                    server.read_handshake(level, &finished).unwrap();
+                }
+                for conn in [&client, &server] {
+                    assert_eq!(conn.state(), HandshakeState::Connected);
+                    assert!(conn.report().has(Property::EncryptedClientHello));
+                }
+            }
+        }
+    }
+}

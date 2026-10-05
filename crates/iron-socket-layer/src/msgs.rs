@@ -45,8 +45,82 @@ fn illegal(ctx: &'static str) -> Error {
     Error::new(ErrorKind::IllegalParameter, ctx)
 }
 
+/// REQ-MSG-017: SSL 3.0 legacy versions require a protocol_version alert (RFC 8446 D.5).
+fn read_hello_legacy_version(reader: &mut Reader<'_>) -> Result<u16> {
+    let version = reader.u16()?;
+    if version == 0x0300 {
+        return Err(Error::new(
+            ErrorKind::ProtocolVersion,
+            "SSL 3.0 legacy_version is forbidden",
+        ));
+    }
+    Ok(version)
+}
+
+#[derive(Clone, Copy)]
+enum ExtensionContext {
+    ClientHello,
+    ServerHello,
+    HelloRetryRequest,
+    EncryptedExtensions,
+    CertificateRequest,
+    CertificateEntry,
+    NewSessionTicket,
+}
+
+/// REQ-MSG-018: recognized RFC 8446 extensions occur only in the messages
+/// permitted by section 4.2; a wrong context requires illegal_parameter.
+/// REQ-MSG-019: record_size_limit (RFC 8449), QUIC parameters (RFC 9001),
+/// and ECH (RFC 9849) obey their message contexts. ech_outer_extensions is
+/// consumed by ECH reconstruction and is forbidden in ordinary decoded messages.
+fn extension_allowed(ty: ExtensionType, context: ExtensionContext) -> bool {
+    use ExtensionContext::*;
+    match ty {
+        ExtensionType::ServerName
+        | ExtensionType::MaxFragmentLength
+        | ExtensionType::SupportedGroups
+        | ExtensionType::RecordSizeLimit
+        | ExtensionType::QuicTransportParameters
+        | ExtensionType::ApplicationLayerProtocolNegotiation => {
+            matches!(context, ClientHello | EncryptedExtensions)
+        }
+        ExtensionType::StatusRequest | ExtensionType::SignedCertificateTimestamp => {
+            matches!(context, ClientHello | CertificateRequest | CertificateEntry)
+        }
+        ExtensionType::SignatureAlgorithms
+        | ExtensionType::SignatureAlgorithmsCert
+        | ExtensionType::CertificateAuthorities => {
+            matches!(context, ClientHello | CertificateRequest)
+        }
+        ExtensionType::Padding
+        | ExtensionType::PskKeyExchangeModes
+        | ExtensionType::PostHandshakeAuth => matches!(context, ClientHello),
+        ExtensionType::PreSharedKey => matches!(context, ClientHello | ServerHello),
+        ExtensionType::EarlyData => matches!(
+            context,
+            ClientHello | EncryptedExtensions | NewSessionTicket
+        ),
+        ExtensionType::SupportedVersions | ExtensionType::KeyShare => {
+            matches!(context, ClientHello | ServerHello | HelloRetryRequest)
+        }
+        ExtensionType::Cookie => matches!(context, ClientHello | HelloRetryRequest),
+        ExtensionType::OidFilters => matches!(context, CertificateRequest),
+        ExtensionType::EncryptedClientHello => {
+            matches!(
+                context,
+                ClientHello | HelloRetryRequest | EncryptedExtensions
+            )
+        }
+        ExtensionType::EchOuterExtensions => false,
+        ExtensionType::Unknown(_) => true,
+    }
+}
+
 /// Parse an extension block into `(type, body)` pairs. `REQ-MSG-001`.
-fn parse_extensions<'a>(r: &mut Reader<'a>) -> Result<Vec<(ExtensionType, &'a [u8])>> {
+fn parse_extensions<'a>(
+    r: &mut Reader<'a>,
+    context: ExtensionContext,
+) -> Result<Vec<(ExtensionType, &'a [u8])>> {
     let mut block = r.sub16()?;
     let mut out: Vec<(ExtensionType, &'a [u8])> = Vec::new();
     while !block.is_empty() {
@@ -54,6 +128,9 @@ fn parse_extensions<'a>(r: &mut Reader<'a>) -> Result<Vec<(ExtensionType, &'a [u
         let body = block.vec16()?;
         if out.iter().any(|(t, _)| *t == ty) {
             return Err(illegal("duplicate extension"));
+        }
+        if !extension_allowed(ty, context) {
+            return Err(illegal("extension forbidden in this handshake message"));
         }
         out.push((ty, body));
     }
@@ -68,6 +145,7 @@ where
     nested(out, Prefix::U16, f)
 }
 
+/// REQ-MSG-010: supported group, signature scheme and version lists are nonempty.
 fn read_u16_list(body: &[u8], prefix: Prefix) -> Result<Vec<u16>> {
     let mut r = Reader::new(body);
     let mut list = match prefix {
@@ -75,6 +153,9 @@ fn read_u16_list(body: &[u8], prefix: Prefix) -> Result<Vec<u16>> {
         _ => r.sub16()?,
     };
     r.finish()?;
+    if list.is_empty() {
+        return Err(decode_err("empty u16 list"));
+    }
     if list.remaining() % 2 != 0 {
         return Err(decode_err("odd-length u16 list"));
     }
@@ -368,10 +449,14 @@ impl ClientHello {
     }
 
     /// Decode a body. `REQ-MSG-001..003`.
+    /// REQ-MSG-007: the ClientHello early_data indication has an empty body.
+    /// REQ-MSG-008: a present psk_key_exchange_modes list contains at least one mode.
+    /// REQ-MSG-009: a present server_name list contains at least one entry.
+    /// REQ-MSG-011: OCSP responder IDs have complete, nonempty TLS vector bodies.
     pub fn decode(body: &[u8]) -> Result<Self> {
         let whole = body;
         let mut r = Reader::new(body);
-        let _legacy_version = r.u16()?;
+        let _legacy_version = read_hello_legacy_version(&mut r)?;
         let random = r.array::<32>()?;
         let session_id = r.vec8()?;
         if session_id.len() > 32 {
@@ -399,7 +484,7 @@ impl ClientHello {
             // A hello without extensions cannot be TLS 1.3.
             return Ok(ch);
         }
-        let exts = parse_extensions(&mut r)?;
+        let exts = parse_extensions(&mut r, ExtensionContext::ClientHello)?;
         r.finish()?;
         let last = exts.len().saturating_sub(1);
         for (i, (ty, body)) in exts.iter().enumerate() {
@@ -408,6 +493,9 @@ impl ClientHello {
                     let mut er = Reader::new(body);
                     let mut list = er.sub16()?;
                     er.finish()?;
+                    if list.is_empty() {
+                        return Err(decode_err("empty server_name list"));
+                    }
                     while !list.is_empty() {
                         let name_type = list.u8()?;
                         let name = list.vec16()?;
@@ -482,6 +570,9 @@ impl ClientHello {
                     let mut er = Reader::new(body);
                     ch.psk_modes = er.vec8()?.to_vec();
                     er.finish()?;
+                    if ch.psk_modes.is_empty() {
+                        return Err(decode_err("empty PSK key exchange modes"));
+                    }
                 }
                 ExtensionType::QuicTransportParameters => ch.quic_params = Some(body.to_vec()),
                 ExtensionType::RecordSizeLimit => {
@@ -505,7 +596,12 @@ impl ClientHello {
                 ExtensionType::StatusRequest => {
                     let mut er = Reader::new(body);
                     if er.u8()? == 1 {
-                        let _responder_ids = er.vec16()?;
+                        let mut responder_ids = er.sub16()?;
+                        while !responder_ids.is_empty() {
+                            if responder_ids.vec16()?.is_empty() {
+                                return Err(decode_err("empty OCSP responder ID"));
+                            }
+                        }
                         let _request_extensions = er.vec16()?;
                         er.finish()?;
                         ch.status_request = true;
@@ -517,7 +613,12 @@ impl ClientHello {
                     }
                     ch.psk = Some(OfferedPsks::decode(body)?);
                 }
-                ExtensionType::EarlyData => ch.early_data = true,
+                ExtensionType::EarlyData => {
+                    if !body.is_empty() {
+                        return Err(decode_err("early_data in ClientHello must be empty"));
+                    }
+                    ch.early_data = true;
+                }
                 other => ch.other_extensions.push(*other),
             }
         }
@@ -683,10 +784,11 @@ impl ServerHello {
     }
 
     /// Decode a body.
+    /// REQ-MSG-014: TLS 1.3 ServerHello and HelloRetryRequest use legacy_version 0x0303.
     pub fn decode(body: &[u8]) -> Result<Self> {
         let whole = body;
         let mut r = Reader::new(body);
-        let _legacy = r.u16()?;
+        let legacy_version = read_hello_legacy_version(&mut r)?;
         let random = r.array::<32>()?;
         let session_id = r.vec8()?;
         if session_id.len() > 32 {
@@ -706,7 +808,14 @@ impl ServerHello {
             return Ok(sh);
         }
         let retry = sh.is_retry();
-        let exts = parse_extensions(&mut r)?;
+        let exts = parse_extensions(
+            &mut r,
+            if retry {
+                ExtensionContext::HelloRetryRequest
+            } else {
+                ExtensionContext::ServerHello
+            },
+        )?;
         r.finish()?;
         for (ty, body) in exts {
             let mut er = Reader::new(body);
@@ -746,6 +855,12 @@ impl ServerHello {
                 }
             }
             er.finish()?;
+        }
+        // supported_versions carries the negotiated version.
+        if sh.selected_version == Some(ProtocolVersion::Tls13)
+            && legacy_version != ProtocolVersion::Tls12.to_wire()
+        {
+            return Err(illegal("TLS 1.3 ServerHello legacy_version must be 0x0303"));
         }
         Ok(sh)
     }
@@ -814,7 +929,7 @@ impl EncryptedExtensions {
     /// Decode a body.
     pub fn decode(body: &[u8]) -> Result<Self> {
         let mut r = Reader::new(body);
-        let exts = parse_extensions(&mut r)?;
+        let exts = parse_extensions(&mut r, ExtensionContext::EncryptedExtensions)?;
         r.finish()?;
         let mut ee = EncryptedExtensions::default();
         for (ty, body) in exts {
@@ -889,7 +1004,7 @@ impl CertificateRequest {
     pub fn decode(body: &[u8]) -> Result<Self> {
         let mut r = Reader::new(body);
         let context = r.vec8()?.to_vec();
-        let exts = parse_extensions(&mut r)?;
+        let exts = parse_extensions(&mut r, ExtensionContext::CertificateRequest)?;
         r.finish()?;
         let mut sig_algs = None;
         for (ty, body) in exts {
@@ -950,6 +1065,8 @@ impl CertificateMsg {
     }
 
     /// Decode a body.
+    /// REQ-MSG-012: extension types are unique within each CertificateEntry.
+    /// REQ-MSG-013: every status_request body has complete CertificateStatus framing.
     pub fn decode(body: &[u8]) -> Result<Self> {
         let mut r = Reader::new(body);
         let context = r.vec8()?.to_vec();
@@ -962,13 +1079,10 @@ impl CertificateMsg {
             if cert.is_empty() {
                 return Err(decode_err("empty certificate entry"));
             }
-            let mut ext = Reader::new(list.vec16()?);
-            // Each entry extension is a (type, vec16) pair; only the leaf's
-            // status_request is used.
-            while !ext.is_empty() {
-                let ty = ExtensionType::from_wire(ext.u16()?);
-                let body = ext.vec16()?;
-                if ty == ExtensionType::StatusRequest && chain.is_empty() {
+            let extensions = parse_extensions(&mut list, ExtensionContext::CertificateEntry)?;
+            // Validate status framing for every entry; retain only the leaf's response.
+            for (ty, body) in extensions {
+                if ty == ExtensionType::StatusRequest {
                     let mut r = Reader::new(body);
                     if r.u8()? != 1 {
                         return Err(decode_err("unknown CertificateStatusType"));
@@ -978,7 +1092,9 @@ impl CertificateMsg {
                     if resp.is_empty() {
                         return Err(decode_err("empty OCSP response"));
                     }
-                    ocsp = Some(resp.to_vec());
+                    if chain.is_empty() {
+                        ocsp = Some(resp.to_vec());
+                    }
                 }
             }
             if chain.len() == MAX_CHAIN_LEN {
@@ -1069,7 +1185,7 @@ impl NewSessionTicket {
             return Err(decode_err("empty ticket"));
         }
         let mut max_early_data = None;
-        for (ty, body) in parse_extensions(&mut r)? {
+        for (ty, body) in parse_extensions(&mut r, ExtensionContext::NewSessionTicket)? {
             if ty == ExtensionType::EarlyData {
                 let mut er = Reader::new(body);
                 max_early_data = Some(er.u32()?);

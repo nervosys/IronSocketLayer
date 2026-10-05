@@ -854,6 +854,8 @@ impl ClientHs {
         Ok(())
     }
 
+    /// REQ-ECH-009: retry configurations are forbidden after ECH acceptance;
+    /// abort with unsupported_extension (RFC 9849 section 5).
     fn on_encrypted_extensions(&mut self, core: &mut Core, body: &[u8], msg: &[u8]) -> Result<()> {
         let ee = EncryptedExtensions::decode(body)?;
         if let Some(p) = &ee.alpn {
@@ -928,8 +930,12 @@ impl ClientHs {
                     ech::parse_config_list(&list)?;
                     core.ech_retry_configs = Some(list);
                 }
-                // Retry configs after acceptance carry no instruction.
-                Some(_) => {}
+                Some(_) => {
+                    return Err(Error::new(
+                        ErrorKind::UnsupportedExtension,
+                        "encrypted_client_hello in EncryptedExtensions without ECH rejection",
+                    ))
+                }
             }
         }
         match (ee.early_data, self.early) {

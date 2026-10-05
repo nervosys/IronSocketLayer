@@ -306,6 +306,7 @@ fn check_other_name(content: &[u8]) -> Result<()> {
 /// REQ-X509-036: PrintableString EDI fields use only the ASN.1 character repertoire.
 /// REQ-X509-037: BMPString and UniversalString EDI fields contain complete code units.
 /// REQ-X509-069: BMPString EDI fields exclude surrogate code units and FFFE/FFFF.
+/// REQ-X509-070: UniversalString EDI code units exclude surrogates and values above U+10FFFF.
 fn check_directory_string(content: &[u8]) -> Result<()> {
     let mut string = Der::new(content);
     let (tag, value, _) = string.tlv()?;
@@ -335,6 +336,14 @@ fn check_directory_string(content: &[u8]) -> Result<()> {
         })
     {
         return Err(bad("invalid DirectoryString BMPString character"));
+    }
+    if tag == 0x1c
+        && value.chunks_exact(4).any(|unit| {
+            let code = u32::from_be_bytes([unit[0], unit[1], unit[2], unit[3]]);
+            matches!(code, 0xd800..=0xdfff) || code > 0x10ffff
+        })
+    {
+        return Err(bad("invalid DirectoryString UniversalString code point"));
     }
     string.finish()?;
     Ok(())
@@ -5312,22 +5321,7 @@ mod chain_tests {
                 "{code:04x}"
             );
         }
-        let mut r = rng();
-        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
-        let issuer = self_signed(&params("EDI issuer", &[], true), &key, &mut r).unwrap();
-        let ca = Certificate::parse(&issuer).unwrap();
-        let public = ca.subject_public_key().unwrap();
-        let identifier = key_identifier(ca.spki).unwrap();
-        let field = |wrapper, tag, value: &[u8]| {
-            let mut string = Vec::new();
-            push_tlv(&mut string, tag, value);
-            let mut encoded = Vec::new();
-            push_tlv(&mut encoded, wrapper, &string);
-            encoded
-        };
-        let mut control = Vec::new();
-        push_tlv(&mut control, T_GN_DNS, b"control.example");
-        for (code, accepted) in [
+        let cases: Vec<_> = [
             (0x0000u16, true),
             (0x0041, true),
             (0xd7ff, true),
@@ -5339,22 +5333,107 @@ mod chain_tests {
             (0xdfff, false),
             (0xfffe, false),
             (0xffff, false),
-        ] {
+        ]
+        .into_iter()
+        .map(|(code, accepted)| (code.to_be_bytes().to_vec(), accepted))
+        .collect();
+        assert_signed_edi_strings(0x1e, &cases, "invalid DirectoryString BMPString character");
+        // A UTF-16 surrogate pair is also outside BMPString's repertoire.
+        let mut pair = Vec::new();
+        push_tlv(&mut pair, 0x1e, &[0xd8, 0, 0xdc, 0]);
+        assert!(check_directory_string(&pair).is_err());
+    }
+
+    /// REQ-X509-070: Unicode section 3.9.1/D90 excludes surrogate code points
+    /// and units greater than U+10FFFF; supplementary scalar values remain usable.
+    #[test]
+    fn edi_party_name_universalstrings_require_unicode_scalars() {
+        for code in 0u32..=0x110000 {
             let bytes = code.to_be_bytes();
+            let string = [0x1c, 4, bytes[0], bytes[1], bytes[2], bytes[3]];
+            assert_eq!(
+                check_directory_string(&string).is_ok(),
+                char::from_u32(code).is_some(),
+                "{code:08x}"
+            );
+        }
+        let mut cases: Vec<_> = [
+            (0x0000u32, true),
+            (0x004d, true),
+            (0x0430, true),
+            (0x4e8c, true),
+            (0xd7ff, true),
+            (0xe000, true),
+            (0xfffe, true),
+            (0xffff, true),
+            (0x10000, true),
+            (0x10302, true),
+            (0x10fffd, true),
+            (0x10ffff, true),
+            (0xd800, false),
+            (0xdbff, false),
+            (0xdc00, false),
+            (0xdfff, false),
+            (0x110000, false),
+            (0x110001, false),
+            (0x7fffffff, false),
+            (0x80000000, false),
+            (u32::MAX, false),
+        ]
+        .into_iter()
+        .map(|(code, accepted)| (code.to_be_bytes().to_vec(), accepted))
+        .collect();
+        // Unicode Table 3-4 gives this sequence in UTF-32.
+        cases.push((
+            [0x004du32, 0x0430, 0x4e8c, 0x10302]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+            true,
+        ));
+        assert_signed_edi_strings(
+            0x1c,
+            &cases,
+            "invalid DirectoryString UniversalString code point",
+        );
+    }
+
+    fn assert_signed_edi_strings(tag: u8, cases: &[(Vec<u8>, bool)], context: &str) {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let issuer = self_signed(&params("EDI issuer", &[], true), &key, &mut r).unwrap();
+        let ca = Certificate::parse(&issuer).unwrap();
+        let public = ca.subject_public_key().unwrap();
+        let identifier = key_identifier(ca.spki).unwrap();
+        let field = |wrapper, string_tag, value: &[u8]| {
+            let mut string = Vec::new();
+            push_tlv(&mut string, string_tag, value);
+            let mut encoded = Vec::new();
+            push_tlv(&mut encoded, wrapper, &string);
+            encoded
+        };
+        let mut control = Vec::new();
+        push_tlv(&mut control, T_GN_DNS, b"control.example");
+        let padding: &[u8] = if tag == 0x1e {
+            &[0, 0x41]
+        } else {
+            &[0, 0, 0, 0x41]
+        };
+        for (bytes, accepted) in cases {
             for value in [
                 bytes.to_vec(),
-                [bytes.as_slice(), &[0, 0x41]].concat(),
-                [&[0, 0x41], bytes.as_slice()].concat(),
+                [bytes.as_slice(), padding].concat(),
+                [padding, bytes.as_slice()].concat(),
             ] {
                 for wrapper in [T_CTX0, T_CTX1] {
                     let mut edi = if wrapper == T_CTX0 {
-                        field(T_CTX0, 0x1e, &value)
+                        field(T_CTX0, tag, &value)
                     } else {
                         field(T_CTX0, T_UTF8, b"assigner")
                     };
                     edi.extend_from_slice(&field(
                         T_CTX1,
-                        if wrapper == T_CTX1 { 0x1e } else { T_UTF8 },
+                        if wrapper == T_CTX1 { tag } else { T_UTF8 },
                         if wrapper == T_CTX1 { &value } else { b"party" },
                     ));
                     let mut name = Vec::new();
@@ -5386,27 +5465,20 @@ mod chain_tests {
                                 whole_bits(certificate.expect(T_BIT_STRING).unwrap()).unwrap();
                             sign::verify(scheme, &public, tbs, signature).unwrap();
                             let result = Certificate::parse(&encoded);
-                            if accepted {
+                            if *accepted {
                                 let certificate = result.unwrap();
                                 assert_eq!(certificate.ext.san, Some(names.as_slice()));
                                 check_signature(&certificate, ca.spki, &opts()).unwrap();
                             } else {
                                 let error = result.err().unwrap();
                                 assert_eq!(error.kind(), ErrorKind::BadCertificate);
-                                assert_eq!(
-                                    error.context(),
-                                    "invalid DirectoryString BMPString character"
-                                );
+                                assert_eq!(error.context(), context);
                             }
                         }
                     }
                 }
             }
         }
-        // A UTF-16 surrogate pair is also outside BMPString's repertoire.
-        let mut pair = Vec::new();
-        push_tlv(&mut pair, 0x1e, &[0xd8, 0, 0xdc, 0]);
-        assert!(check_directory_string(&pair).is_err());
     }
 
     /// REQ-X509-068: received KeyUsage omits trailing zero named bits per
