@@ -114,10 +114,10 @@ What the tests establish, on the host:
   with every engine call allocation-gated.
 * IronCrypto's lazily built curve tables are built while the engine
   initializes; a fresh process whose first curve use is inside a handshake
-  makes no allocation (`tests/fixed_cold_start.rs`). IronCrypto commit
-  fc692e1 removes the cause: its tables live in statics, and this test
-  passes against it with the warm-up disabled. The warm-up stays while the
-  supported range includes IronCrypto 0.2.5 to 0.2.7.
+  makes no allocation (`tests/fixed_cold_start.rs`). IronCrypto 0.2.8
+  (which this crate now requires) removes the cause: its tables live in
+  statics. The engine calls `ic_ec::prepare()` at initialization only to
+  keep the one-time build cost out of the first handshake.
 * Any number of KeyUpdates in either direction leaves the connection up.
 * `robustness.rs` mutates all three flights for the fixed engine, from
   seeded randomness: no panic, no allocation, every failure latched, any pair

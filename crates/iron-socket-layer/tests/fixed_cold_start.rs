@@ -1,8 +1,9 @@
 //! The fixed engine in a process where no curve operation has run yet.
 //!
-//! IronCrypto 0.2.5 to 0.2.7 build the NIST curve tables on first use, which
-//! allocates under `std`; the fixed engine must build them while it
-//! initializes. (Ed25519's tables never allocated.) Any key
+//! IronCrypto 0.2.5 to 0.2.7 built the NIST curve tables on the heap on first
+//! use; from 0.2.8 they live in statics. This guards against that returning,
+//! in IronCrypto or in how the engine initializes. (Ed25519's tables never
+//! allocated.) Any key
 //! generation in a process builds them, so the certificates are made here and
 //! the fixed client runs in a fresh child process (this binary, re-run with an
 //! environment variable). The child uses X25519, so a NIST curve or Ed25519 is
