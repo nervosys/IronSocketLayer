@@ -145,6 +145,7 @@ impl MlDsa {
         })
     }
 
+    #[inline(never)]
     fn verify(self, pk: &[u8], message: &[u8], signature: &[u8]) -> Result<()> {
         with_mldsa!(self, m, {
             let pk: &[u8; m::PUBLIC_KEY_LEN] = pk
@@ -358,25 +359,21 @@ pub fn verify(
             "signature scheme does not match the key",
         ));
     }
-    let fail = |_| Error::new(ErrorKind::DecryptError, "signature did not verify");
+    // Each family verifies in its own out-of-line function, so this frame
+    // reserves none of their state: on a Cortex-M4 with LTO it had grown to
+    // 10.8 KB with every verifier inlined, on top of the ML-DSA verifier's own.
     match (scheme, *key) {
         (SignatureScheme::EcdsaSecp256r1Sha256, PublicKey::EcP256(pk)) => {
-            let mut fixed = [0u8; 64];
-            ic_pkix::ecdsa_signature::from_der(signature, &mut fixed).map_err(fail)?;
-            ic_ec::EcdsaP256Sha256::verify(pk, message, &fixed).map_err(fail)
+            verify_p256(pk, message, signature)
         }
         (SignatureScheme::EcdsaSecp384r1Sha384, PublicKey::EcP384(pk)) => {
-            let mut fixed = [0u8; 96];
-            ic_pkix::ecdsa_signature::from_der(signature, &mut fixed).map_err(fail)?;
-            ic_ec::EcdsaP384Sha384::verify(pk, message, &fixed).map_err(fail)
+            verify_p384(pk, message, signature)
         }
         (SignatureScheme::EcdsaSecp521r1Sha512, PublicKey::EcP521(pk)) => {
-            let mut fixed = [0u8; 132];
-            ic_pkix::ecdsa_signature::from_der(signature, &mut fixed).map_err(fail)?;
-            ic_ec::p521::EcdsaP521Sha512::verify(pk, message, &fixed).map_err(fail)
+            verify_p521(pk, message, signature)
         }
         (SignatureScheme::Ed25519, PublicKey::Ed25519(pk)) => {
-            ic_ec::Ed25519::verify(pk, message, signature).map_err(fail)
+            verify_ed25519(pk, message, signature)
         }
         (SignatureScheme::MlDsa44, PublicKey::MlDsa44(pk)) => {
             MlDsa::P44.verify(pk, message, signature)
@@ -388,40 +385,69 @@ pub fn verify(
             MlDsa::P87.verify(pk, message, signature)
         }
         (s, PublicKey::Rsa { modulus, exponent }) => {
-            let key = ic_rsa::RsaPublicKey::from_components(modulus, exponent).map_err(|_| {
-                Error::new(
-                    ErrorKind::UnsupportedCertificate,
-                    "rsa key outside 2048..4096 bits",
-                )
-            })?;
-            let r = match s {
-                SignatureScheme::RsaPssRsaeSha256 => {
-                    ic_rsa::PssSha256::verify(&key, message, signature)
-                }
-                SignatureScheme::RsaPssRsaeSha384 => {
-                    ic_rsa::PssSha384::verify(&key, message, signature)
-                }
-                SignatureScheme::RsaPssRsaeSha512 => {
-                    ic_rsa::PssSha512::verify(&key, message, signature)
-                }
-                SignatureScheme::RsaPkcs1Sha256 => {
-                    ic_rsa::Pkcs1Sha256::verify(&key, message, signature)
-                }
-                SignatureScheme::RsaPkcs1Sha384 => {
-                    ic_rsa::Pkcs1Sha384::verify(&key, message, signature)
-                }
-                SignatureScheme::RsaPkcs1Sha512 => {
-                    ic_rsa::Pkcs1Sha512::verify(&key, message, signature)
-                }
-                _ => return Err(Error::new(ErrorKind::IllegalParameter, "scheme")),
-            };
-            r.map_err(fail)
+            verify_rsa(s, modulus, exponent, message, signature)
         }
         _ => Err(Error::new(
             ErrorKind::IllegalParameter,
             "signature scheme does not match the key",
         )),
     }
+}
+
+fn verify_failed<E>(_: E) -> Error {
+    Error::new(ErrorKind::DecryptError, "signature did not verify")
+}
+
+#[inline(never)]
+fn verify_p256(pk: &[u8], message: &[u8], signature: &[u8]) -> Result<()> {
+    let mut fixed = [0u8; 64];
+    ic_pkix::ecdsa_signature::from_der(signature, &mut fixed).map_err(verify_failed)?;
+    ic_ec::EcdsaP256Sha256::verify(pk, message, &fixed).map_err(verify_failed)
+}
+
+#[inline(never)]
+fn verify_p384(pk: &[u8], message: &[u8], signature: &[u8]) -> Result<()> {
+    let mut fixed = [0u8; 96];
+    ic_pkix::ecdsa_signature::from_der(signature, &mut fixed).map_err(verify_failed)?;
+    ic_ec::EcdsaP384Sha384::verify(pk, message, &fixed).map_err(verify_failed)
+}
+
+#[inline(never)]
+fn verify_p521(pk: &[u8], message: &[u8], signature: &[u8]) -> Result<()> {
+    let mut fixed = [0u8; 132];
+    ic_pkix::ecdsa_signature::from_der(signature, &mut fixed).map_err(verify_failed)?;
+    ic_ec::p521::EcdsaP521Sha512::verify(pk, message, &fixed).map_err(verify_failed)
+}
+
+#[inline(never)]
+fn verify_ed25519(pk: &[u8], message: &[u8], signature: &[u8]) -> Result<()> {
+    ic_ec::Ed25519::verify(pk, message, signature).map_err(verify_failed)
+}
+
+#[inline(never)]
+fn verify_rsa(
+    scheme: SignatureScheme,
+    modulus: &[u8],
+    exponent: u64,
+    message: &[u8],
+    signature: &[u8],
+) -> Result<()> {
+    let key = ic_rsa::RsaPublicKey::from_components(modulus, exponent).map_err(|_| {
+        Error::new(
+            ErrorKind::UnsupportedCertificate,
+            "rsa key outside 2048..4096 bits",
+        )
+    })?;
+    let r = match scheme {
+        SignatureScheme::RsaPssRsaeSha256 => ic_rsa::PssSha256::verify(&key, message, signature),
+        SignatureScheme::RsaPssRsaeSha384 => ic_rsa::PssSha384::verify(&key, message, signature),
+        SignatureScheme::RsaPssRsaeSha512 => ic_rsa::PssSha512::verify(&key, message, signature),
+        SignatureScheme::RsaPkcs1Sha256 => ic_rsa::Pkcs1Sha256::verify(&key, message, signature),
+        SignatureScheme::RsaPkcs1Sha384 => ic_rsa::Pkcs1Sha384::verify(&key, message, signature),
+        SignatureScheme::RsaPkcs1Sha512 => ic_rsa::Pkcs1Sha512::verify(&key, message, signature),
+        _ => return Err(Error::new(ErrorKind::IllegalParameter, "scheme")),
+    };
+    r.map_err(verify_failed)
 }
 
 enum KeyImpl {

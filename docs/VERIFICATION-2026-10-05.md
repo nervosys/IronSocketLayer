@@ -272,30 +272,37 @@ thread: both constructors, the handshake, data both ways, KeyUpdate, an
 exporter and close_notify. Peak stack is found by painting the free stack.
 Allocations are counted after both constructors.
 
-Peak stack per session. "0.2.8" is IronCrypto 0.2.8; "2f95d30" is
-IronCrypto commit 2f95d30, which stops ML-KEM holding the matrix A (outputs
-unchanged), released in 0.2.9; this crate now requires 0.2.9. Every case made zero allocator calls after initialization on
-both.
+Peak stack per session, by IronCrypto version. Every case made zero
+allocator calls after initialization.
 
-| Signing keys | Group | 0.2.8 | 2f95d30 |
-|---|---|---:|---:|
-| ECDSA P-256 | X25519 | 29,440 B | 29,440 B |
-| ECDSA P-256 | X25519MLKEM768 | 55,844 B | 31,004 B |
-| Ed25519 | X25519MLKEM768 | 55,844 B | 31,608 B |
-| ECDSA P-384 | SecP384r1MLKEM1024 | 63,012 B | 31,996 B |
-| ML-DSA-44 | ML-KEM-512 | 50,020 B | 44,836 B |
-| ML-DSA-65 | X25519MLKEM768 | 55,844 B | 51,428 B |
-| ML-DSA-87 | SecP384r1MLKEM1024 | 63,012 B | 60,404 B |
-| ML-DSA-87 | ML-KEM-1024 | 63,012 B | 60,404 B |
+| Signing keys | Group | 0.2.8 | 0.2.9 | ddff292 + split verify |
+|---|---|---:|---:|---:|
+| ECDSA P-256 | X25519 | 29,440 B | 29,440 B | 26,104 B |
+| ECDSA P-256 | X25519MLKEM768 | 55,844 B | 31,004 B | 31,004 B |
+| Ed25519 | X25519MLKEM768 | 55,844 B | 31,608 B | 31,004 B |
+| ECDSA P-384 | SecP384r1MLKEM1024 | 63,012 B | 31,996 B | 31,996 B |
+| ML-DSA-44 | ML-KEM-512 | 50,020 B | 44,836 B | 30,348 B |
+| ML-DSA-65 | X25519MLKEM768 | 55,844 B | 51,428 B | 31,924 B |
+| ML-DSA-87 | SecP384r1MLKEM1024 | 63,012 B | 60,404 B | 34,308 B |
+| ML-DSA-87 | ML-KEM-1024 | 63,012 B | 60,404 B | 34,308 B |
 
 With 0.2.8 the key-exchange group set the peak: ML-KEM needed 20 to 34 KB.
-After 2f95d30 a session with classical or Ed25519 signatures needs about
-31 KB whatever the group, and ML-DSA signing sets the peak: 45 KB for
-ML-DSA-44 and 60 KB for ML-DSA-87. IronCrypto reports ML-KEM-1024's own peak
-on Cortex-M4, measured from the linked call graph, falling from 44,464 to
-14,220 bytes for keygen, from 25,400 to 7,300 for encapsulation and from
-28,296 to 9,804 for decapsulation. All tests and OpenSSL suites here pass
-on that commit. A client whose handshake buffer cannot hold the server's flight
+IronCrypto 0.2.9 (commit 2f95d30) stops ML-KEM holding its matrix. A
+session with classical or Ed25519 signatures then needs about 31 KB with any
+group, and ML-DSA signing set the peak.
+
+IronCrypto commit ddff292, not yet released, decodes ML-DSA's secret
+vectors per use and holds hints as bitmaps. IronCrypto reports, from its
+linked Cortex-M4 call graph, ML-DSA-87 signing falling from 43,788 to
+17,596 bytes and verification from 20,268 to 17,508, for 6 to 8% more
+signing time on x86-64. The linked image also showed this crate's own
+`crypto::sign::verify` holding a 10,848-byte frame: every verifier was
+inlined into it, on top of the ML-DSA verifier it then called. Each family
+now verifies out of line.
+
+With both changes every session needs 26 to 34 KB, and post-quantum
+authentication costs at most about 3 KB over classical. All tests,
+the no_std build and the OpenSSL suites pass on ddff292. A client whose handshake buffer cannot hold the server's flight
 fails with `capacity-exceeded`, latched, with nothing queued. Adding one
 allocation inside the session makes the run fail, so the counter observes
 allocations.
