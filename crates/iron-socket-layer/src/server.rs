@@ -394,6 +394,14 @@ impl ServerHs {
                         core.report.peer_signature_scheme = Some(scheme);
                         core.report
                             .add(crate::report::Property::MutualAuthentication);
+                        // REQ-PHA-003: the handshake's rule applies; a client
+                        // authenticated without ML-DSA end to end withdraws
+                        // the post-quantum authentication claim.
+                        if !(p.pq_chain && scheme.is_post_quantum()) {
+                            core.report.properties.retain(|q| {
+                                *q != crate::report::Property::PostQuantumAuthentication
+                            });
+                        }
                         core.report.event("event:post-handshake-auth", "verified");
                     }
                     None => {
@@ -1308,6 +1316,170 @@ impl ServerHs {
             core.report.event("event:ticket-sent", "");
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    //! Messages that arrive only under record protection over TCP, handed to
+    //! the state machine as the record layer would after decryption.
+
+    use super::*;
+    use crate::config::{ClientConfig, EarlyDataPolicy, Profile};
+    use crate::conn::{Connection, Role};
+    use crate::crypto::sign::{KeyKind, SigningKey};
+    use crate::x509::{CertificateParams, RootStore};
+
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    /// A self-signed end-entity certificate for `usage`, and its key.
+    fn certificate(cn: &str, dns: &[&str], usage: Usage) -> (Vec<u8>, SigningKey) {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
+        let t = now();
+        let cert = x509::self_signed(
+            &CertificateParams {
+                subject_cn: cn,
+                dns_names: dns,
+                ip_addresses: &[],
+                not_before: t - 60,
+                not_after: t + 3600,
+                is_ca: false,
+                path_len: None,
+                usage: &[usage],
+                serial: [3; 16],
+            },
+            &key,
+            &mut rng,
+        )
+        .unwrap();
+        (cert, key)
+    }
+
+    fn configs() -> (ClientConfig, ServerConfig) {
+        let (cert, key) = certificate("s.test", &["s.test"], Usage::ServerAuth);
+        let mut roots = RootStore::new();
+        roots.add_der(&cert).unwrap();
+        let sc = ServerConfig::new(
+            Profile::Default,
+            Identity::new(alloc::vec![cert], key).unwrap(),
+        )
+        .unwrap();
+        let cc = ClientConfig::new(Profile::Default, roots).unwrap();
+        (cc, sc)
+    }
+
+    fn pump(c: &mut Connection, s: &mut Connection) {
+        for _ in 0..4 {
+            s.read_tls(&c.take_tls()).unwrap();
+            c.read_tls(&s.take_tls()).unwrap();
+        }
+    }
+
+    /// Feed one plaintext handshake message to the server's state machine.
+    fn inject(s: &mut Connection, ty: HandshakeType, body: &[u8]) -> Result<()> {
+        let m = msgs::frame(ty, body).unwrap();
+        s.core.hs_buf.extend_from_slice(&m);
+        s.process_handshake()
+    }
+
+    /// A server that has just accepted 0-RTT from a resuming client.
+    fn accepted_early() -> Connection {
+        let (mut cc, mut sc) = configs();
+        cc.early_data = true;
+        sc.early_data = Some(EarlyDataPolicy::new(16_384));
+        let (cc, sc) = (Arc::new(cc), Arc::new(sc));
+        let mut c = Connection::client(cc.clone(), "s.test").unwrap();
+        let mut s = Connection::server(sc.clone()).unwrap();
+        pump(&mut c, &mut s);
+        assert_eq!(c.report().tickets_received, 1);
+        let mut c = Connection::client_with_early_data(cc, "s.test", b"early").unwrap();
+        let mut s = Connection::server(sc).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        assert_eq!(s.report().early_data, "early-data:accepted");
+        assert_eq!(s.state(), S::WaitFinished);
+        s
+    }
+
+    /// REQ-0RTT-003: accepted early data ends with an EndOfEarlyData that
+    /// has no body (RFC 8446 §4.5) and that precedes the client's Finished;
+    /// a body is a decode_error, a Finished first is unexpected_message.
+    #[test]
+    fn end_of_early_data_is_empty_and_comes_before_finished() {
+        let mut s = accepted_early();
+        let e = inject(&mut s, HandshakeType::EndOfEarlyData, &[0]).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Decode);
+        assert_eq!(e.context(), "EndOfEarlyData has no body");
+
+        let mut s = accepted_early();
+        let e = inject(&mut s, HandshakeType::Finished, &[0; 32]).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::UnexpectedMessage);
+        assert_eq!(e.context(), "Finished before EndOfEarlyData");
+
+        // The conforming order is accepted.
+        let mut s = accepted_early();
+        inject(&mut s, HandshakeType::EndOfEarlyData, &[]).unwrap();
+        assert!(s
+            .report()
+            .events
+            .iter()
+            .any(|e| e.id == "event:end-of-early-data"));
+    }
+
+    /// REQ-PHA-003, REQ-SIG-002: a post-handshake CertificateVerify must use
+    /// a scheme the CertificateRequest offered; PKCS#1 v1.5, never offered
+    /// for a handshake signature, is illegal_parameter before any signature
+    /// is checked.
+    #[test]
+    fn a_step_up_certificate_verify_must_use_a_requested_scheme() {
+        let (cc, sc) = configs();
+        let (agent, agent_key) = certificate("agent", &[], Usage::ClientAuth);
+        let mut anchors = RootStore::new();
+        anchors.add_der(&agent).unwrap();
+        let mut cc =
+            cc.with_identity(Identity::new(alloc::vec![agent.clone()], agent_key).unwrap());
+        cc.post_handshake_auth = true;
+        let sc = sc.with_client_auth(ClientAuth::OnDemand(PeerVerification::Roots(anchors)));
+        let mut c = Connection::client(Arc::new(cc), "s.test").unwrap();
+        let mut s = Connection::server(Arc::new(sc)).unwrap();
+        pump(&mut c, &mut s);
+        assert_eq!(s.state(), S::Connected);
+        s.request_client_auth().unwrap();
+        let _request = s.take_tls();
+        let (context, schemes) = match &s.role {
+            Role::Server(hs) => {
+                let p = hs.pending_pha.as_ref().unwrap();
+                (p.context.clone(), p.schemes.clone())
+            }
+            Role::Client(_) => unreachable!(),
+        };
+        assert!(!schemes.contains(&SignatureScheme::RsaPkcs1Sha256));
+        let cert = CertificateMsg {
+            context,
+            chain: alloc::vec![agent],
+            ocsp: None,
+        };
+        inject(&mut s, HandshakeType::Certificate, &cert.encode().unwrap()).unwrap();
+        let cv = CertificateVerify {
+            scheme: SignatureScheme::RsaPkcs1Sha256,
+            signature: alloc::vec![0; 256],
+        };
+        let e = inject(
+            &mut s,
+            HandshakeType::CertificateVerify,
+            &cv.encode().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::IllegalParameter);
+        assert_eq!(e.context(), "CertificateVerify uses a scheme not requested");
+        assert!(!s
+            .report()
+            .has(crate::report::Property::MutualAuthentication));
     }
 }
 

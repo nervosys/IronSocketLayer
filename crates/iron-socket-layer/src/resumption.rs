@@ -592,4 +592,49 @@ mod tests {
             assert!(e.to_string().contains("ticket state version"), "{v}: {e}");
         }
     }
+
+    /// REQ-PSK-003: a ticket is usable only from when it was received until
+    /// its lifetime ends; at a time before its receipt (a clock stepped
+    /// back) it is unusable, and the store does not hand it out.
+    #[test]
+    fn a_ticket_is_not_valid_before_it_was_received() {
+        let t = StoredTicket {
+            server_name: "a.test".into(),
+            suite: CipherSuite::TlsAes128GcmSha256,
+            ticket: alloc::vec![1; 8],
+            psk: Output::zeros(32),
+            age_add: 0,
+            lifetime: 100,
+            received_at: 1000,
+            max_early_data: 0,
+            alpn: None,
+            quic_params: None,
+            peer: PeerSummary::default(),
+        };
+        assert!(t.valid_at(1000));
+        assert!(t.valid_at(1099));
+        assert!(!t.valid_at(1100));
+        assert!(!t.valid_at(999), "valid before it was received");
+        assert!(!t.valid_at(0));
+        let store = MemoryTicketStore::default();
+        store.put(t);
+        assert!(store.take("a.test", 999).is_none());
+        assert!(store.is_empty(), "an unusable ticket is dropped");
+    }
+
+    /// REQ-PSK-005: a ticket carries the client's certificate only up to
+    /// `MAX_LEAF_IN_TICKET` bytes; a larger one is left out, while the
+    /// session's client-authentication facts are kept.
+    #[test]
+    fn an_oversized_client_certificate_is_left_out_of_the_ticket() {
+        for (len, kept) in [(MAX_LEAF_IN_TICKET, true), (MAX_LEAF_IN_TICKET + 1, false)] {
+            let mut s = state();
+            s.client_leaf = alloc::vec![0x30; len];
+            let decoded = TicketState::decode(&s.encode().unwrap()).unwrap();
+            assert_eq!(decoded.client_leaf.len(), if kept { len } else { 0 });
+            assert!(decoded.client_authenticated);
+            assert_eq!(decoded.psk, s.psk);
+            assert_eq!(decoded.alpn, s.alpn);
+        }
+    }
 }
