@@ -274,7 +274,7 @@ Allocations are counted after both constructors.
 
 Peak stack per session. "0.2.8" is IronCrypto 0.2.8; "2f95d30" is
 IronCrypto commit 2f95d30, which stops ML-KEM holding the matrix A (outputs
-unchanged). Every case made zero allocator calls after initialization on
+unchanged), released in 0.2.9; this crate now requires 0.2.9. Every case made zero allocator calls after initialization on
 both.
 
 | Signing keys | Group | 0.2.8 | 2f95d30 |
