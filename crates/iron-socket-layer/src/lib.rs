@@ -15,6 +15,7 @@ pub mod crypto;
 pub mod ech;
 pub mod enums;
 pub mod error;
+pub mod fixed;
 pub mod key_schedule;
 pub mod msgs;
 pub mod policy;

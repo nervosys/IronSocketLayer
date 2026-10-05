@@ -117,6 +117,8 @@ it is not final firmware flash size or a RAM bound.
 
 Host inline storage (64-bit): Connection 2,080 bytes; QuicConnection 2,256;
 ClientConfig 328; ServerConfig 280; SessionReport 376. Owned Vec/Box/Arc
-allocations and stack scratch space are excluded. The fixed-capacity engine,
-peak heap/stack measurements and execution on physical hardware remain open
-in [READINESS.md](READINESS.md).
+allocations and stack scratch space are excluded. These figures predate the
+fixed-capacity engine, whose change stores AEAD state inline in each record
+protector; they were not re-measured. Peak stack measurements and execution on
+physical hardware remain open in [READINESS.md](READINESS.md), which also
+summarizes the fixed-capacity engine's host evidence.

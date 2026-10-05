@@ -146,6 +146,28 @@ pub fn server_config() -> Arc<ServerConfig> {
     .clone()
 }
 
+/// A server the fixed-capacity engine accepts: every group and optional
+/// client certificates, but none of the features it refuses (ECH, PSKs,
+/// tickets, 0-RTT, retry cookies, on-demand client authentication).
+pub fn fixed_server_config() -> Arc<ServerConfig> {
+    static SC: OnceLock<Arc<ServerConfig>> = OnceLock::new();
+    SC.get_or_init(|| {
+        let p = pki();
+        let mut sc = ServerConfig::new(Profile::Default, p.identity.clone())
+            .unwrap()
+            .with_alpn(&[b"h2", b"http/1.1"])
+            .with_client_auth(ClientAuth::Optional(PeerVerification::Roots(
+                p.roots.clone(),
+            )));
+        sc.common.clock = clock;
+        sc.common.rng = fixed_rng;
+        sc.common.groups = iron_socket_layer::crypto::kx::IMPLEMENTED_GROUPS.to_vec();
+        sc.tickets = None;
+        Arc::new(sc)
+    })
+    .clone()
+}
+
 /// A client that offers ECH and ALPN, verifying against the fixture CA.
 pub fn client_config() -> Arc<ClientConfig> {
     static CC: OnceLock<Arc<ClientConfig>> = OnceLock::new();

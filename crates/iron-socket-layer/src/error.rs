@@ -37,6 +37,8 @@ pub enum ErrorKind {
     BadRecordMac,
     /// A record exceeded the size the protocol or the peer permits.
     RecordOverflow,
+    /// Caller-owned fixed storage cannot hold the operation.
+    CapacityExceeded,
     /// A handshake signature or Finished MAC did not verify.
     DecryptError,
     /// The certificate could not be parsed or its signature did not verify.
@@ -97,6 +99,7 @@ impl ErrorKind {
         Self::UnsupportedExtension,
         Self::BadRecordMac,
         Self::RecordOverflow,
+        Self::CapacityExceeded,
         Self::DecryptError,
         Self::BadCertificate,
         Self::UnsupportedCertificate,
@@ -133,6 +136,7 @@ impl ErrorKind {
             Self::UnsupportedExtension => "error:unsupported-extension",
             Self::BadRecordMac => "error:bad-record-mac",
             Self::RecordOverflow => "error:record-overflow",
+            Self::CapacityExceeded => "error:capacity-exceeded",
             Self::DecryptError => "error:decrypt-error",
             Self::BadCertificate => "error:bad-certificate",
             Self::UnsupportedCertificate => "error:unsupported-certificate",
@@ -192,6 +196,7 @@ impl ErrorKind {
             | Self::Entropy
             | Self::Internal
             | Self::KeyExhausted => A::InternalError,
+            Self::CapacityExceeded => A::InternalError,
             Self::PeerAlert | Self::Closed | Self::InvalidState | Self::InvalidConfig => {
                 return None
             }
@@ -208,6 +213,7 @@ impl ErrorKind {
         matches!(
             self,
             Self::InvalidConfig
+                | Self::CapacityExceeded
                 | Self::InvalidState
                 | Self::PolicyViolation
                 | Self::FipsModule

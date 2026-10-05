@@ -16,6 +16,10 @@ IronCrypto at the path Cargo actually requires. Reproducible tools for branch
 coverage, trace-cited test selection, gap inventories, footprint measurements,
 timing experiments and longer fuzz campaigns are in [scripts](../scripts/README.md).
 
+A separate fixed-capacity TLS 1.3 engine, `iron_socket_layer::fixed`, runs
+over caller-owned storage (requirements `REQ-FIX-001` to `REQ-FIX-005`,
+HLR-015). It is described under the scope below.
+
 See [VERIFICATION-2026-10-05.md](VERIFICATION-2026-10-05.md) for measured results
 and their limits. Passing host tests and compiling for Cortex-M4 do not establish
 hardware behavior or certification.
@@ -24,7 +28,7 @@ hardware behavior or certification.
 
 | Work | Completion evidence | Prerequisite / owner |
 |---|---|---|
-| Fixed-capacity engine | A separate caller-storage API for all handshake, record, certificate, report and key-wrapper buffers; overflow errors; zero allocator calls after initialization; worst-case memory/stack analysis; existing interoperability and robustness suites passing on the new backend | Repository engineering; this API is not implemented. See the scope below. |
+| Fixed-capacity engine: remaining evidence | Measured worst-case stack on target; OpenSSL interoperability and the `robustness.rs` flight mutations run against `fixed::Connection` (today they exercise the owned engine, and the fixed engine is checked against the owned one); a longer `fixed_server` fuzz campaign | Repository engineering for the suites; target integrator for stack measurement. See the scope below. |
 | Uncovered production branches | Review each generated gap; add a requirements-based test for reachable required behavior, or document a reviewed justification for defensive/deactivated code | Maintainer and independent verifier; a CSV inventory is a lead, not a justification |
 | Embedded execution | Run requirements-based tests and capacity failures on a named board with its clock, entropy source, allocator policy, compiler and linker configuration recorded | Target integrator; no physical board is connected to this workspace |
 | Firmware footprint | Linked firmware map, measured peak stack and live memory under adversarial maximum inputs | Target integrator; unlinked object sizes exclude cryptography and link-time removal |
@@ -36,28 +40,41 @@ hardware behavior or certification.
 ## Fixed-capacity scope
 
 Use `thumbv7em-none-eabihf` (Cortex-M4) as the reference compile target.
-The existing `no_std + alloc` build is not a fixed-capacity build. Merely
-reserving the connection's input buffer or using a bounded global heap would
-not meet a rule prohibiting allocations after initialization: parsers, outgoing
-flights, key wrappers and reports still create owned buffers.
+The `no_std + alloc` build of the owned engine is not a fixed-capacity build:
+its parsers, flights, key wrappers and reports create owned buffers.
 
-A separate backend must accept caller-owned storage, return borrowed message
-views, encode into caller-provided slices, and use fixed slots for keys and
-certificate-path search. Configuration, trust anchors and signing identities
-are initialized before the allocation gate closes. Preserve the existing alloc
-API for other users; the storage API needs explicit lifetime and ownership rules.
-Keep primitive operations in `src/crypto/`, verification mandatory, and
-`forbid(unsafe_code)` intact.
+`iron_socket_layer::fixed::Connection` is a separate backend. The caller
+declares byte capacities in `fixed::Storage` (record, handshake, outgoing,
+application, certificates, private key, public key, scratch) and slot counts
+in `fixed::Limits` (certificates, extensions, events, name, ALPN protocols).
+Configuration, trust anchors and signing identities are built with the owned
+API before the gate closes; the owned API is unchanged. Record protection,
+key exchange and signing share `src/crypto/` with the owned engine, and
+certificate paths are searched in fixed slots (at most 7 intermediates,
+depth 8). Verification stays mandatory and `forbid(unsafe_code)` is intact.
 
-Capacity is an application contract, not a protocol default: each build must
-declare record, flight, certificate-chain, name, ALPN, extension, event and key
-slot bounds and maximum concurrent connections. An input exceeding a capacity
-must produce a traced error and latch failure without panic or partial success.
-Certificate-path depth and signature-check budgets remain bounded. Do not
-silently drop certificate facts or security properties to fit a buffer.
+What the tests establish, on the host:
 
-Acceptance requires boundary/one-over-limit tests for every capacity, an
-allocator-gated full client/server handshake and data exchange, mutation tests
-that catch allocation and bound regressions, and measured stack use on target.
-These are implementation requirements for future work, not claims that the
-current engine meets them.
+* A full client/server handshake, application data, key update and export
+  make zero allocator calls after initialization, under a counting global
+  allocator, for every signing-key kind, HelloRetryRequest, revocation and
+  each named profile (`tests/fixed_capacity.rs`).
+* Every byte capacity on both sides has a found minimum, and one byte below it
+  is `error:capacity-exceeded`. Every slot limit fails closed one below what
+  the handshake needs.
+* A failure latches, erases buffered and queued data, and repeats; mutated
+  and truncated flights never panic; empty records and messages do not stall.
+* ECH, PSK, tickets, early data, post-handshake and on-demand client
+  authentication are refused with `error:invalid-config`, not ignored.
+* The fixed path validator agrees with the owned one on every chain unit test
+  (same decision or error kind, depth, schemes, strength and CRL coverage).
+* The fixed engine interoperates with the owned engine in both directions.
+* Mutations caught: removed record capacity check, an allocation in
+  `receive`, removed early-data refusal, reverted empty-message fix, nonce
+  consumed before the capacity check, and two removed checks in the fixed
+  path search.
+
+Capacity remains an application contract: each build declares its storage,
+slot limits and maximum concurrent connections. Measured stack use on the
+target, and the suites listed in the table above, are still open. Host tests
+do not establish target behavior.

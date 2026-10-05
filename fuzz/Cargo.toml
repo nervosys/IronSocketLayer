@@ -60,6 +60,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fixed_server"
+path = "fuzz_targets/fixed_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "quic_server"
 path = "fuzz_targets/quic_server.rs"
 test = false

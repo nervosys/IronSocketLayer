@@ -50,6 +50,9 @@ const RETRY: (bool, bool, bool) = (true, false, false);
 
 /// Every error kind.
 pub static CATALOG: &[ErrorDoc] = &[
+    doc("error:capacity-exceeded", "Caller-owned connection storage cannot hold this operation.",
+        &["Close this connection. Increase the declared capacity before initializing a new connection."],
+        (false, true, false), Some("alert:internal-error")),
     doc("error:decode", "A record or handshake message from the peer could not be parsed.",
         &["Do not retry against the same peer with the same configuration.", "Capture the SessionReport and the peer's software version; report a peer bug or an on-path interference."],
         PEER, Some("alert:decode-error")),

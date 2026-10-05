@@ -109,6 +109,22 @@ fn digest(oid: &[u8], data: &[u8]) -> Option<Vec<u8>> {
     })
 }
 
+fn digest_fixed(oid: &[u8], data: &[u8]) -> Option<crate::crypto::Output> {
+    use ic_core::traits::Digest;
+    match oid {
+        OID_SHA256 => {
+            crate::crypto::Output::from_slice(ic_hash::Sha256::digest(data).as_ref()).ok()
+        }
+        OID_SHA384 => {
+            crate::crypto::Output::from_slice(ic_hash::Sha384::digest(data).as_ref()).ok()
+        }
+        OID_SHA512 => {
+            crate::crypto::Output::from_slice(ic_hash::Sha512::digest(data).as_ref()).ok()
+        }
+        _ => None,
+    }
+}
+
 /// The `subjectPublicKey` bits of an SPKI: what `issuerKeyHash` hashes.
 fn spki_key_bits(spki: &[u8]) -> Result<&[u8]> {
     let mut outer = Der::new(spki);
@@ -140,15 +156,19 @@ fn check_extensions(encoded: &[u8]) -> Result<()> {
     if list.is_empty() {
         return Err(bad("empty OCSP extensions list"));
     }
-    let mut seen = Vec::new();
+    let encoded_list = list.rest();
     while !list.is_empty() {
+        let consumed = encoded_list.len() - list.rest().len();
         let mut extension = list.nested(T_SEQUENCE)?;
         let oid = extension.expect(T_OID)?;
         check_oid_encoding(oid)?;
-        if seen.contains(&oid) {
-            return Err(bad("duplicate OCSP extension"));
+        let mut previous = Der::new(&encoded_list[..consumed]);
+        while !previous.is_empty() {
+            let mut entry = previous.nested(T_SEQUENCE)?;
+            if entry.expect(T_OID)? == oid {
+                return Err(bad("duplicate OCSP extension"));
+            }
         }
-        seen.push(oid);
         let critical = match extension.optional(T_BOOLEAN)? {
             None | Some([0]) => false,
             Some([0xff]) => true,
@@ -449,13 +469,13 @@ pub fn verify_response(
             OID_SHA1 => false,
             OID_SHA256 | OID_SHA384 | OID_SHA512 => {
                 let (Some(n), Some(k)) = (
-                    digest(single.hash_oid, issuer_subject),
-                    digest(single.hash_oid, key_bits),
+                    digest_fixed(single.hash_oid, issuer_subject),
+                    digest_fixed(single.hash_oid, key_bits),
                 ) else {
                     continue;
                 };
-                if !ic_core::ct::verify(&n, single.name_hash)
-                    || !ic_core::ct::verify(&k, single.key_hash)
+                if !ic_core::ct::verify(n.as_bytes(), single.name_hash)
+                    || !ic_core::ct::verify(k.as_bytes(), single.key_hash)
                 {
                     continue;
                 }

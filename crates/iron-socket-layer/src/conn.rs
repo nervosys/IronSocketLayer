@@ -170,6 +170,10 @@ impl core::fmt::Debug for KeyChange {
     }
 }
 
+// The TLS variant holds two record protectors with their AEAD state inline
+// (unboxed so the fixed-capacity engine can share them without allocating).
+// A Transport is built once per connection and not moved on hot paths.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Transport {
     Tls {
         read: Option<Protector>,

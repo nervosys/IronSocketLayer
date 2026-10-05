@@ -511,6 +511,87 @@ pub fn push_tlv(out: &mut Vec<u8>, tag: u8, body: &[u8]) {
 }
 
 impl SigningKey {
+    /// Sign into caller storage using the initialized key. `REQ-FIX-002`.
+    /// No allocation occurs; `out` must accommodate the scheme's largest signature.
+    pub fn sign_into(
+        &self,
+        scheme: SignatureScheme,
+        message: &[u8],
+        rng: &mut dyn RandomSource,
+        out: &mut [u8],
+    ) -> Result<usize> {
+        if !self.schemes().contains(&scheme) {
+            return Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "scheme does not fit signing key",
+            ));
+        }
+        let capacity = || Error::new(ErrorKind::CapacityExceeded, "signature storage");
+        match &self.inner {
+            KeyImpl::P256(sk) => {
+                if out.len() < ic_pkix::ecdsa_signature::max_der_len(64) {
+                    return Err(capacity());
+                }
+                let mut sig = [0u8; 64];
+                ic_ec::EcdsaP256Sha256::sign(sk.get(), message, &mut sig)?;
+                Ok(ic_pkix::ecdsa_signature::to_der(&sig, out)?)
+            }
+            KeyImpl::P384(sk) => {
+                if out.len() < ic_pkix::ecdsa_signature::max_der_len(96) {
+                    return Err(capacity());
+                }
+                let mut sig = [0u8; 96];
+                ic_ec::EcdsaP384Sha384::sign(sk.get(), message, &mut sig)?;
+                Ok(ic_pkix::ecdsa_signature::to_der(&sig, out)?)
+            }
+            KeyImpl::P521(sk) => {
+                if out.len() < ic_pkix::ecdsa_signature::max_der_len(132) {
+                    return Err(capacity());
+                }
+                let mut sig = [0u8; 132];
+                ic_ec::p521::EcdsaP521Sha512::sign(sk.get(), message, &mut sig)?;
+                Ok(ic_pkix::ecdsa_signature::to_der(&sig, out)?)
+            }
+            KeyImpl::Ed25519(k) => {
+                k.sign(message, out.get_mut(..64).ok_or_else(capacity)?)?;
+                Ok(64)
+            }
+            KeyImpl::Rsa(k) => {
+                let sig = out.get_mut(..k.size()).ok_or_else(capacity)?;
+                let mut rng = RngRef(rng);
+                match scheme {
+                    SignatureScheme::RsaPssRsaeSha256 => {
+                        ic_rsa::PssSha256::sign(k, message, &mut rng, sig)?
+                    }
+                    SignatureScheme::RsaPssRsaeSha384 => {
+                        ic_rsa::PssSha384::sign(k, message, &mut rng, sig)?
+                    }
+                    SignatureScheme::RsaPssRsaeSha512 => {
+                        ic_rsa::PssSha512::sign(k, message, &mut rng, sig)?
+                    }
+                    _ => return Err(Error::new(ErrorKind::InvalidConfig, "TLS RSA scheme")),
+                }
+                Ok(sig.len())
+            }
+            KeyImpl::MlDsa(p, sk) => {
+                let mut rnd = Zeroizing::new([0u8; 32]);
+                super::fill_random(rng, rnd.get_mut())?;
+                with_mldsa!(*p, m, {
+                    let sig = out.get_mut(..m::SIGNATURE_LEN).ok_or_else(capacity)?;
+                    let sig_arr = (&mut *sig).try_into().map_err(|_| capacity())?;
+                    let sk = sk
+                        .get()
+                        .try_into()
+                        .map_err(|_| Error::new(ErrorKind::Internal, "ML-DSA key length"))?;
+                    if !m::sign(sk, message, b"", rnd.get(), sig_arr) {
+                        return Err(Error::new(ErrorKind::Crypto, "ML-DSA signing failed"));
+                    }
+                    Ok(m::SIGNATURE_LEN)
+                })
+            }
+        }
+    }
+
     /// Load a PKCS#8 `PrivateKeyInfo` (DER).
     ///
     /// Accepts P-256, P-384, P-521, Ed25519, RSA (2048–4096 bits), and

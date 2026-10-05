@@ -62,9 +62,18 @@ impl Protector {
     /// Key a direction from a traffic secret.
     pub fn new(suite: CipherSuite, secret: &Output) -> Result<Self> {
         let (aead, hash) = suite_params(suite).ok_or(Error::new(ErrorKind::Internal, "suite"))?;
-        let (key, iv) = key_schedule::traffic_key_iv(hash, aead, secret.as_bytes())?;
+        let mut key = ic_core::Zeroizing::new([0u8; 32]);
+        crypto::hkdf_expand_label(
+            hash,
+            secret.as_bytes(),
+            b"key",
+            b"",
+            &mut key.get_mut()[..aead.key_len()],
+        )?;
+        let mut iv = [0u8; NONCE_LEN];
+        crypto::hkdf_expand_label(hash, secret.as_bytes(), b"iv", b"", &mut iv)?;
         Ok(Self {
-            key: AeadKey::new(aead, key.get())?,
+            key: AeadKey::new(aead, &key.get()[..aead.key_len()])?,
             iv,
             seq: 0,
             hash,
@@ -153,6 +162,48 @@ impl Protector {
         self.key.seal(&nonce, &header, body, &mut tag)?;
         out.extend_from_slice(&tag);
         Ok(())
+    }
+
+    /// Protect into a caller's slice without allocating. `REQ-FIX-001`.
+    /// Insufficient storage does not consume a sequence number.
+    pub fn seal_into(
+        &mut self,
+        ty: ContentType,
+        content: &[u8],
+        pad: usize,
+        out: &mut [u8],
+    ) -> Result<usize> {
+        if content.len() > MAX_PLAINTEXT {
+            return Err(Error::new(
+                ErrorKind::RecordOverflow,
+                "fragment exceeds 2^14",
+            ));
+        }
+        let pad = pad.min(MAX_PLAINTEXT - content.len());
+        let inner_len = content.len() + 1 + pad;
+        let body_len = inner_len + TAG_LEN;
+        let total = HEADER_LEN + body_len;
+        let out = out.get_mut(..total).ok_or(Error::new(
+            ErrorKind::CapacityExceeded,
+            "record output capacity",
+        ))?;
+        let nonce = self.next_nonce()?;
+        let header = [
+            ContentType::ApplicationData.to_wire(),
+            3,
+            3,
+            (body_len >> 8) as u8,
+            body_len as u8,
+        ];
+        out[..HEADER_LEN].copy_from_slice(&header);
+        let (body, tag_out) = out[HEADER_LEN..].split_at_mut(inner_len);
+        body[..content.len()].copy_from_slice(content);
+        body[content.len()] = ty.to_wire();
+        body[content.len() + 1..].fill(0);
+        let mut tag = [0u8; TAG_LEN];
+        self.key.seal(&nonce, &header, body, &mut tag)?;
+        tag_out.copy_from_slice(&tag);
+        Ok(total)
     }
 
     /// Deprotect a record body in place, returning the inner type and the
@@ -488,6 +539,58 @@ mod tests {
         assert!(take_record(&mut buf).is_err());
         let mut buf = alloc::vec![22, 3, 3, 0, 4, 1];
         assert!(take_record(&mut buf).unwrap().is_none());
+    }
+
+    /// `REQ-FIX-001`: sealing into a caller's slice produces the same record
+    /// as the allocating path, and a slice one byte short is refused without
+    /// consuming a sequence number or writing past the check.
+    #[test]
+    fn seal_into_matches_seal_and_refuses_short_output() {
+        for &suite in IMPLEMENTED_SUITES {
+            let (mut owned, _) = pair(suite);
+            let (mut fixed, mut r) = pair(suite);
+            for (content, pad) in [(&b""[..], 0), (&b"hello"[..], 7), (&[0xA5; 300][..], 0)] {
+                let mut wire = Vec::new();
+                owned
+                    .seal(ContentType::Handshake, content, pad, &mut wire)
+                    .unwrap();
+                let mut short = vec![0u8; wire.len() - 1];
+                let seq = fixed.seq();
+                assert_eq!(
+                    fixed
+                        .seal_into(ContentType::Handshake, content, pad, &mut short)
+                        .unwrap_err()
+                        .kind(),
+                    ErrorKind::CapacityExceeded
+                );
+                assert_eq!(fixed.seq(), seq, "a refused seal must not use a nonce");
+                assert!(short.iter().all(|&b| b == 0));
+                let mut out = vec![0u8; wire.len() + 3];
+                let n = fixed
+                    .seal_into(ContentType::Handshake, content, pad, &mut out)
+                    .unwrap();
+                assert_eq!(&out[..n], &wire[..]);
+                let header: [u8; HEADER_LEN] = out[..HEADER_LEN].try_into().unwrap();
+                let (ty, len) = r.open(&header, &mut out[HEADER_LEN..n]).unwrap();
+                assert_eq!(
+                    (ty, &out[HEADER_LEN..HEADER_LEN + len]),
+                    (ContentType::Handshake, content)
+                );
+            }
+            let mut out = vec![0u8; MAX_CIPHERTEXT + HEADER_LEN];
+            assert_eq!(
+                fixed
+                    .seal_into(
+                        ContentType::ApplicationData,
+                        &vec![0; MAX_PLAINTEXT + 1],
+                        0,
+                        &mut out
+                    )
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::RecordOverflow
+            );
+        }
     }
 
     /// REQ-REC-001, REQ-REC-004, REQ-REC-006: callers of the record API get

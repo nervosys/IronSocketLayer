@@ -61,7 +61,7 @@ pins the peer's public key instead, which is stricter and easier to provision.
 | Constrained links | `record_size_limit` (RFC 8449) in both directions |
 | Privacy | **Encrypted Client Hello** (RFC 9849, HPKE per RFC 9180), client and server, over TCP and QUIC, including HelloRetryRequest and `retry_configs`. Configured ECH is used or the connection fails; the real name is never sent in the clear as a fallback. `isl probe --ech` fetches the host's configuration over DNS-over-HTTPS. |
 | Profiles | `default`, `post-quantum`, `fips-140-3`, `cnsa-1`, `cnsa-2` (ML-KEM-1024, ML-DSA-87, AES-256), `dal-a` |
-| Targets | `std`; `no_std + alloc` (builds for `thumbv7em-none-eabihf`) |
+| Targets | `std`; `no_std + alloc` (builds for `thumbv7em-none-eabihf`); a separate fixed-capacity TLS 1.3 engine, `fixed::Connection`, over caller-owned storage with no allocation after initialization (host-tested; see [READINESS.md](docs/READINESS.md)) |
 
 Named in the ontology but not implemented: X448, Ed448 and the
 other groups and schemes marked so there. TLS 1.2 is excluded by design.
@@ -200,7 +200,7 @@ DO-178C certification.** What they provide:
   through `ic_fips::check`, and record the service indicators in the session
   report. See [docs/FIPS.md](docs/FIPS.md).
 * **DO-178C DAL-A**: the `dal-a` profile narrows the protocol to one suite, one
-  group, one scheme and mandatory mutual authentication. The code carries 220
+  group, one scheme and mandatory mutual authentication. The code carries 225
   tagged low-level requirements traced to high-level requirements and to their
   verifying tests in [docs/TRACEABILITY.md](docs/TRACEABILITY.md). A test fails
   if that matrix drifts from the code. [docs/DO-178C.md](docs/DO-178C.md) lists

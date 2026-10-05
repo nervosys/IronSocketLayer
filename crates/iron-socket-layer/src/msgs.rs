@@ -58,7 +58,7 @@ fn read_hello_legacy_version(reader: &mut Reader<'_>) -> Result<u16> {
 }
 
 #[derive(Clone, Copy)]
-enum ExtensionContext {
+pub(crate) enum ExtensionContext {
     ClientHello,
     ServerHello,
     HelloRetryRequest,
@@ -73,7 +73,7 @@ enum ExtensionContext {
 /// REQ-MSG-019: record_size_limit (RFC 8449), QUIC parameters (RFC 9001),
 /// and ECH (RFC 9849) obey their message contexts. ech_outer_extensions is
 /// consumed by ECH reconstruction and is forbidden in ordinary decoded messages.
-fn extension_allowed(ty: ExtensionType, context: ExtensionContext) -> bool {
+pub(crate) fn extension_allowed(ty: ExtensionType, context: ExtensionContext) -> bool {
     use ExtensionContext::*;
     match ty {
         ExtensionType::ServerName

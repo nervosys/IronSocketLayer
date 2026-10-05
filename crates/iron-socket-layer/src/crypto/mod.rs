@@ -259,14 +259,15 @@ pub fn hkdf_expand_label(
         ));
     }
     // struct { uint16 length; opaque label<7..255>; opaque context<0..255>; }
-    let mut info: Vec<u8> = Vec::with_capacity(4 + 6 + label.len() + context.len());
-    info.extend_from_slice(&(out.len() as u16).to_be_bytes());
-    info.push((6 + label.len()) as u8);
-    info.extend_from_slice(b"tls13 ");
-    info.extend_from_slice(label);
-    info.push(context.len() as u8);
-    info.extend_from_slice(context);
-    hkdf_expand(alg, secret, &info, out)
+    let mut info = [0u8; 514];
+    info[..2].copy_from_slice(&(out.len() as u16).to_be_bytes());
+    info[2] = (6 + label.len()) as u8;
+    info[3..9].copy_from_slice(b"tls13 ");
+    let end = 9 + label.len();
+    info[9..end].copy_from_slice(label);
+    info[end] = context.len() as u8;
+    info[end + 1..end + 1 + context.len()].copy_from_slice(context);
+    hkdf_expand(alg, secret, &info[..end + 1 + context.len()], out)
 }
 
 /// HKDF-Expand-Label producing a hash-length secret.
@@ -349,10 +350,11 @@ impl AeadAlg {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum AeadImpl {
-    Aes128(Box<ic_cipher::Aes128Gcm>),
-    Aes256(Box<ic_cipher::Aes256Gcm>),
-    ChaCha(Box<ic_cipher::ChaCha20Poly1305>),
+    Aes128(ic_cipher::Aes128Gcm),
+    Aes256(ic_cipher::Aes256Gcm),
+    ChaCha(ic_cipher::ChaCha20Poly1305),
 }
 
 /// A keyed AEAD.
@@ -374,11 +376,9 @@ impl AeadKey {
             return Err(Error::new(ErrorKind::Internal, "aead key length"));
         }
         let inner = match alg {
-            AeadAlg::Aes128Gcm => AeadImpl::Aes128(Box::new(ic_cipher::Aes128Gcm::new(key)?)),
-            AeadAlg::Aes256Gcm => AeadImpl::Aes256(Box::new(ic_cipher::Aes256Gcm::new(key)?)),
-            AeadAlg::ChaCha20Poly1305 => {
-                AeadImpl::ChaCha(Box::new(ic_cipher::ChaCha20Poly1305::new(key)?))
-            }
+            AeadAlg::Aes128Gcm => AeadImpl::Aes128(ic_cipher::Aes128Gcm::new(key)?),
+            AeadAlg::Aes256Gcm => AeadImpl::Aes256(ic_cipher::Aes256Gcm::new(key)?),
+            AeadAlg::ChaCha20Poly1305 => AeadImpl::ChaCha(ic_cipher::ChaCha20Poly1305::new(key)?),
         };
         Ok(Self { alg, inner })
     }

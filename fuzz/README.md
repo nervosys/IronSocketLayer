@@ -13,6 +13,7 @@ dependency graph.
 | `tls_server` | A whole server connection with ECH, 0-RTT, an external PSK, optional client certificates, tickets and HelloRetryRequest cookies enabled |
 | `tls_client` | A client after its ClientHello, fed the server's side |
 | `quic_server` | QUIC-TLS at Initial, Handshake and 1-RTT levels, v1 and v2, including transport parameters |
+| `fixed_server` | The fixed-capacity server (`iron_socket_layer::fixed`) over caller storage, with every group and optional client certificates; a failure must latch and leave nothing queued |
 
 The TCP targets also assert that a failed connection stays failed.
 
@@ -85,3 +86,14 @@ includes ML-KEM-512 handshakes and ML-DSA-44 certificates. Per-target counts,
 coverage and limitations are in [the verification report](../docs/VERIFICATION-2026-10-05.md).
 The repeatable Windows runner is `./scripts/fuzz.ps1 -Seconds 600` from the
 repository root; it generates seeds from `fuzz/` and checks completion.
+
+## Fixed-capacity server, 2026-10-05
+
+The first runs of `fixed_server` found two hangs within seconds: a record, or
+a handshake message, announcing an empty body was never consumed, so the
+engine looped without progress. Both were fixed in `src/fixed.rs`, and the
+inputs are regression cases in
+`crates/iron-socket-layer/tests/fixed_capacity.rs::an_empty_record_does_not_stall_the_engine`.
+Reverting either fix makes that test fail. After the fixes, a 181-second
+AddressSanitizer run made 869,977 executions and reached 3,415 edges, with
+no crashes, timeouts or sanitizer reports. This is a short run.

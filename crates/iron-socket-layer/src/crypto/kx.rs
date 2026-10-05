@@ -224,6 +224,53 @@ macro_rules! with_kem {
 }
 
 impl Kem {
+    fn keygen_into(self, rng: &mut dyn RandomSource, ek: &mut [u8], dk: &mut [u8]) -> Result<()> {
+        let mut rng = DynRng(rng);
+        with_kem!(self, m, T, {
+            let _ = m::ENCAPS_KEY_LEN;
+            let ek = ek.try_into().map_err(|_| capacity())?;
+            let dk = dk.try_into().map_err(|_| capacity())?;
+            T::keygen(&mut rng, ek, dk)
+                .map_err(|_| Error::new(ErrorKind::Crypto, "ML-KEM key generation failed"))
+        })
+    }
+
+    fn encapsulate_into(
+        self,
+        rng: &mut dyn RandomSource,
+        ek: &[u8],
+        ct: &mut [u8],
+        ss: &mut [u8],
+    ) -> Result<()> {
+        let mut rng = DynRng(rng);
+        with_kem!(self, m, T, {
+            let _ = m::ENCAPS_KEY_LEN;
+            let ek = ek
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::IllegalParameter, "ML-KEM key length"))?;
+            let ct = ct.try_into().map_err(|_| capacity())?;
+            let ss = ss.try_into().map_err(|_| capacity())?;
+            T::encapsulate(&mut rng, ek, ct, ss)
+                .map_err(|_| Error::new(ErrorKind::IllegalParameter, "ML-KEM key rejected"))
+        })
+    }
+
+    fn decapsulate_into(self, dk: &[u8], ct: &[u8], ss: &mut [u8]) -> Result<()> {
+        with_kem!(self, m, T, {
+            let _ = m::DECAPS_KEY_LEN;
+            let dk = dk.try_into().map_err(|_| capacity())?;
+            let ct = ct
+                .try_into()
+                .map_err(|_| Error::new(ErrorKind::IllegalParameter, "ML-KEM ciphertext length"))?;
+            let ss = ss.try_into().map_err(|_| capacity())?;
+            T::decapsulate(dk, ct, ss)
+                .map_err(|_| Error::new(ErrorKind::IllegalParameter, "ML-KEM ciphertext rejected"))
+        })
+    }
+
+    fn dk_len(self) -> usize {
+        with_kem!(self, m, _T, m::DECAPS_KEY_LEN)
+    }
     fn ek_len(self) -> usize {
         with_kem!(self, m, _T, m::ENCAPS_KEY_LEN)
     }
@@ -295,6 +342,141 @@ impl Kem {
             Ok(super::SecretVec::new(ss.get().to_vec()))
         })
     }
+}
+
+fn capacity() -> Error {
+    Error::new(ErrorKind::CapacityExceeded, "key exchange storage")
+}
+
+/// Storage lengths for a group's private key, client share, server share and secret.
+/// Uses the same primitive bindings and component order as the owned API. `REQ-FIX-002`.
+pub fn storage_lengths(group: NamedGroup) -> Result<(usize, usize, usize, usize)> {
+    if let Some(ec) = ec_of(group) {
+        return Ok((
+            ec.private_len(),
+            ec.public_len(),
+            ec.public_len(),
+            ec.secret_len(),
+        ));
+    }
+    if let Some(kem) = pure_kem_of(group) {
+        return Ok((kem.dk_len(), kem.ek_len(), kem.ct_len(), 32));
+    }
+    if let Some((ec, kem, _)) = hybrid_of(group) {
+        return Ok((
+            ec.private_len() + kem.dk_len(),
+            ec.public_len() + kem.ek_len(),
+            ec.public_len() + kem.ct_len(),
+            ec.secret_len() + 32,
+        ));
+    }
+    Err(Error::new(
+        ErrorKind::InvalidConfig,
+        "group not implemented",
+    ))
+}
+
+fn ec_generate_into(
+    ec: Ec,
+    rng: &mut dyn RandomSource,
+    private: &mut [u8],
+    public: &mut [u8],
+) -> Result<()> {
+    for _ in 0..64 {
+        super::fill_random(rng, private)?;
+        if matches!(ec, Ec::P521) {
+            private[0] &= 1;
+        }
+        if ec.public_key(private, public).is_ok() {
+            return Ok(());
+        }
+    }
+    Err(Error::new(
+        ErrorKind::Entropy,
+        "ephemeral key generation failed",
+    ))
+}
+
+/// Generate an ephemeral share in caller storage, with no allocation. `REQ-FIX-002`.
+/// The caller must erase `private` after use (including on error).
+pub fn generate_into(
+    group: NamedGroup,
+    rng: &mut dyn RandomSource,
+    private: &mut [u8],
+    public: &mut [u8],
+) -> Result<usize> {
+    let (sk, pk, _, _) = storage_lengths(group)?;
+    let private = private.get_mut(..sk).ok_or_else(capacity)?;
+    let public = public.get_mut(..pk).ok_or_else(capacity)?;
+    if let Some(ec) = ec_of(group) {
+        ec_generate_into(ec, rng, private, public)?;
+    } else if let Some(kem) = pure_kem_of(group) {
+        kem.keygen_into(rng, public, private)?;
+    } else if let Some((ec, kem, first)) = hybrid_of(group) {
+        let (ec_sk, dk) = private.split_at_mut(ec.private_len());
+        let (a, b) = public.split_at_mut(if first { kem.ek_len() } else { ec.public_len() });
+        let (ek, ec_pk) = if first { (a, b) } else { (b, a) };
+        kem.keygen_into(rng, ek, dk)?;
+        ec_generate_into(ec, rng, ec_sk, ec_pk)?;
+    }
+    Ok(pk)
+}
+
+/// Complete a client's exchange in caller storage. `REQ-FIX-002`.
+pub fn complete_into(
+    group: NamedGroup,
+    private: &[u8],
+    peer: &[u8],
+    secret: &mut [u8],
+) -> Result<usize> {
+    let (sk, _, _, ss) = storage_lengths(group)?;
+    let private = private.get(..sk).ok_or_else(capacity)?;
+    let secret = secret.get_mut(..ss).ok_or_else(capacity)?;
+    if let Some(ec) = ec_of(group) {
+        ec.agree(private, peer, secret)?;
+    } else if let Some(kem) = pure_kem_of(group) {
+        kem.decapsulate_into(private, peer, secret)?;
+    } else if let Some((ec, kem, first)) = hybrid_of(group) {
+        let (ct, pk) = split_hybrid(peer, first, kem.ct_len(), ec.public_len())?;
+        let (ec_sk, dk) = private.split_at(ec.private_len());
+        let (a, b) = secret.split_at_mut(if first { 32 } else { ec.secret_len() });
+        let (kem_ss, ec_ss) = if first { (a, b) } else { (b, a) };
+        ec.agree(ec_sk, pk, ec_ss)?;
+        kem.decapsulate_into(dk, ct, kem_ss)?;
+    }
+    Ok(ss)
+}
+
+/// Answer a client's exchange in caller storage. `REQ-FIX-002`.
+pub fn respond_into(
+    group: NamedGroup,
+    peer: &[u8],
+    rng: &mut dyn RandomSource,
+    private: &mut [u8],
+    public: &mut [u8],
+    secret: &mut [u8],
+) -> Result<(usize, usize)> {
+    let (sk, _, pk, ss) = storage_lengths(group)?;
+    let private = private.get_mut(..sk).ok_or_else(capacity)?;
+    let public = public.get_mut(..pk).ok_or_else(capacity)?;
+    let secret = secret.get_mut(..ss).ok_or_else(capacity)?;
+    if let Some(ec) = ec_of(group) {
+        ec_generate_into(ec, rng, private, public)?;
+        ec.agree(private, peer, secret)?;
+    } else if let Some(kem) = pure_kem_of(group) {
+        kem.encapsulate_into(rng, peer, public, secret)?;
+    } else if let Some((ec, kem, first)) = hybrid_of(group) {
+        let (ek, ec_peer) = split_hybrid(peer, first, kem.ek_len(), ec.public_len())?;
+        let ec_sk = &mut private[..ec.private_len()];
+        let (a, b) = public.split_at_mut(if first { kem.ct_len() } else { ec.public_len() });
+        let (ct, ec_pk) = if first { (a, b) } else { (b, a) };
+        let (a, b) = secret.split_at_mut(if first { 32 } else { ec.secret_len() });
+        let (kem_ss, ec_ss) = if first { (a, b) } else { (b, a) };
+        ec_generate_into(ec, rng, ec_sk, ec_pk)?;
+        ec.agree(ec_sk, ec_peer, ec_ss)?;
+        kem.encapsulate_into(rng, ek, ct, kem_ss)?;
+    }
+    Ok((pk, ss))
 }
 
 /// The parameter set of a pure ML-KEM group.

@@ -135,6 +135,9 @@ struct Der<'a> {
 }
 
 impl<'a> Der<'a> {
+    fn rest(&self) -> &'a [u8] {
+        &self.buf[self.pos..]
+    }
     fn new(buf: &'a [u8]) -> Self {
         Self { buf, pos: 0 }
     }
@@ -735,6 +738,7 @@ fn name_common_name(name_der: &[u8]) -> Option<&str> {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Extensions<'a> {
+    count: usize,
     basic: Option<(bool, Option<u64>)>,
     key_usage: Option<u16>,
     eku: Option<&'a [u8]>,
@@ -907,6 +911,12 @@ impl<'a> Certificate<'a> {
     }
 
     /// DER subject `Name`, including its SEQUENCE header.
+    /// Number of encoded certificate extensions, including unknown entries.
+    pub fn extension_count(&self) -> usize {
+        self.ext.count
+    }
+
+    /// The certificate subject Name, DER encoded.
     pub fn subject_der(&self) -> &'a [u8] {
         self.subject
     }
@@ -1115,11 +1125,14 @@ fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
     let mut extensions_der = Der::new(body);
     let mut list = extensions_der.nested(T_SEQUENCE)?;
     extensions_der.finish()?;
-    let mut seen: Vec<&[u8]> = Vec::new();
+    let encoded_list = list.rest();
     if list.is_empty() {
         return Err(bad("empty extensions list"));
     }
     while !list.is_empty() {
+        let consumed = encoded_list.len() - list.rest().len();
+        // Each entry consumes bytes from a finite slice, bounding this count.
+        ext.count += 1;
         let mut e = list.nested(T_SEQUENCE)?;
         let oid = e.expect(T_OID)?;
         check_oid_encoding(oid)?;
@@ -1131,10 +1144,14 @@ fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
         };
         let value = e.expect(T_OCTET_STRING)?;
         e.finish()?;
-        if seen.contains(&oid) {
-            return Err(bad("duplicate extension"));
+        // Borrow previous entries rather than allocating an OID set.
+        let mut previous = Der::new(&encoded_list[..consumed]);
+        while !previous.is_empty() {
+            let mut entry = previous.nested(T_SEQUENCE)?;
+            if entry.expect(T_OID)? == oid {
+                return Err(bad("duplicate extension"));
+            }
         }
-        seen.push(oid);
         match oid {
             OID_EXT_BC => {
                 let mut v = Der::new(value);
@@ -1899,74 +1916,61 @@ fn apply_name_constraints(nc: &[u8], subjects: &[&Certificate<'_>]) -> Result<()
         excluded,
     } = name_constraint_lists(nc)?;
 
-    // Collect (tag, base) pairs, failing closed on forms not evaluated here.
-    let collect = |body: Option<&[u8]>| -> Result<Vec<(u8, Vec<u8>)>> {
-        let mut out = Vec::new();
-        let Some(body) = body else { return Ok(out) };
+    // Re-scan borrowed subtree encodings; neither SANs nor constraints are copied.
+    for body in [permitted, excluded].into_iter().flatten() {
         let mut subtrees = Der::new(body);
         while !subtrees.is_empty() {
             let mut st = subtrees.nested(T_SEQUENCE)?;
-            let (tag, base, _) = st.tlv()?;
-            if !st.is_empty() {
-                // minimum/maximum MUST be absent in this profile.
+            let (tag, _, _) = st.tlv()?;
+            if !st.is_empty() || !matches!(tag, T_GN_DNS | T_GN_IP) {
                 return Err(unsupported());
             }
-            match tag {
-                T_GN_DNS if base.is_ascii() => out.push((tag, base.to_vec())),
-                T_GN_IP => out.push((tag, base.to_vec())),
-                _ => return Err(unsupported()),
-            }
         }
-        Ok(out)
-    };
-    let permitted = collect(permitted)?;
-    let excluded = collect(excluded)?;
-
+    }
     for cert in subjects {
-        let dns = cert.dns_names();
-        let ips = cert.ip_addresses();
-        let perm_dns: Vec<&str> = permitted
-            .iter()
-            .filter(|(t, _)| *t == T_GN_DNS)
-            .filter_map(|(_, b)| core::str::from_utf8(b).ok())
-            .collect();
-        let perm_ip: Vec<&[u8]> = permitted
-            .iter()
-            .filter(|(t, _)| *t == T_GN_IP)
-            .map(|(_, b)| &b[..])
-            .collect();
-        for name in &dns {
-            if !perm_dns.is_empty() && !perm_dns.iter().any(|c| dns_within(name, c)) {
-                return Err(violation());
+        let mut names = Der::new(cert.ext.san.unwrap_or(&[]));
+        while !names.is_empty() {
+            let (tag, value, _) = names.tlv()?;
+            if !matches!(tag, T_GN_DNS | T_GN_IP) {
+                continue;
             }
-            for (t, b) in &excluded {
-                if *t != T_GN_DNS {
-                    continue;
-                }
-                let c = core::str::from_utf8(b).map_err(|_| unsupported())?;
-                if dns_within(name, c) {
-                    return Err(violation());
-                }
-                // A wildcard covers names below its suffix; an excluded subtree
-                // inside that scope is a violation, conservatively.
-                if let Some(suffix) = name.strip_prefix("*.") {
-                    if dns_within(c.trim_start_matches('.'), suffix) {
-                        return Err(violation());
+            let mut applicable = false;
+            let mut covered = false;
+            for (is_excluded, body) in [(false, permitted), (true, excluded)] {
+                let mut subtrees = Der::new(body.unwrap_or(&[]));
+                while !subtrees.is_empty() {
+                    let mut st = subtrees.nested(T_SEQUENCE)?;
+                    let (ctag, base, _) = st.tlv()?;
+                    if ctag != tag || (tag == T_GN_IP && base.len() != 2 * value.len()) {
+                        continue;
+                    }
+                    let mut within = if tag == T_GN_DNS {
+                        let name = core::str::from_utf8(value).map_err(|_| unsupported())?;
+                        let constraint = core::str::from_utf8(base).map_err(|_| unsupported())?;
+                        dns_within(name, constraint)
+                    } else {
+                        ip_within(value, base)
+                    };
+                    if is_excluded {
+                        if tag == T_GN_DNS {
+                            let name = core::str::from_utf8(value).map_err(|_| unsupported())?;
+                            let constraint =
+                                core::str::from_utf8(base).map_err(|_| unsupported())?;
+                            if let Some(suffix) = name.strip_prefix("*.") {
+                                within |= dns_within(constraint.trim_start_matches('.'), suffix);
+                            }
+                        }
+                        if within {
+                            return Err(violation());
+                        }
+                    } else {
+                        applicable = true;
+                        covered |= within;
                     }
                 }
             }
-        }
-        for ip in &ips {
-            let o = ip.octets();
-            let applicable: Vec<&&[u8]> =
-                perm_ip.iter().filter(|c| c.len() == 2 * o.len()).collect();
-            if !applicable.is_empty() && !applicable.iter().any(|c| ip_within(o, c)) {
+            if applicable && !covered {
                 return Err(violation());
-            }
-            for (t, b) in &excluded {
-                if *t == T_GN_IP && ip_within(o, b) {
-                    return Err(violation());
-                }
             }
         }
     }
@@ -2247,6 +2251,256 @@ pub fn verify_chain(
     Ok(report)
 }
 
+/// Certificate-path facts that borrow the initialized trust store and peer DER.
+/// `REQ-FIX-003`: at most eight links and 100 candidate checks, without allocation.
+pub struct FixedChainReport<'a> {
+    /// Whether every non-anchor certificate was shown good by a current CRL.
+    pub crl_checked: bool,
+    /// Signature links, leaf first, followed by empty slots.
+    pub schemes: [Option<SignatureScheme>; 8],
+    /// Number of verified signature links.
+    pub depth: usize,
+    /// Weakest key strength on the accepted path.
+    pub min_classical_bits: u16,
+    /// Subject of the leaf issuer.
+    pub issuer_subject: &'a [u8],
+    /// Public key of the leaf issuer.
+    pub issuer_spki: &'a [u8],
+}
+
+/// Check the leaf's validity, usages, critical extensions and key policy.
+/// This also applies to pinned peers; no certificate verification is disabled.
+pub fn check_leaf_fixed(der: &[u8], opts: &VerifyOptions<'_>) -> Result<()> {
+    let leaf = Certificate::parse(der)?;
+    if leaf.ext.unknown_critical {
+        return Err(Error::new(
+            ErrorKind::UnsupportedCertificate,
+            "unknown critical extension",
+        ));
+    }
+    if leaf.is_ca()
+        || leaf
+            .ext
+            .key_usage
+            .is_some_and(|ku| ku & KU_DIGITAL_SIGNATURE == 0)
+    {
+        return Err(Error::new(
+            ErrorKind::CertificateUsage,
+            "leaf cannot sign handshakes",
+        ));
+    }
+    leaf.check_validity(opts.now)?;
+    leaf.check_eku(opts.usage)?;
+    check_key_policy(&leaf.subject_public_key()?, opts)
+}
+
+/// Verify a certificate path using fixed slots. `REQ-FIX-003`.
+pub fn verify_chain_fixed<'a>(
+    end_entity: &'a [u8],
+    intermediates: &[&'a [u8]],
+    roots: &'a RootStore,
+    opts: &VerifyOptions<'_>,
+) -> Result<FixedChainReport<'a>> {
+    if intermediates.len() > 7 || opts.max_depth > 8 {
+        return Err(Error::new(
+            ErrorKind::CapacityExceeded,
+            "certificate path slots",
+        ));
+    }
+    check_leaf_fixed(end_entity, opts)?;
+    let leaf = Certificate::parse(end_entity)?;
+    let mut ints: [Option<Certificate<'a>>; 7] = core::array::from_fn(|_| None);
+    for (slot, der) in ints.iter_mut().zip(intermediates) {
+        *slot = Some(Certificate::parse(der)?);
+    }
+    let mut report = FixedChainReport {
+        crl_checked: false,
+        schemes: [None; 8],
+        depth: 0,
+        min_classical_bits: leaf.subject_public_key()?.classical_bits(),
+        issuer_subject: leaf.issuer,
+        issuer_spki: leaf.spki,
+    };
+    if roots
+        .anchors
+        .iter()
+        .any(|a| a.subject == leaf.subject && a.spki == leaf.spki)
+    {
+        return Ok(report);
+    }
+    struct SearchFixed<'a, 'o> {
+        ints: [Option<Certificate<'a>>; 7],
+        roots: &'a RootStore,
+        opts: &'o VerifyOptions<'o>,
+    }
+    impl<'a> SearchFixed<'a, '_> {
+        fn extend(
+            &self,
+            leaf: &Certificate<'a>,
+            path: &mut [usize; 8],
+            depth: usize,
+            schemes: &mut [Option<SignatureScheme>; 8],
+            budget: &mut usize,
+        ) -> Result<usize> {
+            let current = if depth == 0 {
+                leaf
+            } else {
+                self.ints
+                    .get(path[depth - 1])
+                    .and_then(Option::as_ref)
+                    .ok_or(bad("path slot"))?
+            };
+            let mut best = None;
+            for (ai, anchor) in self.roots.anchors.iter().enumerate() {
+                if anchor.subject != current.issuer
+                    || key_ids_disagree(current, anchor.ski.as_deref())
+                {
+                    continue;
+                }
+                if *budget == 0 {
+                    return Err(Error::new(
+                        ErrorKind::UnknownCa,
+                        "path search budget exhausted",
+                    ));
+                }
+                *budget -= 1;
+                let result = (|| {
+                    schemes[depth] = Some(check_signature(current, &anchor.spki, self.opts)?);
+                    for k in 0..depth {
+                        let issuer = self.ints[path[k]].as_ref().ok_or(bad("path slot"))?;
+                        if let Some(nc) = issuer.ext.name_constraints {
+                            apply_name_constraints(nc, &[leaf])?;
+                            for &i in &path[..k] {
+                                apply_name_constraints(
+                                    nc,
+                                    &[self.ints[i].as_ref().ok_or(bad("path slot"))?],
+                                )?;
+                            }
+                        }
+                    }
+                    if let Some(nc) = &anchor.name_constraints {
+                        apply_name_constraints(nc, &[leaf])?;
+                        for &i in &path[..depth] {
+                            apply_name_constraints(
+                                nc,
+                                &[self.ints[i].as_ref().ok_or(bad("path slot"))?],
+                            )?;
+                        }
+                    }
+                    Ok(ai)
+                })();
+                match result {
+                    Ok(ai) => return Ok(ai),
+                    Err(e) => note(&mut best, e),
+                }
+            }
+            if depth + 1 >= self.opts.max_depth.min(8) {
+                return Err(
+                    best.unwrap_or(Error::new(ErrorKind::UnknownCa, "path depth exhausted"))
+                );
+            }
+            for (i, cand) in self
+                .ints
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| c.as_ref().map(|c| (i, c)))
+            {
+                if cand.subject != current.issuer
+                    || path[..depth].contains(&i)
+                    || cand.der == leaf.der
+                    || key_ids_disagree(current, cand.ext.ski)
+                {
+                    continue;
+                }
+                if *budget == 0 {
+                    return Err(Error::new(
+                        ErrorKind::UnknownCa,
+                        "path search budget exhausted",
+                    ));
+                }
+                *budget -= 1;
+                let result = (|| {
+                    check_issuer(cand, depth, self.opts)?;
+                    schemes[depth] = Some(check_signature(current, cand.spki, self.opts)?);
+                    path[depth] = i;
+                    self.extend(leaf, path, depth + 1, schemes, budget)
+                })();
+                match result {
+                    Ok(ai) => return Ok(ai),
+                    Err(e) => note(&mut best, e),
+                }
+                schemes[depth..].fill(None);
+            }
+            Err(best.unwrap_or(Error::new(
+                ErrorKind::UnknownCa,
+                "no path to a trust anchor",
+            )))
+        }
+    }
+    let search = SearchFixed { ints, roots, opts };
+    let mut path = [0usize; 8];
+    let mut budget = SEARCH_BUDGET;
+    let ai = search.extend(&leaf, &mut path, 0, &mut report.schemes, &mut budget)?;
+    let anchor = &roots.anchors[ai];
+    report.depth = report.schemes.iter().take_while(|s| s.is_some()).count();
+    report.min_classical_bits = report
+        .min_classical_bits
+        .min(PublicKey::from_spki(&anchor.spki)?.classical_bits());
+    for &i in &path[..report.depth.saturating_sub(1)] {
+        report.min_classical_bits = report.min_classical_bits.min(
+            search.ints[i]
+                .as_ref()
+                .ok_or(bad("path slot"))?
+                .subject_public_key()?
+                .classical_bits(),
+        );
+    }
+    if report.depth > 1 {
+        let issuer = search.ints[path[0]].as_ref().ok_or(bad("path slot"))?;
+        report.issuer_subject = issuer.subject;
+        report.issuer_spki = issuer.spki;
+    } else {
+        report.issuer_subject = &anchor.subject;
+        report.issuer_spki = &anchor.spki;
+    }
+    if opts.crls.is_some() || opts.require_crl {
+        let empty = crl::CrlStore::new();
+        let store = opts.crls.unwrap_or(&empty);
+        let mut all_good = true;
+        for k in 0..report.depth {
+            let cert = if k == 0 {
+                &leaf
+            } else {
+                search.ints[path[k - 1]].as_ref().ok_or(bad("path slot"))?
+            };
+            let (subject, spki, ku) = if k + 1 < report.depth {
+                let issuer = search.ints[path[k]].as_ref().ok_or(bad("path slot"))?;
+                (issuer.subject, issuer.spki, issuer.ext.key_usage)
+            } else {
+                (&anchor.subject[..], &anchor.spki[..], None)
+            };
+            let good = crl::check(
+                cert,
+                subject,
+                spki,
+                ku,
+                store,
+                opts.now,
+                opts.allowed_schemes,
+            )?;
+            if opts.require_crl && !good {
+                return Err(Error::new(
+                    ErrorKind::BadCertificateStatus,
+                    "no current CRL covers a certificate on the path",
+                ));
+            }
+            all_good &= good;
+        }
+        report.crl_checked = all_good;
+    }
+    Ok(report)
+}
+
 /// Whether presented `dNSName` `pattern` covers reference name `name`.
 /// `REQ-X509-003`: wildcards only as the whole leftmost label, matching exactly
 /// one label, and only above at least two further labels.
@@ -2273,10 +2527,18 @@ fn dns_matches(pattern: &str, name: &str) -> bool {
 /// names. The subject common name is never consulted.
 pub fn verify_name(end_entity: &[u8], name: &ServerName<'_>) -> Result<()> {
     let cert = Certificate::parse(end_entity)?;
-    let ok = match name {
-        ServerName::Dns(n) => cert.dns_names().iter().any(|p| dns_matches(p, n)),
-        ServerName::Ip(ip) => cert.ip_addresses().iter().any(|a| a == ip),
-    };
+    let mut names = Der::new(cert.ext.san.unwrap_or(&[]));
+    let mut ok = false;
+    while !names.is_empty() {
+        let (tag, value, _) = names.tlv()?;
+        ok |= match name {
+            ServerName::Dns(n) if tag == T_GN_DNS => {
+                core::str::from_utf8(value).is_ok_and(|p| dns_matches(p, n))
+            }
+            ServerName::Ip(ip) if tag == T_GN_IP => value == ip.octets(),
+            _ => false,
+        };
+    }
     if ok {
         Ok(())
     } else {
@@ -2570,6 +2832,44 @@ pub fn issue(
         rng,
         &[],
     )
+}
+
+/// Run both path validators and require them to agree, so the fixed-slot
+/// search (`REQ-FIX-003`) cannot drift from the owned one: acceptance with the
+/// same path facts, or refusal with the same error kind. The fixed search's
+/// own slot limits are the one sanctioned difference.
+#[cfg(test)]
+fn verify_both(
+    leaf: &[u8],
+    ints: &[&[u8]],
+    roots: &RootStore,
+    opts: &VerifyOptions<'_>,
+) -> Result<ChainReport> {
+    let owned = verify_chain(leaf, ints, roots, opts);
+    let fixed = verify_chain_fixed(leaf, ints, roots, opts);
+    if ints.len() > 7 || opts.max_depth > 8 {
+        assert_eq!(
+            fixed.err().map(|e| e.kind()),
+            Some(ErrorKind::CapacityExceeded),
+            "the fixed search must refuse inputs beyond its slots"
+        );
+        return owned;
+    }
+    match (&owned, &fixed) {
+        (Ok(o), Ok(f)) => {
+            assert_eq!(o.depth, f.depth, "path depth");
+            let fs: Vec<SignatureScheme> = f.schemes.iter().flatten().copied().collect();
+            assert_eq!(o.schemes, fs, "path schemes");
+            assert_eq!(o.min_classical_bits, f.min_classical_bits, "path strength");
+            assert_eq!(o.crl_checked, f.crl_checked, "CRL coverage");
+        }
+        (Err(a), Err(b)) => {
+            assert_eq!(a.kind(), b.kind(), "owned refused with {a}, fixed with {b}")
+        }
+        (Ok(_), Err(b)) => panic!("owned validator accepted; fixed refused with {b}"),
+        (Err(a), Ok(_)) => panic!("fixed validator accepted; owned refused with {a}"),
+    }
+    owned
 }
 
 #[cfg(test)]
@@ -6325,7 +6625,7 @@ mod chain_tests {
     fn chains_verify_for_every_key_kind() {
         for &k in KeyKind::ALL {
             let p = pki([k, k, k]);
-            let report = verify_chain(&p.leaf, &[&p.int], &p.roots, &opts()).unwrap();
+            let report = verify_both(&p.leaf, &[&p.int], &p.roots, &opts()).unwrap();
             assert_eq!(report.depth, 2, "{k:?}");
             assert_eq!(report.leaf_key, k.id());
             assert_eq!(report.anchor_subject_cn.as_deref(), Some("Root"));
@@ -6338,7 +6638,7 @@ mod chain_tests {
             assert!(Certificate::parse(&p.root).unwrap().is_ca());
         }
         let p = pki([KeyKind::MlDsa65, KeyKind::EcdsaP384, KeyKind::Ed25519]);
-        let report = verify_chain(&p.leaf, &[&p.int], &p.roots, &opts()).unwrap();
+        let report = verify_both(&p.leaf, &[&p.int], &p.roots, &opts()).unwrap();
         assert_eq!(
             report.schemes,
             [
@@ -6373,12 +6673,12 @@ mod chain_tests {
         .unwrap();
         let mut roots = RootStore::new();
         roots.add_der(&root).unwrap();
-        let report = verify_chain(&leaf, &[], &roots, &opts()).unwrap();
+        let report = verify_both(&leaf, &[], &roots, &opts()).unwrap();
         assert_eq!(report.min_classical_bits, 112);
         let mut strict = opts();
         strict.min_rsa_bits = 3072;
         assert_eq!(
-            err(verify_chain(&leaf, &[], &roots, &strict)),
+            err(verify_both(&leaf, &[], &roots, &strict)),
             ErrorKind::PolicyViolation
         );
     }
@@ -6389,12 +6689,12 @@ mod chain_tests {
         let mut o = opts();
         o.now = NOW + 400 * DAY;
         assert_eq!(
-            err(verify_chain(&p.leaf, &[&p.int], &p.roots, &o)),
+            err(verify_both(&p.leaf, &[&p.int], &p.roots, &o)),
             ErrorKind::CertificateExpired
         );
         o.now = NOW - 2 * DAY;
         assert_eq!(
-            err(verify_chain(&p.leaf, &[&p.int], &p.roots, &o)),
+            err(verify_both(&p.leaf, &[&p.int], &p.roots, &o)),
             ErrorKind::CertificateExpired
         );
 
@@ -6418,7 +6718,7 @@ mod chain_tests {
         let mut roots = RootStore::new();
         roots.add_der(&root).unwrap();
         assert_eq!(
-            err(verify_chain(&leaf, &[&int], &roots, &opts())),
+            err(verify_both(&leaf, &[&int], &roots, &opts())),
             ErrorKind::CertificateExpired
         );
     }
@@ -6477,17 +6777,12 @@ mod chain_tests {
         )
         .unwrap();
         assert_eq!(
-            err(verify_chain(
-                &victim,
-                &[&fake_ca, &p.int],
-                &p.roots,
-                &opts()
-            )),
+            err(verify_both(&victim, &[&fake_ca, &p.int], &p.roots, &opts())),
             ErrorKind::CertificateUsage
         );
         // And a CA certificate cannot serve as an end entity.
         assert_eq!(
-            err(verify_chain(&p.int, &[], &p.roots, &opts())),
+            err(verify_both(&p.int, &[], &p.roots, &opts())),
             ErrorKind::CertificateUsage
         );
     }
@@ -6515,7 +6810,7 @@ mod chain_tests {
         let mut roots = RootStore::new();
         roots.add_der(&root).unwrap();
         assert_eq!(
-            err(verify_chain(&leaf, &[&int2, &int1], &roots, &opts())),
+            err(verify_both(&leaf, &[&int2, &int1], &roots, &opts())),
             ErrorKind::CertificateUsage
         );
         // Directly under Int1 is within pathLen 0.
@@ -6528,7 +6823,7 @@ mod chain_tests {
         )
         .unwrap();
         assert_eq!(
-            verify_chain(&leaf2, &[&int1], &roots, &opts())
+            verify_both(&leaf2, &[&int1], &roots, &opts())
                 .unwrap()
                 .depth,
             2
@@ -6537,7 +6832,7 @@ mod chain_tests {
         let mut shallow = opts();
         shallow.max_depth = 2;
         assert_eq!(
-            err(verify_chain(&leaf, &[&int2, &int1], &roots, &shallow)),
+            err(verify_both(&leaf, &[&int2, &int1], &roots, &shallow)),
             ErrorKind::UnknownCa
         );
     }
@@ -6549,14 +6844,14 @@ mod chain_tests {
         let n = leaf.len();
         leaf[n - 1] ^= 0x01;
         assert_eq!(
-            err(verify_chain(&leaf, &[&p.int], &p.roots, &opts())),
+            err(verify_both(&leaf, &[&p.int], &p.roots, &opts())),
             ErrorKind::BadCertificate
         );
         let mut int = p.int.clone();
         let n = int.len();
         int[n - 2] ^= 0x10;
         assert_eq!(
-            err(verify_chain(&p.leaf, &[&int], &p.roots, &opts())),
+            err(verify_both(&p.leaf, &[&int], &p.roots, &opts())),
             ErrorKind::BadCertificate
         );
     }
@@ -6680,7 +6975,7 @@ mod chain_tests {
                         assert_eq!(error.kind(), ErrorKind::BadCertificate);
                         assert_eq!(error.context(), context);
                         assert_eq!(
-                            err(verify_chain(&leaf, &[&p.int], &p.roots, &opts())),
+                            err(verify_both(&leaf, &[&p.int], &p.roots, &opts())),
                             ErrorKind::BadCertificate,
                         );
                     } else {
@@ -6688,7 +6983,7 @@ mod chain_tests {
                             parsed.unwrap().ext.aki,
                             if key { Some(key_id.as_slice()) } else { None }
                         );
-                        verify_chain(&leaf, &[&p.int], &p.roots, &opts()).unwrap();
+                        verify_both(&leaf, &[&p.int], &p.roots, &opts()).unwrap();
                     }
                 }
             }
@@ -6743,12 +7038,12 @@ mod chain_tests {
                         assert_eq!(parsed.unwrap().ext.eku, Some(body.as_slice()));
                         for usage in [Usage::ServerAuth, Usage::ClientAuth] {
                             let options = VerifyOptions::new(NOW, usage, ALL);
-                            verify_chain(&leaf, &[&p.int], &p.roots, &options).unwrap();
+                            verify_both(&leaf, &[&p.int], &p.roots, &options).unwrap();
                         }
                     } else {
                         assert_eq!(parsed.err().unwrap().kind(), ErrorKind::BadCertificate);
                         assert_eq!(
-                            err(verify_chain(&leaf, &[&p.int], &p.roots, &opts())),
+                            err(verify_both(&leaf, &[&p.int], &p.roots, &opts())),
                             ErrorKind::BadCertificate,
                             "oid={oid:?}, critical={critical}, position={position}",
                         );
@@ -6780,7 +7075,7 @@ mod chain_tests {
                 if valid {
                     assert_eq!(result.unwrap().ext.unknown_critical, critical);
                     if !critical {
-                        verify_chain(&leaf, &[&p.int], &p.roots, &opts()).unwrap();
+                        verify_both(&leaf, &[&p.int], &p.roots, &opts()).unwrap();
                     }
                 } else {
                     assert_eq!(result.err().unwrap().kind(), ErrorKind::BadCertificate);
@@ -6797,13 +7092,13 @@ mod chain_tests {
         push_ext(&mut crit, &unknown_oid, true, &[0x05, 0x00]);
         let (leaf, _) = with_extra(crit.clone(), &p.int, &p.int_key, false);
         assert_eq!(
-            err(verify_chain(&leaf, &[&p.int], &p.roots, &opts())),
+            err(verify_both(&leaf, &[&p.int], &p.roots, &opts())),
             ErrorKind::UnsupportedCertificate
         );
         let mut non = Vec::new();
         push_ext(&mut non, &unknown_oid, false, &[0x05, 0x00]);
         let (leaf, _) = with_extra(non, &p.int, &p.int_key, false);
-        verify_chain(&leaf, &[&p.int], &p.roots, &opts()).unwrap();
+        verify_both(&leaf, &[&p.int], &p.roots, &opts()).unwrap();
         // On an intermediate as well.
         let (int2, k2) = with_extra(crit, &p.int, &p.int_key, true);
         let mut r = rng();
@@ -6817,7 +7112,7 @@ mod chain_tests {
         )
         .unwrap();
         assert_eq!(
-            err(verify_chain(&leaf, &[&int2, &p.int], &p.roots, &opts())),
+            err(verify_both(&leaf, &[&int2, &p.int], &p.roots, &opts())),
             ErrorKind::UnsupportedCertificate
         );
     }
@@ -6847,7 +7142,7 @@ mod chain_tests {
             &mut r,
         )
         .unwrap();
-        verify_chain(&good, &[&int2, &p.int], &p.roots, &opts()).unwrap();
+        verify_both(&good, &[&int2, &p.int], &p.roots, &opts()).unwrap();
         let evil = issue(
             &params("e", &["evil.org"], false),
             lk.spki(),
@@ -6857,7 +7152,7 @@ mod chain_tests {
         )
         .unwrap();
         assert_eq!(
-            err(verify_chain(&evil, &[&int2, &p.int], &p.roots, &opts())),
+            err(verify_both(&evil, &[&int2, &p.int], &p.roots, &opts())),
             ErrorKind::CertificateUsage
         );
 
@@ -6882,7 +7177,7 @@ mod chain_tests {
         )
         .unwrap();
         assert_eq!(
-            err(verify_chain(&leaf, &[&int3, &p.int], &p.roots, &opts())),
+            err(verify_both(&leaf, &[&int3, &p.int], &p.roots, &opts())),
             ErrorKind::UnsupportedCertificate
         );
     }
@@ -6961,7 +7256,7 @@ mod chain_tests {
             ..params("leaf", dns, false)
         };
         let leaf = issue(&params, lk.spki(), &ca.0, &ca.1, &mut r).unwrap();
-        verify_chain(&leaf, &[&ca.0, &p.int], &p.roots, &opts())
+        verify_both(&leaf, &[&ca.0, &p.int], &p.roots, &opts())
             .map(|_| ())
             .map_err(|e| e.kind())
     }
@@ -7402,7 +7697,7 @@ mod chain_tests {
         )
         .unwrap();
         let ints: Vec<&[u8]> = hubs.iter().map(|h| &h[..]).collect();
-        let e = verify_chain(&leaf, &ints, &p.roots, &opts()).unwrap_err();
+        let e = verify_both(&leaf, &ints, &p.roots, &opts()).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::UnknownCa, "{e}");
         assert!(
             e.to_string().contains("path search budget exhausted"),
@@ -7450,9 +7745,9 @@ mod chain_tests {
             let lk = SigningKey::generate(KeyKind::EcdsaP256, r).unwrap();
             issue(&params("l", &[name], false), lk.spki(), &int, &ik, r).unwrap()
         };
-        verify_chain(&leaf("a.example.com", &mut r), &[&int], &roots, &opts()).unwrap();
+        verify_both(&leaf("a.example.com", &mut r), &[&int], &roots, &opts()).unwrap();
         assert_eq!(
-            err(verify_chain(
+            err(verify_both(
                 &leaf("evil.org", &mut r),
                 &[&int],
                 &roots,
@@ -7467,7 +7762,7 @@ mod chain_tests {
         let p = pki([KeyKind::EcdsaP256; 3]);
         let o = VerifyOptions::new(NOW, Usage::ServerAuth, &[SignatureScheme::Ed25519]);
         assert_eq!(
-            err(verify_chain(&p.leaf, &[&p.int], &p.roots, &o)),
+            err(verify_both(&p.leaf, &[&p.int], &p.roots, &o)),
             ErrorKind::PolicyViolation
         );
     }
@@ -7477,7 +7772,7 @@ mod chain_tests {
         let p = pki([KeyKind::EcdsaP256; 3]);
         let o = VerifyOptions::new(NOW, Usage::ClientAuth, ALL);
         assert_eq!(
-            err(verify_chain(&p.leaf, &[&p.int], &p.roots, &o)),
+            err(verify_both(&p.leaf, &[&p.int], &p.roots, &o)),
             ErrorKind::CertificateUsage
         );
     }
@@ -7487,15 +7782,15 @@ mod chain_tests {
         let p = pki([KeyKind::EcdsaP256; 3]);
         let other = pki([KeyKind::EcdsaP256; 3]);
         assert_eq!(
-            err(verify_chain(&p.leaf, &[&p.int], &other.roots, &opts())),
+            err(verify_both(&p.leaf, &[&p.int], &other.roots, &opts())),
             ErrorKind::UnknownCa
         );
         assert_eq!(
-            err(verify_chain(&p.leaf, &[], &p.roots, &opts())),
+            err(verify_both(&p.leaf, &[], &p.roots, &opts())),
             ErrorKind::UnknownCa
         );
         assert_eq!(
-            err(verify_chain(&p.leaf, &[&p.int], &RootStore::new(), &opts())),
+            err(verify_both(&p.leaf, &[&p.int], &RootStore::new(), &opts())),
             ErrorKind::UnknownCa
         );
     }
@@ -7520,13 +7815,13 @@ mod chain_tests {
         .unwrap();
         let ints: [&[u8]; 4] = [&a_by_b, &b_by_a, &a_self, &b_self];
         assert_eq!(
-            err(verify_chain(&leaf, &ints, &RootStore::new(), &opts())),
+            err(verify_both(&leaf, &ints, &RootStore::new(), &opts())),
             ErrorKind::UnknownCa
         );
         // With B trusted, the same pool yields a path.
         let mut roots = RootStore::new();
         roots.add_der(&b_self).unwrap();
-        verify_chain(&leaf, &ints, &roots, &opts()).unwrap();
+        verify_both(&leaf, &ints, &roots, &opts()).unwrap();
     }
 
     #[test]
@@ -7537,10 +7832,10 @@ mod chain_tests {
             self_signed(&params("agent-7", &["agent-7.local"], false), &key, &mut r).unwrap();
         let mut roots = RootStore::new();
         roots.add_der(&cert).unwrap();
-        let report = verify_chain(&cert, &[], &roots, &opts()).unwrap();
+        let report = verify_both(&cert, &[], &roots, &opts()).unwrap();
         assert_eq!(report.depth, 0);
         assert_eq!(
-            err(verify_chain(&cert, &[], &RootStore::new(), &opts())),
+            err(verify_both(&cert, &[], &RootStore::new(), &opts())),
             ErrorKind::UnknownCa
         );
     }
@@ -7672,7 +7967,7 @@ mod chain_tests {
         .unwrap();
         let mut roots = RootStore::new();
         roots.add_der(&root).unwrap();
-        verify_chain(&leaf, &[&int], &roots, &opts()).unwrap();
+        verify_both(&leaf, &[&int], &roots, &opts()).unwrap();
 
         // The leaf allows keyEncipherment only.
         let leaf2 = resign(
@@ -7681,7 +7976,7 @@ mod chain_tests {
             &[0x03, 0x02, 0x07, 0x80],
             &[0x03, 0x02, 0x05, 0x20],
         );
-        assert!(msg(verify_chain(&leaf2, &[&int], &roots, &opts()))
+        assert!(msg(verify_both(&leaf2, &[&int], &roots, &opts()))
             .contains("leaf key usage lacks digitalSignature"));
         // The intermediate allows digitalSignature and cRLSign, not keyCertSign.
         let int2 = resign(
@@ -7690,7 +7985,7 @@ mod chain_tests {
             &[0x03, 0x02, 0x01, 0x86],
             &[0x03, 0x02, 0x01, 0x82],
         );
-        assert!(msg(verify_chain(&leaf, &[&int2], &roots, &opts()))
+        assert!(msg(verify_both(&leaf, &[&int2], &roots, &opts()))
             .contains("issuer key usage lacks keyCertSign"));
     }
 
@@ -7701,9 +7996,9 @@ mod chain_tests {
         let p = pki([KeyKind::EcdsaP256; 3]);
         let mut shallow = opts();
         shallow.max_depth = 1;
-        assert!(msg(verify_chain(&p.leaf, &[&p.int], &p.roots, &shallow))
+        assert!(msg(verify_both(&p.leaf, &[&p.int], &p.roots, &shallow))
             .contains("no trust anchor within the depth limit"));
-        assert!(msg(verify_chain(&p.int, &[], &p.roots, &opts()))
+        assert!(msg(verify_both(&p.int, &[], &p.roots, &opts()))
             .contains("a CA certificate cannot be an end entity"));
 
         let mut r = rng();
@@ -7720,10 +8015,10 @@ mod chain_tests {
         .unwrap();
         let mut roots = RootStore::new();
         roots.add_der(&root).unwrap();
-        verify_chain(&leaf, &[], &roots, &opts()).unwrap();
+        verify_both(&leaf, &[], &roots, &opts()).unwrap();
         let mut strict = opts();
         strict.min_rsa_bits = 3072;
-        assert!(msg(verify_chain(&leaf, &[], &roots, &strict))
+        assert!(msg(verify_both(&leaf, &[], &roots, &strict))
             .contains("RSA key smaller than the policy minimum"));
     }
 

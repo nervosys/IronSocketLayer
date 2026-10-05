@@ -111,6 +111,16 @@ fn main() {
     let (c2, _) = tls(Arc::new(pc));
     write("tls_server", "external-psk", &frame_chunks(&refs(&c2)));
 
+    // A plain ClientHello for the fixed-capacity engine, which refuses ECH.
+    let mut fc = (*client_config()).clone();
+    fc.ech_configs = None;
+    let fixed_hello = Connection::client(Arc::new(fc), NAME).unwrap().take_tls();
+    write(
+        "fixed_server",
+        "plain-clienthello",
+        &frame_chunks(&[&fixed_hello]),
+    );
+
     // ML-KEM-1024 key shares: the hybrid and the pure group.
     for (name, group) in [
         (
