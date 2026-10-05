@@ -758,4 +758,83 @@ mod tests {
             ErrorKind::IllegalParameter
         );
     }
+
+    /// A random source stuck on one byte value.
+    struct Stuck(u8);
+
+    impl RandomSource for Stuck {
+        fn fill(&mut self, out: &mut [u8]) -> ic_core::Result<()> {
+            out.fill(self.0);
+            Ok(())
+        }
+    }
+
+    /// `REQ-FIX-005`: ephemeral generation from a random source stuck on
+    /// zero, whose every candidate is the invalid NIST scalar 0, ends in an
+    /// entropy error after its bounded attempts, on the owned path (client
+    /// share and server response) and in caller storage, rather than looping
+    /// or producing a share.
+    #[test]
+    fn a_stuck_random_source_is_an_entropy_error_not_a_loop() {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        for g in [
+            NamedGroup::Secp256r1,
+            NamedGroup::Secp384r1,
+            NamedGroup::Secp521r1,
+        ] {
+            assert_eq!(
+                KeyShare::generate(g, &mut Stuck(0)).unwrap_err().kind(),
+                ErrorKind::Entropy,
+                "{g}"
+            );
+            let peer = KeyShare::generate(g, &mut rng).unwrap();
+            assert_eq!(
+                respond(g, peer.public(), &mut Stuck(0)).unwrap_err().kind(),
+                ErrorKind::Entropy,
+                "{g}"
+            );
+            let (mut private, mut public) = ([0u8; 66], [0u8; 133]);
+            assert_eq!(
+                generate_into(g, &mut Stuck(0), &mut private, &mut public)
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::Entropy,
+                "{g}"
+            );
+        }
+    }
+
+    /// `REQ-CFG-002`: a group that is named but not implemented (X448,
+    /// ffdhe2048) is refused by every key-exchange entry point: invalid_config
+    /// for caller-storage sizing and generation, handshake_failure for the
+    /// owned client share and server response.
+    #[test]
+    fn named_but_unimplemented_groups_are_refused() {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        for g in [NamedGroup::X448, NamedGroup::Ffdhe2048] {
+            assert_eq!(
+                storage_lengths(g).unwrap_err().kind(),
+                ErrorKind::InvalidConfig,
+                "{g}"
+            );
+            let (mut private, mut public) = ([0u8; 64], [0u8; 64]);
+            assert_eq!(
+                generate_into(g, &mut rng, &mut private, &mut public)
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::InvalidConfig,
+                "{g}"
+            );
+            assert_eq!(
+                KeyShare::generate(g, &mut rng).unwrap_err().kind(),
+                ErrorKind::HandshakeFailure,
+                "{g}"
+            );
+            assert_eq!(
+                respond(g, &[0x04; 56], &mut rng).unwrap_err().kind(),
+                ErrorKind::HandshakeFailure,
+                "{g}"
+            );
+        }
+    }
 }

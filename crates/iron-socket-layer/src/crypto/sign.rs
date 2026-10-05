@@ -659,11 +659,17 @@ impl SigningKey {
         let bad = |_| Error::new(ErrorKind::InvalidConfig, "malformed PKCS#8 private key");
         let mut outer = Reader::new(der_bytes);
         let mut seq = outer.sequence().map_err(bad)?;
+        // As strict as ic_pkix: nothing after the PrivateKeyInfo, and nothing
+        // after privateKey inside it (attributes are refused there too).
+        outer.finish().map_err(bad)?;
         seq.expect_version(0).map_err(bad)?;
         let mut alg = seq.sequence().map_err(bad)?;
         let oid = alg.oid().map_err(bad)?;
         let key = seq.octet_string().map_err(bad)?;
+        seq.finish().map_err(bad)?;
         if let Some(p) = MlDsa::from_oid(oid) {
+            // Parameters MUST be absent for ML-DSA (RFC 9881), as in SPKI.
+            alg.finish().map_err(bad)?;
             // Seed form: [0] IMPLICIT OCTET STRING (SIZE (32)), i.e. 0x80 0x20.
             if key.len() == 34 && key[0] == 0x80 && key[1] == 0x20 {
                 let mut seed = Zeroizing::new([0u8; 32]);
@@ -1160,5 +1166,222 @@ mod tests {
         assert_eq!(PublicKey::MlDsa44(&[]).classical_bits(), 128);
         assert_eq!(PublicKey::MlDsa65(&[]).classical_bits(), 192);
         assert_eq!(PublicKey::MlDsa87(&[]).classical_bits(), 256);
+    }
+
+    /// A random source stuck on one byte value.
+    struct Stuck(u8);
+
+    impl RandomSource for Stuck {
+        fn fill(&mut self, out: &mut [u8]) -> ic_core::Result<()> {
+            out.fill(self.0);
+            Ok(())
+        }
+    }
+
+    /// `PrivateKeyInfo { version 0, AlgorithmIdentifier { alg }, OCTET STRING key }`.
+    fn pkcs8(alg: &[u8], key: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        push_tlv(&mut body, der::INTEGER, &[0]);
+        push_tlv(&mut body, der::SEQUENCE, alg);
+        push_tlv(&mut body, der::OCTET_STRING, key);
+        let mut out = Vec::new();
+        push_tlv(&mut out, der::SEQUENCE, &body);
+        out
+    }
+
+    /// The P-521 AlgorithmIdentifier body and an RFC 5915 `ECPrivateKey`
+    /// holding `scalar` with no optional fields.
+    fn p521_parts(scalar: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let mut alg = Vec::new();
+        push_tlv(&mut alg, der::OID, ic_pkix::oid::EC_PUBLIC_KEY);
+        push_tlv(&mut alg, der::OID, OID_P521);
+        let mut ec = Vec::new();
+        push_tlv(&mut ec, der::INTEGER, &[1]);
+        push_tlv(&mut ec, der::OCTET_STRING, scalar);
+        let mut key = Vec::new();
+        push_tlv(&mut key, der::SEQUENCE, &ec);
+        (alg, key)
+    }
+
+    /// `REQ-FIX-002`, `REQ-SIG-001`: signing into caller storage refuses a
+    /// scheme the key cannot produce, and storage shorter than the scheme's
+    /// largest DER signature, before signing; storage of exactly that length
+    /// holds a signature that verifies.
+    #[test]
+    fn sign_into_refuses_a_foreign_scheme_and_short_storage() {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut out = [0u8; 512];
+        for (kind, scheme, fixed) in [
+            (
+                KeyKind::EcdsaP256,
+                SignatureScheme::EcdsaSecp256r1Sha256,
+                64,
+            ),
+            (
+                KeyKind::EcdsaP384,
+                SignatureScheme::EcdsaSecp384r1Sha384,
+                96,
+            ),
+            (
+                KeyKind::EcdsaP521,
+                SignatureScheme::EcdsaSecp521r1Sha512,
+                132,
+            ),
+        ] {
+            let key = SigningKey::generate(kind, &mut rng).unwrap();
+            assert_eq!(
+                key.sign_into(SignatureScheme::Ed25519, b"m", &mut rng, &mut out)
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::InvalidConfig,
+                "{kind:?}"
+            );
+            let max = ic_pkix::ecdsa_signature::max_der_len(fixed);
+            assert_eq!(
+                key.sign_into(scheme, b"m", &mut rng, &mut out[..max - 1])
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::CapacityExceeded,
+                "{kind:?}"
+            );
+            let n = key
+                .sign_into(scheme, b"m", &mut rng, &mut out[..max])
+                .unwrap();
+            let pk = PublicKey::from_spki(key.spki()).unwrap();
+            verify(scheme, &pk, b"m", &out[..n]).unwrap();
+        }
+    }
+
+    /// `REQ-SIG-004`: key generation from a random source stuck on zero, whose
+    /// every candidate is the invalid scalar 0, ends in an entropy error after
+    /// its bounded attempts instead of looping or returning a key.
+    #[test]
+    fn a_stuck_random_source_cannot_generate_an_ec_key() {
+        for kind in [KeyKind::EcdsaP256, KeyKind::EcdsaP384, KeyKind::EcdsaP521] {
+            assert_eq!(
+                SigningKey::generate(kind, &mut Stuck(0))
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::Entropy,
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// `REQ-SIG-004`: DER lengths take the X.690 §8.1.3 short form, or the
+    /// long form with one, two or three length octets, byte for byte as
+    /// ic_pkix's independent DER writer encodes them, and ic_pkix's reader
+    /// reads back the same content.
+    #[test]
+    fn push_tlv_lengths_match_the_ic_pkix_writer() {
+        for n in [0usize, 0x7f, 0x80, 0xff, 0x100, 0xffff, 0x1_0000, 0x12_3456] {
+            let body = alloc::vec![0xa5u8; n];
+            let mut ours = Vec::new();
+            push_tlv(&mut ours, der::OCTET_STRING, &body);
+            let mut buf = alloc::vec![0u8; n + 8];
+            let mut w = der::Writer::new(&mut buf);
+            w.push_element(der::OCTET_STRING, &body).unwrap();
+            let len = w.finish();
+            assert_eq!(ours, buf[..len], "{n} bytes");
+            let mut r = Reader::new(&ours);
+            assert_eq!(r.octet_string().unwrap(), &body[..]);
+            r.finish().unwrap();
+        }
+    }
+
+    /// `REQ-SIG-004`: PKCS#8 keys that neither ic_pkix nor the fallback
+    /// reader can sign with are invalid_config, each with the reason: an
+    /// algorithm without a signer here (Ed448), an EC key on a curve that is
+    /// not P-521 (secp256k1), and an ML-DSA key that is 34 bytes and starts
+    /// with the seed form's tag but not its length.
+    #[test]
+    fn pkcs8_keys_without_a_signer_here_are_refused() {
+        let refused = |der_bytes: &[u8], why: &str| {
+            let e = SigningKey::from_pkcs8_der(der_bytes).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::InvalidConfig, "{e}");
+            assert!(e.to_string().contains(why), "wanted {why:?}, got {e}");
+        };
+        // id-Ed448, 1.3.101.113 (RFC 8410).
+        let mut alg = Vec::new();
+        push_tlv(&mut alg, der::OID, &[0x2b, 0x65, 0x71]);
+        refused(
+            &pkcs8(&alg, &[0x04, 0x02, 0, 0]),
+            "unsupported private key algorithm",
+        );
+        // secp256k1, 1.3.132.0.10 (SEC 2).
+        let (_, key) = p521_parts(&[1u8; 32]);
+        let mut alg = Vec::new();
+        push_tlv(&mut alg, der::OID, ic_pkix::oid::EC_PUBLIC_KEY);
+        push_tlv(&mut alg, der::OID, &[0x2b, 0x81, 0x04, 0x00, 0x0a]);
+        refused(&pkcs8(&alg, &key), "unsupported private key algorithm");
+        for oid in [OID_ML_DSA_44, OID_ML_DSA_65, OID_ML_DSA_87] {
+            let mut alg = Vec::new();
+            push_tlv(&mut alg, der::OID, oid);
+            let mut key = alloc::vec![0x80u8, 0x21];
+            key.extend_from_slice(&[7u8; 32]);
+            refused(&pkcs8(&alg, &key), "unrecognised ML-DSA private key form");
+        }
+    }
+
+    /// `REQ-SIG-004`: a P-521 key whose scalar was written without its
+    /// leading zero byte, which ic_pkix refuses for its length, loads through
+    /// the fallback reader as the same key as its 66-byte form.
+    #[test]
+    fn a_p521_scalar_without_its_leading_zero_is_the_same_key() {
+        let mut scalar = [1u8; 66];
+        scalar[0] = 0;
+        let (alg, full) = p521_parts(&scalar);
+        let (_, short) = p521_parts(&scalar[1..]);
+        let a = SigningKey::from_pkcs8_der(&pkcs8(&alg, &full)).unwrap();
+        let b = SigningKey::from_pkcs8_der(&pkcs8(&alg, &short)).unwrap();
+        assert_eq!(b.kind_id(), "key:ecdsa-p521");
+        assert_eq!(a.spki(), b.spki());
+        assert_eq!(a.spki(), SigningKey::ecdsa_p521(&scalar).unwrap().spki());
+    }
+
+    /// `REQ-SIG-004`: the fallback reader for ML-DSA and P-521 PKCS#8 is as
+    /// strict as ic_pkix is for the other algorithms: bytes after the
+    /// PrivateKeyInfo, a field after privateKey (attributes included) and,
+    /// for ML-DSA, AlgorithmIdentifier parameters (RFC 9881 requires them
+    /// absent) are malformed, while the same key without them loads.
+    #[test]
+    fn refuses_a_pkcs8_key_with_trailing_bytes() {
+        let malformed = |der_bytes: &[u8]| {
+            let e = SigningKey::from_pkcs8_der(der_bytes).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::InvalidConfig, "{e}");
+            assert!(e.to_string().contains("malformed PKCS#8"), "{e}");
+        };
+        let mut seed_form = alloc::vec![0x80u8, 0x20];
+        seed_form.extend_from_slice(&[7u8; 32]);
+        let mut cases: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for oid in [OID_ML_DSA_44, OID_ML_DSA_65, OID_ML_DSA_87] {
+            let mut alg = Vec::new();
+            push_tlv(&mut alg, der::OID, oid);
+            let mut with_params = alg.clone();
+            push_tlv(&mut with_params, der::NULL, &[]);
+            malformed(&pkcs8(&with_params, &seed_form));
+            cases.push((alg, seed_form.clone()));
+        }
+        let mut scalar = [1u8; 66];
+        scalar[0] = 0;
+        cases.push(p521_parts(&scalar));
+        cases.push(p521_parts(&scalar[1..]));
+        for (alg, key) in cases {
+            let good = pkcs8(&alg, &key);
+            SigningKey::from_pkcs8_der(&good).unwrap();
+            let mut trailing = good.clone();
+            trailing.push(0);
+            malformed(&trailing);
+            for extra in [&[0x05u8, 0x00][..], &[0xa0, 0x00][..]] {
+                let mut body = Vec::new();
+                push_tlv(&mut body, der::INTEGER, &[0]);
+                push_tlv(&mut body, der::SEQUENCE, &alg);
+                push_tlv(&mut body, der::OCTET_STRING, &key);
+                body.extend_from_slice(extra);
+                let mut inner_extra = Vec::new();
+                push_tlv(&mut inner_extra, der::SEQUENCE, &body);
+                malformed(&inner_extra);
+            }
+        }
     }
 }

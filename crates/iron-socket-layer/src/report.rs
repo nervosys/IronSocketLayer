@@ -503,4 +503,36 @@ mod tests {
         assert!(j.contains(r#""validated":false"#));
         assert!(j.contains("\\u0001"));
     }
+
+    /// The audit trail is bounded (no LLR row; the robustness rule of
+    /// AGENTS.md, which REQ-CODEC-001 states for the decoder): events past
+    /// the 256th are dropped, so a peer that provokes events without end
+    /// cannot grow a report without limit, and the first 256 are kept.
+    #[test]
+    fn the_event_trail_keeps_the_first_256_events() {
+        let mut r = SessionReport::default();
+        for i in 0..300 {
+            r.event("event:test", &alloc::format!("{i}"));
+        }
+        assert_eq!(r.events.len(), 256);
+        assert_eq!(r.events[0].detail, "0");
+        assert_eq!(r.events[255].detail, "255");
+    }
+
+    /// An event recorded without detail is written to the JSON report as its
+    /// id alone, with no empty `detail` member (no LLR row covers the report
+    /// format).
+    #[test]
+    fn an_event_without_detail_has_no_detail_member() {
+        let mut r = SessionReport::default();
+        r.event("event:ech-accepted", "");
+        r.event("event:test", "d");
+        let j = r.to_json();
+        assert!(
+            j.contains(
+                r#""events":[{"event":"event:ech-accepted"},{"event":"event:test","detail":"d"}]"#
+            ),
+            "{j}"
+        );
+    }
 }

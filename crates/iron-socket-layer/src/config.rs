@@ -872,3 +872,23 @@ pub fn describe_identity(id: &Identity) -> String {
     });
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `REQ-EPSK-003`: an external PSK identity is 1 to 1024 bytes; one byte
+    /// over the bound is invalid_config, and the bound itself is accepted.
+    #[test]
+    fn an_external_psk_identity_over_1024_bytes_is_refused() {
+        let key = [9u8; MIN_EXTERNAL_PSK_LEN];
+        assert_eq!(
+            ExternalPsk::new(&[1; 1025], &key, HashAlg::Sha256)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidConfig
+        );
+        let psk = ExternalPsk::new(&[1; 1024], &key, HashAlg::Sha256).unwrap();
+        assert_eq!(psk.identity.len(), 1024);
+    }
+}

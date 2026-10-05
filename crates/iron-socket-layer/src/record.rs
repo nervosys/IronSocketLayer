@@ -763,4 +763,59 @@ mod tests {
         let mut body = rec.body.clone();
         assert!(r.open(&rec.header, &mut body).is_err());
     }
+
+    /// REQ-REC-004: a protected record that authenticates but whose inner
+    /// plaintext holds more than 2^14 bytes of content (possible within the
+    /// 2^14 + 256 ciphertext bound) is record_overflow; exactly 2^14 opens.
+    #[test]
+    fn authentic_content_over_2_14_is_record_overflow() {
+        for (content_len, want) in [
+            (MAX_PLAINTEXT, None),
+            (MAX_PLAINTEXT + 1, Some(ErrorKind::RecordOverflow)),
+            (MAX_PLAINTEXT + 200, Some(ErrorKind::RecordOverflow)),
+        ] {
+            let (w, mut r) = pair(CipherSuite::TlsAes128GcmSha256);
+            // Seal by hand: `seal` itself refuses such a fragment.
+            let mut body = alloc::vec![0x41u8; content_len];
+            body.push(ContentType::ApplicationData.to_wire());
+            let body_len = (body.len() + TAG_LEN) as u16;
+            let [hi, lo] = body_len.to_be_bytes();
+            let header = [23, 3, 3, hi, lo];
+            let mut tag = [0u8; TAG_LEN];
+            w.key
+                .seal(&crypto::nonce_for(&w.iv, 0), &header, &mut body, &mut tag)
+                .unwrap();
+            body.extend_from_slice(&tag);
+            match want {
+                None => {
+                    let (ty, n) = r.open(&header, &mut body).unwrap();
+                    assert_eq!((ty, n), (ContentType::ApplicationData, content_len));
+                }
+                Some(kind) => {
+                    assert_eq!(r.open(&header, &mut body).unwrap_err().kind(), kind)
+                }
+            }
+        }
+    }
+
+    /// REQ-REC-004: a zero-length record is a decode error unless it carries
+    /// application data (RFC 8446 §5.1 permits zero-length fragments of
+    /// application data only); a zero-length application data record is
+    /// framed and left for the AEAD to refuse.
+    #[test]
+    fn only_application_data_records_may_be_empty() {
+        for ty in [20u8, 21, 22] {
+            let mut buf = alloc::vec![ty, 3, 3, 0, 0];
+            assert_eq!(
+                take_record(&mut buf).unwrap_err().kind(),
+                ErrorKind::Decode,
+                "type {ty}"
+            );
+        }
+        let mut buf = alloc::vec![23, 3, 3, 0, 0, 0xff];
+        let rec = take_record(&mut buf).unwrap().unwrap();
+        assert_eq!(rec.header, [23, 3, 3, 0, 0]);
+        assert!(rec.body.is_empty());
+        assert_eq!(buf, [0xff]);
+    }
 }
