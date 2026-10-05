@@ -1008,10 +1008,11 @@ impl KeyKind {
 
 /// Build IronCrypto's lazily initialized curve tables now. `REQ-FIX-002`.
 ///
-/// With `std`, IronCrypto builds the P-256, P-384, P-521 and Ed25519 generator
-/// tables, and Ed25519's verification table, on first use, and that
-/// allocates. The fixed-capacity engine calls this while it initializes, so no
-/// later handshake operation does. It runs once per process, from a constant
+/// With `std`, IronCrypto 0.2.5 to 0.2.7 build the P-256, P-384 and P-521
+/// generator tables on first use, and that allocates. (The Ed25519 tables do
+/// not allocate; they are built on the stack, so building them here also
+/// keeps that stack use out of the handshake.) The fixed-capacity engine
+/// calls this while it initializes, so no later handshake operation does. It runs once per process, from a constant
 /// seed: the keys and signatures are discarded, and callers' random sources
 /// are not consumed. Without `std` IronCrypto has no such tables and this does
 /// nothing.
