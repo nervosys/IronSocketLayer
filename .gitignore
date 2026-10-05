@@ -5,3 +5,4 @@
 /fuzz/coverage
 **/*.rs.bk
 .DS_Store
+/embedded/qemu-m4/target

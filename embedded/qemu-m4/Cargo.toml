@@ -1,0 +1,30 @@
+[package]
+name = "isl-qemu-m4"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Runs the fixed-capacity engine on an emulated Cortex-M4 (QEMU MPS2-AN386) and measures it. Not part of the library."
+
+[dependencies]
+iron-socket-layer = { path = "../../crates/iron-socket-layer", default-features = false }
+ic-core = { path = "../../../IronCrypto/crates/ic-core", default-features = false }
+ic-drbg = { path = "../../../IronCrypto/crates/ic-drbg", default-features = false }
+# Board support, only here: this crate is excluded from the library's
+# workspace, so none of these reach the library's dependency graph.
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+cortex-m-semihosting = "0.5"
+embedded-alloc = "0.6"
+
+# Its own workspace root, as for bench/ and fuzz/.
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+debug = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

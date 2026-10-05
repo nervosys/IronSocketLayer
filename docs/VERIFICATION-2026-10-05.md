@@ -261,3 +261,59 @@ authentication claim rule, suite selection, `wants_write`, QUIC's refusal of
 TLS KeyUpdate, error text, and the audit trail bound. The dispositions are
 the author's and await independent review. This is branch coverage, not
 MC/DC.
+
+### Emulated Cortex-M4
+
+`embedded/qemu-m4`, run by `scripts/qemu-m4.sh`: the fixed engine linked for
+`thumbv7em-none-eabihf` with fat LTO and `opt-level = "s"`, on QEMU 10.0.13's
+MPS2-AN386 board. Toolchain: Rust 1.99.0. IronCrypto: 0.2.8. Each case runs a
+whole mutual-TLS session between a fixed client and a fixed server in one
+thread: both constructors, the handshake, data both ways, KeyUpdate, an
+exporter and close_notify. Peak stack is found by painting the free stack.
+Allocations are counted after both constructors.
+
+| Signing keys | Group | Peak stack | Allocations after init |
+|---|---|---:|---:|
+| ECDSA P-256 | X25519 | 29,440 B | 0 |
+| ML-DSA-44 | ML-KEM-512 | 50,020 B | 0 |
+| ECDSA P-256, Ed25519 or ML-DSA-65 | X25519MLKEM768 | 55,844 B | 0 |
+| ECDSA P-384 or ML-DSA-87 | SecP384r1MLKEM1024 | 63,012 B | 0 |
+| ML-DSA-87 | ML-KEM-1024 | 63,012 B | 0 |
+
+The key-exchange group, not the signature, now sets the peak. ML-DSA-87 and
+ECDSA P-384 peak identically, and X25519 alone needs about half what the
+ML-KEM groups do, so ML-KEM inside IronCrypto is the largest remaining
+consumer. A client whose handshake buffer cannot hold the server's flight
+fails with `capacity-exceeded`, latched, with nothing queued. Adding one
+allocation inside the session makes the run fail, so the counter observes
+allocations.
+
+The linked image holds the library, IronCrypto with every algorithm, the
+certificate builder and the harness. Its sections: `.text` 268,024 bytes,
+`.rodata` 30,924, vector table 1,024, and `.data` 4. `.bss` is dominated by
+the harness's 3 MiB heap. The engine's own buffers are caller storage (about
+250 KiB per endpoint here, the same as the host tests; the minimum per buffer
+is found in `tests/fixed_capacity.rs`).
+
+QEMU models no timing, caches or wait states, and the clock and random
+source are fixed. This is emulation, not evidence from a physical board.
+
+### Fuzzing after the review
+
+All eight targets were run under AddressSanitizer on the code after the
+branch-gap review and the IronCrypto 0.2.8 upgrade, including the new
+`fixed_client` target. Each ran for 601 seconds, all at once. The total was
+152,994,855 executions, with no crashes, sanitizer reports or timeouts, and
+no unit slower than a second. These are clean runs, which do not establish
+the absence of defects.
+
+| Target | Executions | Final coverage edges |
+|---|---:|---:|
+| messages | 41,006,568 | 1,567 |
+| records | 93,666,102 | 58 |
+| pki | 5,855,172 | 3,525 |
+| tls_server | 1,313,734 | 5,739 |
+| tls_client | 359,157 | 4,483 |
+| quic_server | 7,995,582 | 2,623 |
+| fixed_server | 2,307,521 | 3,516 |
+| fixed_client | 491,019 | 3,314 |

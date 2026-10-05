@@ -14,6 +14,7 @@ dependency graph.
 | `tls_client` | A client after its ClientHello, fed the server's side |
 | `quic_server` | QUIC-TLS at Initial, Handshake and 1-RTT levels, v1 and v2, including transport parameters |
 | `fixed_server` | The fixed-capacity server (`iron_socket_layer::fixed`) over caller storage, with every group and optional client certificates; a failure must latch and leave nothing queued |
+| `fixed_client` | The fixed-capacity client after its ClientHello, fed the server's reply; seeded with a real server flight to its fixed-DRBG ClientHello. A failure must latch and leave nothing queued |
 
 The TCP targets also assert that a failed connection stays failed.
 
@@ -104,3 +105,23 @@ executions and reached 3,444 edges. It found no crashes, timeouts or
 sanitizer reports, and its slowest unit took under a second. An earlier
 600-second run on the engine before those fixes made 2,474,984 executions,
 also clean. The machine was shared with concurrent builds during both runs.
+
+## All targets after the branch-gap review, 2026-10-05
+
+All eight targets were run under AddressSanitizer on the code after the
+branch-gap review and the IronCrypto 0.2.8 upgrade, including the new
+`fixed_client` target. Each ran for 601 seconds, all at once. The total was
+152,994,855 executions, with no crashes, sanitizer reports or timeouts, and
+no unit slower than a second. These are clean runs, which do not establish
+the absence of defects.
+
+| Target | Executions | Final coverage edges |
+|---|---:|---:|
+| messages | 41,006,568 | 1,567 |
+| records | 93,666,102 | 58 |
+| pki | 5,855,172 | 3,525 |
+| tls_server | 1,313,734 | 5,739 |
+| tls_client | 359,157 | 4,483 |
+| quic_server | 7,995,582 | 2,623 |
+| fixed_server | 2,307,521 | 3,516 |
+| fixed_client | 491,019 | 3,314 |

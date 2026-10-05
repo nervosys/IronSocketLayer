@@ -62,6 +62,6 @@ jobs:
       - name: fuzz each target for 60 seconds
         working-directory: IronSocketLayer
         run: |
-          for t in messages records pki tls_server tls_client quic_server fixed_server; do
+          for t in messages records pki tls_server tls_client quic_server fixed_server fixed_client; do
             cargo +nightly fuzz run --fuzz-dir fuzz -O "$t" -- -max_total_time=60 -timeout=10
           done

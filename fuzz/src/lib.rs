@@ -168,6 +168,46 @@ pub fn fixed_server_config() -> Arc<ServerConfig> {
     .clone()
 }
 
+/// The fixed-capacity client: [`client_config`] without ECH, which the fixed
+/// engine refuses.
+pub fn fixed_client_config() -> Arc<ClientConfig> {
+    static CC: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    CC.get_or_init(|| {
+        let mut cc = (*client_config()).clone();
+        cc.ech_configs = None;
+        Arc::new(cc)
+    })
+    .clone()
+}
+
+/// Caller-owned storage for one fixed-capacity connection, sized as in the
+/// library's own tests.
+pub struct FixedBuffers([Vec<u8>; 8]);
+
+impl Default for FixedBuffers {
+    fn default() -> Self {
+        Self([16_645, 32_768, 65_536, 32_768, 32_768, 3_234, 1_665, 32_768].map(|n| vec![0u8; n]))
+    }
+}
+
+impl FixedBuffers {
+    /// Lend the buffers to a connection.
+    pub fn storage(&mut self) -> iron_socket_layer::fixed::Storage<'_> {
+        let [record, handshake, outgoing, application, certificates, private_key, public_key, scratch] =
+            &mut self.0;
+        iron_socket_layer::fixed::Storage {
+            record,
+            handshake,
+            outgoing,
+            application,
+            certificates,
+            private_key,
+            public_key,
+            scratch,
+        }
+    }
+}
+
 /// A client that offers ECH and ALPN, verifying against the fixture CA.
 pub fn client_config() -> Arc<ClientConfig> {
     static CC: OnceLock<Arc<ClientConfig>> = OnceLock::new();

@@ -121,6 +121,30 @@ fn main() {
         &frame_chunks(&[&fixed_hello]),
     );
 
+    // The fixed-capacity client's view: the server's reply to its (fixed-DRBG,
+    // so reproducible) ClientHello, from an owned server.
+    {
+        let cc = fixed_client_config();
+        let mut rng = fixed_rng().unwrap();
+        let mut buffers = FixedBuffers::default();
+        let mut c = iron_socket_layer::fixed::Connection::client(
+            &cc,
+            NAME,
+            &mut *rng,
+            buffers.storage(),
+            iron_socket_layer::fixed::Limits::default(),
+        )
+        .unwrap();
+        let mut s = Connection::server(fixed_server_config()).unwrap();
+        s.read_tls(c.outgoing()).unwrap();
+        let n = c.outgoing().len();
+        c.consume_outgoing(n).unwrap();
+        let flight = s.take_tls();
+        c.receive(&flight).unwrap();
+        assert!(c.is_connected(), "the fixed client seed must complete");
+        write("fixed_client", "server-flight", &frame_chunks(&[&flight]));
+    }
+
     // ML-KEM-1024 key shares: the hybrid and the pure group.
     for (name, group) in [
         (

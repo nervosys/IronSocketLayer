@@ -12,6 +12,7 @@ python scripts/coverage_gaps.py target/coverage-requirements/coverage.json targe
 python scripts/coverage_review.py target/coverage-whole-suite/gaps.csv docs/evidence/coverage-review.csv
 ./scripts/footprint.ps1
 cargo run --release -p iron-socket-layer --example fixed_stack   # on Linux
+sh scripts/qemu-m4.sh   # emulated Cortex-M4; needs qemu-system-arm
 ./scripts/fuzz.ps1 -Seconds 600
 cargo test -p iron-socket-layer --release --lib padding_scan_timing_experiment -- --ignored --nocapture
 ```
@@ -48,6 +49,12 @@ needs, per key kind and group, plus IronCrypto's ML-DSA and Ed25519
 operations alone. Each probe is a fresh child process. Run it on Linux, where
 stacks are 4 KiB-granular; Windows reserves 64 KiB units. Host figures are not
 target figures.
+
+`qemu-m4.sh` builds `embedded/qemu-m4` for Cortex-M4 and runs it on QEMU's
+MPS2-AN386 board (via WSL if QEMU is not on PATH). It fails if a session
+fails, allocates after initialization, or a capacity check does not latch.
+It prints each session's peak stack. Emulation is not board evidence and
+gives no timing.
 
 Fuzzing requires nightly and cargo-fuzz. On Windows the MSVC AddressSanitizer
 runtime directory must be on PATH (see `fuzz/README.md`). Campaigns run

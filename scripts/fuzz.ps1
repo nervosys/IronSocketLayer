@@ -1,7 +1,7 @@
 param(
     [ValidateRange(1, 86400)][int]$Seconds = 600,
-    [ValidateSet('messages', 'records', 'pki', 'tls_server', 'tls_client', 'quic_server', 'fixed_server')]
-    [string[]]$Targets = @('messages', 'records', 'pki', 'tls_server', 'tls_client', 'quic_server', 'fixed_server')
+    [ValidateSet('messages', 'records', 'pki', 'tls_server', 'tls_client', 'quic_server', 'fixed_server', 'fixed_client')]
+    [string[]]$Targets = @('messages', 'records', 'pki', 'tls_server', 'tls_client', 'quic_server', 'fixed_server', 'fixed_client')
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
