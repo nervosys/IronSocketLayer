@@ -275,7 +275,7 @@ Allocations are counted after both constructors.
 Peak stack per session, by IronCrypto version. Every case made zero
 allocator calls after initialization.
 
-| Signing keys | Group | 0.2.8 | 0.2.9 | ddff292 + split verify |
+| Signing keys | Group | 0.2.8 | 0.2.9 | 0.2.10 + split verify |
 |---|---|---:|---:|---:|
 | ECDSA P-256 | X25519 | 29,440 B | 29,440 B | 26,104 B |
 | ECDSA P-256 | X25519MLKEM768 | 55,844 B | 31,004 B | 31,004 B |
@@ -291,7 +291,7 @@ IronCrypto 0.2.9 (commit 2f95d30) stops ML-KEM holding its matrix. A
 session with classical or Ed25519 signatures then needs about 31 KB with any
 group, and ML-DSA signing set the peak.
 
-IronCrypto commit ddff292, not yet released, decodes ML-DSA's secret
+IronCrypto commit ddff292, released in 0.2.10 (now this crate's minimum), decodes ML-DSA's secret
 vectors per use and holds hints as bitmaps. IronCrypto reports, from its
 linked Cortex-M4 call graph, ML-DSA-87 signing falling from 43,788 to
 17,596 bytes and verification from 20,268 to 17,508, for 6 to 8% more
