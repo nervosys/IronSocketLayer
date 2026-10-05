@@ -188,7 +188,8 @@ fn quic_client_hello_frame(ch: &ClientHello) -> Vec<u8> {
 /// for post-quantum authentication. A client that authenticates afterwards
 /// with a classical certificate, or with an ML-DSA leaf trusted directly as
 /// an anchor (no chain signature verified), withdraws the server's
-/// post-quantum authentication claim; an ML-DSA chain keeps it.
+/// post-quantum authentication claim; an ML-DSA chain keeps it. A client
+/// that answers with a classical signature withdraws its own claim.
 #[test]
 fn post_handshake_authentication_keeps_post_quantum_claims_honest() {
     let pki = Pki::with_kinds(KeyKind::MlDsa65, KeyKind::MlDsa65, NAME);
@@ -228,6 +229,17 @@ fn post_handshake_authentication_keeps_post_quantum_claims_honest() {
             r.has(Property::PostQuantumAuthentication),
             pq,
             "{name}: {}",
+            r.to_json()
+        );
+        // The client applies the same rule to what it can see: its own
+        // answer. A classical signature withdraws its claim too.
+        let client_pq = name != "classical chain";
+        let r = c.report();
+        assert!(r.has(Property::MutualAuthentication), "{name}");
+        assert_eq!(
+            r.has(Property::PostQuantumAuthentication),
+            client_pq,
+            "{name} (client): {}",
             r.to_json()
         );
     }

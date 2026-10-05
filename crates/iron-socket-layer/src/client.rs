@@ -1330,6 +1330,14 @@ impl ClientHs {
             core.report.local_signature_scheme = Some(scheme);
             core.report
                 .add(crate::report::Property::MutualAuthentication);
+            // REQ-PHA-003: the handshake's rule applies; a classical answer
+            // withdraws the post-quantum authentication claim.
+            if !scheme.is_post_quantum() {
+                core.report
+                    .properties
+                    .retain(|q| *q != crate::report::Property::PostQuantumAuthentication);
+                self.peer.post_quantum_authentication = false;
+            }
         }
         Ok(())
     }
