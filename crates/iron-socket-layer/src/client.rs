@@ -27,9 +27,7 @@ use crate::crypto::hpke;
 use crate::crypto::kx::{self, KeyShare};
 use crate::crypto::{sign, HashAlg, Output};
 use crate::ech::{self, EchConfig};
-use crate::enums::{
-    CipherSuite, ExtensionType, HandshakeType, NamedGroup, ProtocolVersion, SignatureScheme,
-};
+use crate::enums::{CipherSuite, HandshakeType, NamedGroup, ProtocolVersion, SignatureScheme};
 use crate::error::{Error, ErrorKind, Result};
 use crate::key_schedule::{self, EarlyStage, HandshakeStage, MasterStage};
 use crate::msgs::{
@@ -700,6 +698,20 @@ impl ClientHs {
                 self.hello.psk = None;
             }
         }
+        // The same holds for an external PSK (RFC 8446 section 4.1.2 permits
+        // removing PSKs the retry's suite cannot use). Without trust anchors
+        // nothing would be left to authenticate the server. REQ-EPSK-004.
+        if let (Some(ext), Some(_)) = (&self.config.external_psk, &self.hello.psk) {
+            if ext.hash != hash {
+                if self.config.verification_is_empty() {
+                    return Err(Error::new(
+                        ErrorKind::HandshakeFailure,
+                        "retry suite cannot use the external PSK, and no trust anchors are configured",
+                    ));
+                }
+                self.hello.psk = None;
+            }
+        }
         core.allow_ccs(true);
         if !core.is_quic() {
             core.send_ccs();
@@ -894,13 +906,13 @@ impl ClientHs {
             }
             (false, None) => {}
         }
-        if let Some(bad) = ee.other_extensions.first() {
+        // The decoder has already refused, with illegal_parameter, any type
+        // not permitted in EncryptedExtensions (REQ-MSG-018), so what is left
+        // is a permitted response the client never requested: RFC 8446
+        // section 4.2 makes that unsupported_extension, known type or not.
+        if !ee.other_extensions.is_empty() {
             return Err(Error::new(
-                if matches!(bad, ExtensionType::Unknown(_)) || *bad == ExtensionType::EarlyData {
-                    ErrorKind::UnsupportedExtension
-                } else {
-                    ErrorKind::IllegalParameter
-                },
+                ErrorKind::UnsupportedExtension,
                 "EncryptedExtensions carries an extension not offered",
             ));
         }

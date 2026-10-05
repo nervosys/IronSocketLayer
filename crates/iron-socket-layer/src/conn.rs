@@ -1529,6 +1529,136 @@ mod tests {
         assert_eq!(s.recv(&mut buf), 0);
     }
 
+    /// A client that has processed the ServerHello, and so writes under its
+    /// handshake key, and the server that is waiting for its Finished: the
+    /// client then stands in for a misbehaving peer of the server.
+    fn client_writing_under_handshake_keys() -> (Connection, Connection) {
+        let (cc, sc) = configs();
+        let mut c = Connection::client(cc, "s.test").unwrap();
+        let mut s = Connection::server(sc).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        let flight = s.take_tls();
+        let len = u16::from_be_bytes([flight[3], flight[4]]) as usize;
+        c.read_tls(&flight[..5 + len]).unwrap();
+        let _ccs = c.take_tls();
+        (c, s)
+    }
+
+    /// Give `cc`'s ticket store a ticket from `sc`.
+    fn get_ticket(cc: &Arc<ClientConfig>, sc: &Arc<ServerConfig>) {
+        let mut c = Connection::client(cc.clone(), "s.test").unwrap();
+        let mut s = Connection::server(sc.clone()).unwrap();
+        for _ in 0..4 {
+            s.read_tls(&c.take_tls()).unwrap();
+            c.read_tls(&s.take_tls()).unwrap();
+        }
+        assert!(c.report().tickets_received >= 1);
+    }
+
+    /// REQ-REC-005, REQ-0RTT-004: while a server skips the records of 0-RTT
+    /// data it rejected, it skips only records that fail authentication; one
+    /// that authenticates but has an all-zero inner plaintext is still
+    /// unexpected_message.
+    #[test]
+    fn a_record_with_no_content_type_is_refused_while_skipping_early_data() {
+        let (cc, sc) = configs();
+        let mut ccfg = (*cc).clone();
+        ccfg.early_data = true;
+        let cc = Arc::new(ccfg);
+        let mut with_policy = (*sc).clone();
+        with_policy.early_data = Some(crate::config::EarlyDataPolicy::new(1024));
+        get_ticket(&cc, &Arc::new(with_policy));
+        // This server shares the ticket keys but has no 0-RTT policy, so it
+        // resumes, rejects the data and skips it.
+        let mut c = Connection::client_with_early_data(cc, "s.test", b"early").unwrap();
+        let mut s = Connection::server(sc).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        assert_eq!(s.report().early_data, "early-data:rejected");
+        assert!(s.core.skip_early_budget > 0);
+        // The client reads up to EncryptedExtensions, which moves its writes
+        // from the early key to the handshake key.
+        let flight = s.take_tls();
+        let mut at = 0;
+        while c.report().early_data != "early-data:rejected" {
+            let len = u16::from_be_bytes([flight[at + 3], flight[at + 4]]) as usize;
+            c.read_tls(&flight[at..at + 5 + len]).unwrap();
+            at += 5 + len;
+        }
+        let _ccs = c.take_tls();
+        let rec = seal_raw(&mut c, ContentType::Invalid, &[]);
+        refused(
+            s.read_tls(&rec),
+            ErrorKind::UnexpectedMessage,
+            "record with no content type",
+        );
+        assert_eq!(
+            s.report().alert_sent,
+            Some(AlertDescription::UnexpectedMessage)
+        );
+    }
+
+    /// REQ-CONN-003: application data protected under the handshake keys,
+    /// before the handshake completes, is unexpected_message and is not
+    /// delivered.
+    #[test]
+    fn application_data_under_handshake_keys_is_refused() {
+        let (mut c, mut s) = client_writing_under_handshake_keys();
+        let rec = seal_raw(&mut c, ContentType::ApplicationData, b"too early");
+        refused(
+            s.read_tls(&rec),
+            ErrorKind::UnexpectedMessage,
+            "application data during the handshake",
+        );
+        assert_eq!(s.available(), 0);
+    }
+
+    /// REQ-0RTT-003: accepted early data is bounded by max_early_data_size:
+    /// a client may use all of it, and one byte more is unexpected_message.
+    #[test]
+    fn early_data_beyond_max_early_data_is_refused() {
+        let (cc, sc) = configs();
+        let mut ccfg = (*cc).clone();
+        ccfg.early_data = true;
+        let mut scfg = (*sc).clone();
+        scfg.early_data = Some(crate::config::EarlyDataPolicy::new(1024));
+        let (cc, sc) = (Arc::new(ccfg), Arc::new(scfg));
+        for extra in [24usize, 25] {
+            // A fresh ticket for each attempt: each is used once.
+            let mut c = Connection::client(cc.clone(), "s.test").unwrap();
+            let mut s = Connection::server(sc.clone()).unwrap();
+            for _ in 0..4 {
+                s.read_tls(&c.take_tls()).unwrap();
+                c.read_tls(&s.take_tls()).unwrap();
+            }
+            assert!(c.report().tickets_received >= 1);
+
+            let mut c =
+                Connection::client_with_early_data(cc.clone(), "s.test", &[1; 1000]).unwrap();
+            assert_eq!(c.report().early_data, "early-data:offered");
+            let mut flight = c.take_tls();
+            // More 0-RTT data under the same key, as a client ignoring the
+            // ticket's limit could send.
+            flight.extend(seal_raw(
+                &mut c,
+                ContentType::ApplicationData,
+                &alloc::vec![2; extra],
+            ));
+            let mut s = Connection::server(sc.clone()).unwrap();
+            let r = s.read_tls(&flight);
+            assert_eq!(s.report().early_data, "early-data:accepted");
+            if extra == 24 {
+                r.unwrap();
+                assert_eq!(s.available(), 1024);
+            } else {
+                refused(
+                    r,
+                    ErrorKind::UnexpectedMessage,
+                    "0-RTT data exceeds max_early_data_size",
+                );
+            }
+        }
+    }
+
     /// A client, configured by `edit`, that has processed a real server's
     /// ServerHello and now expects its encrypted flight.
     fn client_after_server_hello(edit: impl FnOnce(&mut ClientConfig)) -> (Connection, Vec<u8>) {
