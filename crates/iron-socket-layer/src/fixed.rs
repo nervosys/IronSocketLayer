@@ -1115,8 +1115,10 @@ impl<'a> Connection<'a> {
                 .find(|s| contains_u16(suites, s.to_wire()))
         } else {
             suites
-                .chunks_exact(2)
-                .map(|s| CipherSuite::from_wire(u16::from_be_bytes([s[0], s[1]])))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|s| CipherSuite::from_wire(u16::from_be_bytes(*s)))
                 .find(|s| common.suites.contains(s))
         }
         .ok_or(Error::new(ErrorKind::HandshakeFailure, "no shared suite"))?;
@@ -1196,9 +1198,7 @@ impl<'a> Connection<'a> {
             .identities
             .iter()
             .find(|id| {
-                name.map_or(true, |n| {
-                    x509::verify_name(&id.chain[0], &ServerName::Dns(n)).is_ok()
-                })
+                name.is_none_or(|n| x509::verify_name(&id.chain[0], &ServerName::Dns(n)).is_ok())
             })
             .ok_or(Error::new(
                 ErrorKind::HandshakeFailure,
@@ -1585,7 +1585,7 @@ impl<'a> Connection<'a> {
         if schemes.len() / 2 > self.request_schemes.len() {
             return Err(capacity("CertificateRequest signature slots"));
         }
-        for (i, bytes) in schemes.chunks_exact(2).enumerate() {
+        for (i, bytes) in schemes.as_chunks::<2>().0.iter().enumerate() {
             self.request_schemes[i] = Some(SignatureScheme::from_wire(u16::from_be_bytes([
                 bytes[0], bytes[1],
             ])));
@@ -2116,7 +2116,7 @@ fn u16_list(bytes: &[u8], prefix: usize) -> Result<&[u8]> {
     Ok(list)
 }
 fn contains_u16(bytes: &[u8], n: u16) -> bool {
-    bytes.chunks_exact(2).any(|v| v == n.to_be_bytes())
+    bytes.as_chunks::<2>().0.contains(&n.to_be_bytes())
 }
 fn hello_fingerprint(body: &[u8], ext: Extensions<'_>) -> Result<Output> {
     let mut h = Hash::new(HashAlg::Sha256);

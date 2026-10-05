@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn an_oversized_message_is_refused_and_the_next_one_still_answered() {
         let mut input = Vec::new();
-        input.extend(std::iter::repeat(b'x').take(MAX_MESSAGE + 10));
+        input.extend(std::iter::repeat_n(b'x', MAX_MESSAGE + 10));
         input.push(b'\n');
         input.extend_from_slice(br#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#);
         input.push(b'\n');

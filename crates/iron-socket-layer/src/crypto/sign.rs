@@ -28,9 +28,9 @@ use crate::error::{Error, ErrorKind, Result};
 /// OID content bytes for id-ml-dsa-44, 2.16.840.1.101.3.4.3.17 (RFC 9881).
 pub const OID_ML_DSA_44: &[u8] = ic_pkix::oid::ML_DSA_44;
 /// OID content bytes for id-ml-dsa-65, 2.16.840.1.101.3.4.3.18.
-pub const OID_ML_DSA_65: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12];
+pub const OID_ML_DSA_65: &[u8] = ic_pkix::oid::ML_DSA_65;
 /// OID content bytes for id-ml-dsa-87, 2.16.840.1.101.3.4.3.19.
-pub const OID_ML_DSA_87: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13];
+pub const OID_ML_DSA_87: &[u8] = ic_pkix::oid::ML_DSA_87;
 
 /// An ML-DSA parameter set (FIPS 204).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -331,6 +331,10 @@ fn content_end(inner: &[u8]) -> usize {
     // `inner` is at most MAX_CIPHERTEXT bytes, checked by the caller, so
     // offsets fit a u32.
     let mut base = 0u32;
+    // Kept as reviewed: this loop's Cortex-M4 assembly and its timing were
+    // checked (see the verification report), so it is not rewritten to
+    // satisfy a style lint.
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     let mut blocks = inner.chunks_exact(32);
     for block in &mut blocks {
         let mut b = [0u8; 32];

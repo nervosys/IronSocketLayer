@@ -335,16 +335,16 @@ fn check_directory_string(content: &[u8]) -> Result<()> {
         return Err(bad("incomplete DirectoryString code unit"));
     }
     if tag == 0x1e
-        && value.chunks_exact(2).any(|unit| {
-            let code = u16::from_be_bytes([unit[0], unit[1]]);
+        && value.as_chunks::<2>().0.iter().any(|unit| {
+            let code = u16::from_be_bytes(*unit);
             matches!(code, 0xd800..=0xdfff | 0xfffe..=0xffff)
         })
     {
         return Err(bad("invalid DirectoryString BMPString character"));
     }
     if tag == 0x1c
-        && value.chunks_exact(4).any(|unit| {
-            let code = u32::from_be_bytes([unit[0], unit[1], unit[2], unit[3]]);
+        && value.as_chunks::<4>().0.iter().any(|unit| {
+            let code = u32::from_be_bytes(*unit);
             matches!(code, 0xd800..=0xdfff) || code > 0x10ffff
         })
     {
@@ -1999,7 +1999,7 @@ fn key_ids_disagree(cert: &Certificate<'_>, issuer_ski: Option<&[u8]>) -> bool {
 }
 
 fn note(best: &mut Option<Error>, e: Error) {
-    if best.map_or(true, |b| b.kind() == ErrorKind::UnknownCa) {
+    if best.is_none_or(|b| b.kind() == ErrorKind::UnknownCa) {
         *best = Some(e);
     }
 }

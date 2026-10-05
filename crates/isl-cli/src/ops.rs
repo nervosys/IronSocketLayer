@@ -43,7 +43,7 @@ pub fn ontology_list(kind: Option<&str>) -> Result<Json, String> {
         })?),
     };
     let items = isl_ontology::all()
-        .filter(|e| kind.map_or(true, |k| e.kind == k))
+        .filter(|e| kind.is_none_or(|k| e.kind == k))
         .map(|e| {
             Json::object([
                 ("id", Json::str(e.id)),

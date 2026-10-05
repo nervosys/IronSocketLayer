@@ -467,8 +467,10 @@ impl ClientHello {
             return Err(decode_err("cipher_suites"));
         }
         let suites = suites_raw
-            .chunks_exact(2)
-            .map(|c| CipherSuite::from_wire(u16::from_be_bytes([c[0], c[1]])))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| CipherSuite::from_wire(u16::from_be_bytes(*c)))
             .collect();
         let compression = r.vec8()?;
         if compression != [0] {
