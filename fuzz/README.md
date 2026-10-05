@@ -97,3 +97,10 @@ inputs are regression cases in
 Reverting either fix makes that test fail. After the fixes, a 181-second
 AddressSanitizer run made 869,977 executions and reached 3,415 edges, with
 no crashes, timeouts or sanitizer reports. This is a short run.
+
+Later the same day, on the final engine (KeyUpdate and curve-table fixes in
+place, commit 7876d6d), a 601-second AddressSanitizer campaign made 2,733,847
+executions and reached 3,444 edges. It found no crashes, timeouts or
+sanitizer reports, and its slowest unit took under a second. An earlier
+600-second run on the engine before those fixes made 2,474,984 executions,
+also clean. The machine was shared with concurrent builds during both runs.
