@@ -197,11 +197,25 @@ impl Pki {
     }
 
     pub fn client_config(&self, profile: Profile) -> ClientConfig {
-        ClientConfig::new(profile, self.roots()).unwrap()
+        let mut config = ClientConfig::new(profile, self.roots()).unwrap();
+        if self.server_key.kind_id() == "key:ml-dsa-44" {
+            config
+                .common
+                .schemes
+                .push(iron_socket_layer::enums::SignatureScheme::MlDsa44);
+        }
+        config
     }
 
     pub fn server_config(&self, profile: Profile) -> ServerConfig {
-        ServerConfig::new(profile, self.server_identity()).unwrap()
+        let mut config = ServerConfig::new(profile, self.server_identity()).unwrap();
+        if self.server_key.kind_id() == "key:ml-dsa-44" {
+            config
+                .common
+                .schemes
+                .push(iron_socket_layer::enums::SignatureScheme::MlDsa44);
+        }
+        config
     }
 }
 

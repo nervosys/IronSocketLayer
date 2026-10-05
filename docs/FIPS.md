@@ -61,6 +61,7 @@ here calls something approved that IronCrypto does not permit.
 | SecP256r1MLKEM768 | yes, preferred | both components approved (SP 800-56A ECDH, FIPS 203 ML-KEM) |
 | P-256, P-384, P-521 ECDHE | yes | SP 800-56A |
 | MLKEM1024, SecP384r1MLKEM1024 | no (approved; `profile:cnsa-2` uses MLKEM1024) | FIPS 203; not offered here because the shares exceed 1.5 KB |
+| MLKEM512, ML-DSA-44 | no (approved; explicit configuration only) | FIPS 203/204; named profiles retain their stronger parameter sets |
 | X25519MLKEM768 | no | X25519 is not approved in IronCrypto's registry (see below) |
 | X25519 | no | not approved |
 | ECDSA P-256/384/521, RSA-PSS, ML-DSA-65, ML-DSA-87 | yes | FIPS 186-5, FIPS 204 |

@@ -25,6 +25,8 @@ use super::SecretVec;
 use crate::enums::SignatureScheme;
 use crate::error::{Error, ErrorKind, Result};
 
+/// OID content bytes for id-ml-dsa-44, 2.16.840.1.101.3.4.3.17 (RFC 9881).
+pub const OID_ML_DSA_44: &[u8] = ic_pkix::oid::ML_DSA_44;
 /// OID content bytes for id-ml-dsa-65, 2.16.840.1.101.3.4.3.18.
 pub const OID_ML_DSA_65: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12];
 /// OID content bytes for id-ml-dsa-87, 2.16.840.1.101.3.4.3.19.
@@ -33,6 +35,8 @@ pub const OID_ML_DSA_87: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x0
 /// An ML-DSA parameter set (FIPS 204).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MlDsa {
+    /// Category 2, available by explicit configuration.
+    P44,
     /// Category 3.
     P65,
     /// Category 5, required by CNSA 2.0.
@@ -43,6 +47,10 @@ enum MlDsa {
 macro_rules! with_mldsa {
     ($p:expr, $m:ident, $body:expr) => {
         match $p {
+            MlDsa::P44 => {
+                use ic_mldsa::sign44 as $m;
+                $body
+            }
             MlDsa::P65 => {
                 use ic_mldsa::sign as $m;
                 $body
@@ -57,7 +65,9 @@ macro_rules! with_mldsa {
 
 impl MlDsa {
     fn from_oid(oid: &[u8]) -> Option<Self> {
-        if oid == OID_ML_DSA_65 {
+        if oid == OID_ML_DSA_44 {
+            Some(Self::P44)
+        } else if oid == OID_ML_DSA_65 {
             Some(Self::P65)
         } else if oid == OID_ML_DSA_87 {
             Some(Self::P87)
@@ -68,6 +78,7 @@ impl MlDsa {
 
     fn oid(self) -> &'static [u8] {
         match self {
+            Self::P44 => OID_ML_DSA_44,
             Self::P65 => OID_ML_DSA_65,
             Self::P87 => OID_ML_DSA_87,
         }
@@ -75,6 +86,7 @@ impl MlDsa {
 
     fn scheme(self) -> SignatureScheme {
         match self {
+            Self::P44 => SignatureScheme::MlDsa44,
             Self::P65 => SignatureScheme::MlDsa65,
             Self::P87 => SignatureScheme::MlDsa87,
         }
@@ -82,6 +94,7 @@ impl MlDsa {
 
     fn kind_id(self) -> &'static str {
         match self {
+            Self::P44 => "key:ml-dsa-44",
             Self::P65 => "key:ml-dsa-65",
             Self::P87 => "key:ml-dsa-87",
         }
@@ -168,6 +181,7 @@ pub const VERIFY_SCHEMES: &[SignatureScheme] = &[
     SignatureScheme::RsaPkcs1Sha256,
     SignatureScheme::RsaPkcs1Sha384,
     SignatureScheme::RsaPkcs1Sha512,
+    SignatureScheme::MlDsa44,
 ];
 
 /// IronCrypto ontology identifier of the primitive a scheme uses.
@@ -183,6 +197,7 @@ pub fn ic_id(scheme: SignatureScheme) -> Option<&'static str> {
         SignatureScheme::RsaPkcs1Sha256 => "rsa-pkcs1-sha256",
         SignatureScheme::RsaPkcs1Sha384 => "rsa-pkcs1-sha384",
         SignatureScheme::RsaPkcs1Sha512 => "rsa-pkcs1-sha512",
+        SignatureScheme::MlDsa44 => "ml-dsa-44",
         SignatureScheme::MlDsa65 => "ml-dsa-65",
         SignatureScheme::MlDsa87 => "ml-dsa-87",
         _ => return None,
@@ -207,6 +222,8 @@ pub enum PublicKey<'a> {
         /// Public exponent.
         exponent: u64,
     },
+    /// ML-DSA-44, 1312 bytes.
+    MlDsa44(&'a [u8]),
     /// ML-DSA-65, 1952 bytes.
     MlDsa65(&'a [u8]),
     /// ML-DSA-87, 2592 bytes.
@@ -259,6 +276,7 @@ impl<'a> PublicKey<'a> {
                 ));
             }
             return Ok(match p {
+                MlDsa::P44 => Self::MlDsa44(key),
                 MlDsa::P65 => Self::MlDsa65(key),
                 MlDsa::P87 => Self::MlDsa87(key),
             });
@@ -291,6 +309,7 @@ impl<'a> PublicKey<'a> {
                 | (Self::EcP384(_), S::EcdsaSecp384r1Sha384)
                 | (Self::EcP521(_), S::EcdsaSecp521r1Sha512)
                 | (Self::Ed25519(_), S::Ed25519)
+                | (Self::MlDsa44(_), S::MlDsa44)
                 | (Self::MlDsa65(_), S::MlDsa65)
                 | (Self::MlDsa87(_), S::MlDsa87)
                 | (
@@ -313,6 +332,7 @@ impl<'a> PublicKey<'a> {
             Self::EcP521(_) => "key:ecdsa-p521",
             Self::Ed25519(_) => "key:ed25519",
             Self::Rsa { .. } => "key:rsa",
+            Self::MlDsa44(_) => "key:ml-dsa-44",
             Self::MlDsa65(_) => "key:ml-dsa-65",
             Self::MlDsa87(_) => "key:ml-dsa-87",
         }
@@ -322,7 +342,7 @@ impl<'a> PublicKey<'a> {
     /// NIST category 3 (AES-192) and ML-DSA-87 category 5 (AES-256).
     pub fn classical_bits(&self) -> u16 {
         match self {
-            Self::EcP256(_) | Self::Ed25519(_) => 128,
+            Self::EcP256(_) | Self::Ed25519(_) | Self::MlDsa44(_) => 128,
             Self::EcP384(_) | Self::MlDsa65(_) => 192,
             Self::EcP521(_) | Self::MlDsa87(_) => 256,
             Self::Rsa { modulus, .. } => match modulus.len() * 8 {
@@ -370,6 +390,9 @@ pub fn verify(
         }
         (SignatureScheme::Ed25519, PublicKey::Ed25519(pk)) => {
             ic_ec::Ed25519::verify(pk, message, signature).map_err(fail)
+        }
+        (SignatureScheme::MlDsa44, PublicKey::MlDsa44(pk)) => {
+            MlDsa::P44.verify(pk, message, signature)
         }
         (SignatureScheme::MlDsa65, PublicKey::MlDsa65(pk)) => {
             MlDsa::P65.verify(pk, message, signature)
@@ -550,7 +573,7 @@ impl SigningKey {
         Self::from_pkcs8_der(&der_buf.get()[..n])
     }
 
-    /// PKCS#8 forms `ic_pkix` does not name: P-521, ML-DSA-65 and ML-DSA-87.
+    /// PKCS#8 forms `ic_pkix` does not name: P-521, ML-DSA-44, ML-DSA-65 and ML-DSA-87.
     fn from_pkcs8_fallback(der_bytes: &[u8]) -> Result<Self> {
         let bad = |_| Error::new(ErrorKind::InvalidConfig, "malformed PKCS#8 private key");
         let mut outer = Reader::new(der_bytes);
@@ -678,6 +701,13 @@ impl SigningKey {
         })
     }
 
+    /// An ML-DSA-44 key from its 32-byte seed (FIPS 204 `ξ`).
+    /// REQ-SIG-005: ML-DSA-44 generation, key loading, signing and verification
+    /// use IronCrypto's category 2 parameter set and RFC 9881 identifiers.
+    pub fn mldsa44_from_seed(seed: &[u8; 32]) -> Result<Self> {
+        Self::mldsa_from_seed(MlDsa::P44, seed)
+    }
+
     /// An ML-DSA-65 key from its 32-byte seed (FIPS 204 `ξ`).
     pub fn mldsa65_from_seed(seed: &[u8; 32]) -> Result<Self> {
         Self::mldsa_from_seed(MlDsa::P65, seed)
@@ -718,11 +748,11 @@ impl SigningKey {
                     r
                 }
                 KeyKind::Ed25519 => Self::ed25519(&s[..32]),
-                KeyKind::MlDsa65 | KeyKind::MlDsa87 => {
-                    let p = if kind == KeyKind::MlDsa65 {
-                        MlDsa::P65
-                    } else {
-                        MlDsa::P87
+                KeyKind::MlDsa44 | KeyKind::MlDsa65 | KeyKind::MlDsa87 => {
+                    let p = match kind {
+                        KeyKind::MlDsa44 => MlDsa::P44,
+                        KeyKind::MlDsa65 => MlDsa::P65,
+                        _ => MlDsa::P87,
                     };
                     let mut k = [0u8; 32];
                     k.copy_from_slice(&s[..32]);
@@ -769,6 +799,7 @@ impl SigningKey {
                 S::RsaPssRsaeSha384,
                 S::RsaPssRsaeSha512,
             ],
+            KeyImpl::MlDsa(MlDsa::P44, _) => &[S::MlDsa44],
             KeyImpl::MlDsa(MlDsa::P65, _) => &[S::MlDsa65],
             KeyImpl::MlDsa(MlDsa::P87, _) => &[S::MlDsa87],
         }
@@ -874,6 +905,8 @@ pub enum KeyKind {
     EcdsaP521,
     /// Ed25519.
     Ed25519,
+    /// ML-DSA-44.
+    MlDsa44,
     /// ML-DSA-65.
     MlDsa65,
     /// ML-DSA-87.
@@ -887,6 +920,7 @@ impl KeyKind {
         Self::EcdsaP384,
         Self::EcdsaP521,
         Self::Ed25519,
+        Self::MlDsa44,
         Self::MlDsa65,
         Self::MlDsa87,
     ];
@@ -898,6 +932,7 @@ impl KeyKind {
             Self::EcdsaP384 => "key:ecdsa-p384",
             Self::EcdsaP521 => "key:ecdsa-p521",
             Self::Ed25519 => "key:ed25519",
+            Self::MlDsa44 => "key:ml-dsa-44",
             Self::MlDsa65 => "key:ml-dsa-65",
             Self::MlDsa87 => "key:ml-dsa-87",
         }
@@ -952,7 +987,7 @@ mod tests {
     /// the seed nor the seed-and-expanded form. `REQ-SIG-004`.
     #[test]
     fn malformed_keys_are_refused() {
-        for oid in [OID_ML_DSA_65, OID_ML_DSA_87] {
+        for oid in [OID_ML_DSA_44, OID_ML_DSA_65, OID_ML_DSA_87] {
             let mut alg = Vec::new();
             push_tlv(&mut alg, der::OID, oid);
             let spki = spki_from_parts(&alg, &[7u8; 100]).unwrap();
@@ -1002,6 +1037,7 @@ mod tests {
         assert_eq!(rsa(384).classical_bits(), 128);
         assert_eq!(rsa(960).classical_bits(), 192);
         assert_eq!(rsa(1920).classical_bits(), 256);
+        assert_eq!(PublicKey::MlDsa44(&[]).classical_bits(), 128);
         assert_eq!(PublicKey::MlDsa65(&[]).classical_bits(), 192);
         assert_eq!(PublicKey::MlDsa87(&[]).classical_bits(), 256);
     }

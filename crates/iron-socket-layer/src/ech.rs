@@ -1,4 +1,4 @@
-//! Encrypted Client Hello (draft-ietf-tls-esni, codepoint 0xfe0d).
+//! Encrypted Client Hello (RFC 9849, codepoint 0xfe0d).
 //!
 //! ECH hides the real server name, and every other ClientHello extension,
 //! from the network. The client sends a *ClientHelloOuter* naming only the

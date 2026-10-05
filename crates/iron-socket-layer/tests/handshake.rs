@@ -74,6 +74,7 @@ fn every_key_kind_authenticates_the_server() {
         let scheme = c.report().peer_signature_scheme.unwrap();
         assert!(scheme.allowed_in_handshake());
         match kind {
+            KeyKind::MlDsa44 => assert_eq!(scheme, SignatureScheme::MlDsa44),
             KeyKind::MlDsa65 => assert_eq!(scheme, SignatureScheme::MlDsa65),
             KeyKind::MlDsa87 => assert_eq!(scheme, SignatureScheme::MlDsa87),
             _ => {}
@@ -96,6 +97,33 @@ fn post_quantum_authentication_needs_the_whole_chain_to_be_ml_dsa() {
     assert!(c.report().has(Property::PostQuantumKeyExchange));
     // ML-DSA-65 is NIST category 3, comparable to AES-192.
     assert_eq!(c.report().peer_chain_min_bits, Some(192));
+}
+
+/// REQ-KX-005, REQ-SIG-005: explicit category 1 KEM and category 2 signatures
+/// authenticate an all-post-quantum chain without changing named profiles.
+#[test]
+fn explicit_small_post_quantum_parameter_sets_complete() {
+    let pki = Pki::with_kinds(KeyKind::MlDsa44, KeyKind::MlDsa44, "server.test");
+    let mut cc = pki.client_config(Profile::PostQuantum);
+    let mut sc = pki.server_config(Profile::PostQuantum);
+    cc.common.groups = vec![NamedGroup::MlKem512];
+    sc.common.groups = vec![NamedGroup::MlKem512];
+    cc.common.schemes = vec![SignatureScheme::MlDsa44];
+    sc.common.schemes = vec![SignatureScheme::MlDsa44];
+    let (mut c, mut s) = connect(Arc::new(cc), Arc::new(sc), "server.test").unwrap();
+    assert_eq!(c.report().group, Some(NamedGroup::MlKem512));
+    assert_eq!(
+        c.report().peer_signature_scheme,
+        Some(SignatureScheme::MlDsa44)
+    );
+    assert_eq!(c.report().peer_key, Some("key:ml-dsa-44"));
+    assert!(c.report().has(Property::PostQuantumKeyExchange));
+    assert!(c.report().has(Property::PostQuantumAuthentication));
+    exchange(&mut c, &mut s);
+    for &profile in Profile::ALL {
+        assert!(!profile.groups().contains(&NamedGroup::MlKem512));
+        assert!(!profile.schemes().contains(&SignatureScheme::MlDsa44));
+    }
 }
 
 #[test]
@@ -517,7 +545,7 @@ fn unimplemented_parameters_are_refused_by_validation() {
     c.common.groups = vec![NamedGroup::X448];
     assert_eq!(c.validate().unwrap_err().kind(), ErrorKind::InvalidConfig);
     let mut c = pki.client_config(Profile::Default);
-    c.common.schemes = vec![SignatureScheme::MlDsa44];
+    c.common.schemes = vec![SignatureScheme::Ed448];
     assert_eq!(c.validate().unwrap_err().kind(), ErrorKind::InvalidConfig);
     let mut c = pki.client_config(Profile::Default);
     c.common.schemes = vec![SignatureScheme::RsaPkcs1Sha256];

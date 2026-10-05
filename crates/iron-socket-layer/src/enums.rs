@@ -157,7 +157,7 @@ wire_enum! {
         X448 = 0x001e => "group:x448",
         /// Finite-field DHE 2048. Named, not implemented.
         Ffdhe2048 = 0x0100 => "group:ffdhe2048",
-        /// Pure ML-KEM-512. Named, not implemented.
+        /// Pure ML-KEM-512. Available by explicit configuration.
         MlKem512 = 0x0200 => "group:mlkem512",
         /// Pure ML-KEM-768.
         MlKem768 = 0x0201 => "group:mlkem768",
@@ -203,7 +203,7 @@ wire_enum! {
         Ed448 = 0x0808 => "sigscheme:ed448",
         /// RSASSA-PSS, RSASSA-PSS key, SHA-256. Named, not implemented.
         RsaPssPssSha256 = 0x0809 => "sigscheme:rsa-pss-pss-sha256",
-        /// ML-DSA-44. Named, not implemented.
+        /// ML-DSA-44. Available by explicit configuration.
         MlDsa44 = 0x0904 => "sigscheme:mldsa44",
         /// ML-DSA-65.
         MlDsa65 = 0x0905 => "sigscheme:mldsa65",

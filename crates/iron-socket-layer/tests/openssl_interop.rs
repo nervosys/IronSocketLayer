@@ -32,6 +32,7 @@ use iron_socket_layer::x509::RootStore;
 
 /// OpenSSL's names for the groups IronSocketLayer implements.
 const GROUPS: &[(NamedGroup, &str)] = &[
+    (NamedGroup::MlKem512, "MLKEM512"),
     (NamedGroup::X25519MlKem768, "X25519MLKEM768"),
     (NamedGroup::SecP256r1MlKem768, "SecP256r1MLKEM768"),
     (NamedGroup::MlKem768, "MLKEM768"),
@@ -59,6 +60,7 @@ const KEYS: &[(&str, &[&str])] = &[
     ),
     ("ed25519", &["-newkey", "ed25519"]),
     ("rsa-2048", &["-newkey", "rsa:2048"]),
+    ("ml-dsa-44", &["-newkey", "ML-DSA-44"]),
     ("ml-dsa-65", &["-newkey", "ML-DSA-65"]),
     ("ml-dsa-87", &["-newkey", "ML-DSA-87"]),
 ];
@@ -144,6 +146,11 @@ fn our_client_against_openssl_server_for_every_key_and_group() {
         for (group, ossl_group) in GROUPS {
             let mut cfg = ClientConfig::new(Profile::Default, roots.clone()).unwrap();
             cfg.common.groups = vec![*group];
+            if *key_name == "ml-dsa-44" {
+                cfg.common
+                    .schemes
+                    .push(iron_socket_layer::enums::SignatureScheme::MlDsa44);
+            }
             cfg.initial_key_shares = 1;
             let port = free_port();
             let mut server = Command::new("openssl")
@@ -298,9 +305,14 @@ fn openssl_client_certificate_is_verified_by_our_server() {
         let client_cert = pem_to_der(&std::fs::read_to_string(dir.join("cert.pem")).unwrap());
         let mut client_roots = RootStore::new();
         client_roots.add_der(&client_cert).unwrap();
-        let sc = pki
+        let mut sc = pki
             .server_config(Profile::Default)
             .with_client_auth(ClientAuth::Required(PeerVerification::Roots(client_roots)));
+        if *key_name == "ml-dsa-44" {
+            sc.common
+                .schemes
+                .push(iron_socket_layer::enums::SignatureScheme::MlDsa44);
+        }
         let (port, h) = serve_once(sc);
         let out = s_client(
             &dir,
@@ -653,7 +665,7 @@ fn crl_to_pem(der: &[u8]) -> String {
 #[test]
 #[ignore = "needs openssl 3.5+ on PATH"]
 fn openssl_verifies_our_ml_dsa_certificate_chains() {
-    for kind in [KeyKind::MlDsa65, KeyKind::MlDsa87] {
+    for kind in [KeyKind::MlDsa44, KeyKind::MlDsa65, KeyKind::MlDsa87] {
         let pki = Pki::with_kinds(kind, kind, "server.test");
         let dir = workdir(&format!("chain-{}", kind.id().replace(':', "-")));
         std::fs::write(dir.join("ca.pem"), der_to_pem(&pki.ca_cert)).unwrap();
@@ -672,10 +684,10 @@ fn openssl_verifies_our_ml_dsa_certificate_chains() {
             "{kind:?}: {text}"
         );
         let dump = openssl(&["x509", "-in", "leaf.pem", "-noout", "-text"], &dir);
-        let name = if kind == KeyKind::MlDsa65 {
-            "ML-DSA-65"
-        } else {
-            "ML-DSA-87"
+        let name = match kind {
+            KeyKind::MlDsa44 => "ML-DSA-44",
+            KeyKind::MlDsa65 => "ML-DSA-65",
+            _ => "ML-DSA-87",
         };
         assert!(
             String::from_utf8_lossy(&dump.stdout).contains(&format!("Signature Algorithm: {name}")),

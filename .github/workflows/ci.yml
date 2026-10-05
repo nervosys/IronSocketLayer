@@ -15,11 +15,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: IronSocketLayer
-      # IronCrypto is a path dependency at ../AgenticCrypto.
+      # IronCrypto is a path dependency at ../IronCrypto.
       - uses: actions/checkout@v4
         with:
           repository: nervosys/IronCrypto
-          path: AgenticCrypto
+          path: IronCrypto
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: nervosys/IronCrypto
-          path: AgenticCrypto
+          path: IronCrypto
       - uses: dtolnay/rust-toolchain@nightly
       - name: install cargo-fuzz
         run: cargo install cargo-fuzz --locked

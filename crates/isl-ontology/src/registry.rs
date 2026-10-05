@@ -404,12 +404,13 @@ pub static REGISTRY: &[Entry] = &[
         kind: Kind::NamedGroup,
         code: 0x0200,
         summary: "Pure ML-KEM-512 key establishment.",
-        status: ImplStatus::NamedOnly,
-        status_reason: "IronCrypto implements ML-KEM-768 only.",
         fips: FipsStatus::Approved,
         post_quantum: true,
         strength: Strength { classical: 128, quantum: 128 },
         standards: &["draft-ietf-tls-mlkem", "FIPS 203"],
+        constraints: &[KEM_ENCAPS_CHECK, ONE_SHOT_EPHEMERAL],
+        edges: &[built("ic:ml-kem-512")],
+        notes: "Available by explicit configuration; named profiles retain their stronger parameter sets.",
         ..Entry::BASE
     },
     Entry {
@@ -678,12 +679,13 @@ pub static REGISTRY: &[Entry] = &[
         kind: Kind::SignatureScheme,
         code: 0x0904,
         summary: "ML-DSA-44 (FIPS 204, category 2).",
-        status: ImplStatus::NamedOnly,
-        status_reason: "IronCrypto implements ML-DSA-65 only.",
         fips: FipsStatus::Approved,
         post_quantum: true,
         strength: Strength { classical: 128, quantum: 128 },
         standards: &["draft-ietf-tls-mldsa", "FIPS 204"],
+        constraints: &[MLDSA_CTX],
+        edges: &[built("ic:ml-dsa-44")],
+        notes: "Available by explicit configuration; named profiles retain their stronger parameter sets.",
         ..Entry::BASE
     },
     Entry {
@@ -744,8 +746,8 @@ pub static REGISTRY: &[Entry] = &[
     Entry { id: "ext:signature-algorithms-cert", name: "signature_algorithms_cert", kind: Kind::Extension, code: 50, summary: "Signature schemes accepted in certificates, when different from CertificateVerify.", ..Entry::BASE },
     Entry { id: "ext:key-share", name: "key_share", kind: Kind::Extension, code: 51, summary: "Ephemeral key-exchange shares.", constraints: &[VALIDATE_SHARE, critical("one-share-per-group", "Reject a ClientHello with two shares for the same group, or a server share for a group the client did not offer.", "RFC 8446 §4.2.8: either is illegal_parameter and signals a confused or hostile peer.")], ..Entry::BASE },
     Entry { id: "ext:quic-transport-parameters", name: "quic_transport_parameters", kind: Kind::Extension, code: 57, summary: "QUIC transport parameters, carried in ClientHello and EncryptedExtensions.", standards: &["RFC 9001", "RFC 9000"], constraints: &[critical("required-under-quic", "Abort with missing_extension if a QUIC peer omits it; never send it over TCP.", "RFC 9001 §8.2.")], ..Entry::BASE },
-    Entry { id: "ext:encrypted-client-hello", name: "encrypted_client_hello", kind: Kind::Extension, code: 0xfe0d, summary: "Encrypts the inner ClientHello, hiding SNI from the network.", status: ImplStatus::Implemented, standards: &["draft-ietf-tls-esni", "RFC 9180"], constraints: &[critical("never-fall-back-to-plaintext-sni", "If ECH is configured and cannot be used, fail; never send the real name in the clear instead.", "A silent fallback reveals exactly what ECH was meant to hide, to an observer who can simply block ECH."), critical("abort-on-rejection", "When the server does not confirm ECH, authenticate it as the public name, then abort with ech_required and retry with its retry_configs.", "Continuing would send the application's data to the public-name server."), serious("fetch-configs-authentically", "Obtain the ECHConfigList over an authenticated channel (DNS-over-HTTPS or DNSSEC).", "An attacker who substitutes the configuration can decrypt the inner hello.")], notes: "Client: set ClientConfig::ech_configs to the ECHConfigList from the host's DNS HTTPS record (isl probe --ech fetches it over DNS-over-HTTPS). Server: ServerConfig::ech with ech::EchServer. HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-128/256-GCM and ChaCha20-Poly1305. The inner hello carries no resumption PSK.", edges: &[built("ic:x25519"), built("ic:hkdf-sha2-256")], ..Entry::BASE },
-    Entry { id: "ext:ech-outer-extensions", name: "ech_outer_extensions", kind: Kind::Extension, code: 0xfd00, summary: "Inside an encoded inner ClientHello, refers to extensions copied from the outer one.", status: ImplStatus::Implemented, standards: &["draft-ietf-tls-esni"], constraints: &[critical("references-must-resolve", "Every referenced extension must appear in the outer hello, in order, and never encrypted_client_hello itself.", "Otherwise the server's reconstructed inner hello differs from the client's, or loops.")], notes: "The server expands references; this client does not compress.", edges: &[pairs("ext:encrypted-client-hello")], ..Entry::BASE },
+    Entry { id: "ext:encrypted-client-hello", name: "encrypted_client_hello", kind: Kind::Extension, code: 0xfe0d, summary: "Encrypts the inner ClientHello, hiding SNI from the network.", status: ImplStatus::Implemented, standards: &["RFC 9849", "RFC 9180"], constraints: &[critical("never-fall-back-to-plaintext-sni", "If ECH is configured and cannot be used, fail; never send the real name in the clear instead.", "A silent fallback reveals exactly what ECH was meant to hide, to an observer who can simply block ECH."), critical("abort-on-rejection", "When the server does not confirm ECH, authenticate it as the public name, then abort with ech_required and retry with its retry_configs.", "Continuing would send the application's data to the public-name server."), serious("fetch-configs-authentically", "Obtain the ECHConfigList over an authenticated channel (DNS-over-HTTPS or DNSSEC).", "An attacker who substitutes the configuration can decrypt the inner hello.")], notes: "Client: set ClientConfig::ech_configs to the ECHConfigList from the host's DNS HTTPS record (isl probe --ech fetches it over DNS-over-HTTPS). Server: ServerConfig::ech with ech::EchServer. HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-128/256-GCM and ChaCha20-Poly1305. The inner hello carries no resumption PSK.", edges: &[built("ic:x25519"), built("ic:hkdf-sha2-256")], ..Entry::BASE },
+    Entry { id: "ext:ech-outer-extensions", name: "ech_outer_extensions", kind: Kind::Extension, code: 0xfd00, summary: "Inside an encoded inner ClientHello, refers to extensions copied from the outer one.", status: ImplStatus::Implemented, standards: &["RFC 9849"], constraints: &[critical("references-must-resolve", "Every referenced extension must appear in the outer hello, in order, and never encrypted_client_hello itself.", "Otherwise the server's reconstructed inner hello differs from the client's, or loops.")], notes: "The server expands references; this client does not compress.", edges: &[pairs("ext:encrypted-client-hello")], ..Entry::BASE },
     // --- alerts ---------------------------------------------------------------
     Entry { id: "alert:close-notify", name: "close_notify", kind: Kind::Alert, code: 0, summary: "Orderly closure; data after it is not accepted.", constraints: &[serious("detect-truncation", "Treat end of stream without close_notify as a possible truncation attack.", "An attacker can cut a response short and the application will not know.")], ..Entry::BASE },
     Entry { id: "alert:unexpected-message", name: "unexpected_message", kind: Kind::Alert, code: 10, summary: "A message arrived that the state machine does not permit.", ..Entry::BASE },
@@ -774,7 +776,7 @@ pub static REGISTRY: &[Entry] = &[
     Entry { id: "alert:unknown-psk-identity", name: "unknown_psk_identity", kind: Kind::Alert, code: 115, summary: "An unknown PSK identity.", ..Entry::BASE },
     Entry { id: "alert:certificate-required", name: "certificate_required", kind: Kind::Alert, code: 116, summary: "A client certificate was required and not sent.", ..Entry::BASE },
     Entry { id: "alert:no-application-protocol", name: "no_application_protocol", kind: Kind::Alert, code: 120, summary: "No mutually supported application protocol.", ..Entry::BASE },
-    Entry { id: "alert:ech-required", name: "ech_required", kind: Kind::Alert, code: 121, summary: "The client offered ECH, the server did not accept it, and the client will retry with the server's retry configurations.", standards: &["draft-ietf-tls-esni"], ..Entry::BASE },
+    Entry { id: "alert:ech-required", name: "ech_required", kind: Kind::Alert, code: 121, summary: "The client offered ECH, the server did not accept it, and the client will retry with the server's retry configurations.", standards: &["RFC 9849"], ..Entry::BASE },
     // --- key update -----------------------------------------------------------
     Entry { id: "key-update:not-requested", name: "update_not_requested", kind: Kind::KeyUpdateRequest, code: 0, summary: "The sender updated its key; the receiver need not respond.", edges: &[carried("message:key-update")], ..Entry::BASE },
     Entry { id: "key-update:requested", name: "update_requested", kind: Kind::KeyUpdateRequest, code: 1, summary: "The receiver must send its own KeyUpdate before more application data.", edges: &[carried("message:key-update")], constraints: &[serious("respond-once", "Answer with update_not_requested, never with update_requested.", "Answering a request with a request loops forever.")], ..Entry::BASE },

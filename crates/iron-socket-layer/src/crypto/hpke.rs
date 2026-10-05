@@ -409,6 +409,18 @@ mod tests {
                 "enc of {len}"
             );
         }
+        let kp = KemKeyPair::generate(&mut rng).unwrap();
+        let (enc, mut tx) = setup_sender(&kp.public, b"info", AEAD_AES_128_GCM, &mut rng).unwrap();
+        let mut rx = setup_receiver(&enc, &kp, b"info", AEAD_AES_128_GCM).unwrap();
+        for length in 0..TAG_LEN {
+            assert_eq!(
+                rx.open(b"", &vec![0; length]).unwrap_err().kind(),
+                ErrorKind::DecryptError
+            );
+            assert_eq!(rx.seq, 0);
+        }
+        let ciphertext = tx.seal(b"", b"after invalid lengths").unwrap();
+        assert_eq!(rx.open(b"", &ciphertext).unwrap(), b"after invalid lengths");
     }
 
     /// REQ-HPKE-003: a context refuses to seal or open past the last

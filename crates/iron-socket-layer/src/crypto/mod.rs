@@ -551,6 +551,56 @@ pub fn fill_random(rng: &mut dyn ic_core::traits::RandomSource, out: &mut [u8]) 
 mod tests {
     use super::*;
 
+    /// REQ-KS-001, REQ-QUIC-005: the protocol-to-crypto boundary validates
+    /// TLS vector sizes and exact header-protection key/sample lengths.
+    #[test]
+    fn crypto_interface_length_bounds() {
+        for (label, context, length) in [
+            (vec![0; MAX_LABEL_LEN + 1], vec![], 32),
+            (vec![], vec![0; 256], 32),
+            (vec![], vec![], 65_536),
+        ] {
+            let mut output = vec![0x5a; length];
+            assert_eq!(
+                hkdf_expand_label(HashAlg::Sha256, &[0; 32], &label, &context, &mut output)
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::Internal
+            );
+            assert!(output.iter().all(|b| *b == 0x5a));
+        }
+        hkdf_expand_label(
+            HashAlg::Sha256,
+            &[0; 32],
+            &vec![0; MAX_LABEL_LEN],
+            &[0; 255],
+            &mut [0; 32],
+        )
+        .unwrap();
+        for alg in [
+            AeadAlg::Aes128Gcm,
+            AeadAlg::Aes256Gcm,
+            AeadAlg::ChaCha20Poly1305,
+        ] {
+            for length in [0, alg.key_len() - 1, alg.key_len() + 1] {
+                assert_eq!(
+                    HeaderProtectionKey::new(alg, &vec![0; length])
+                        .unwrap_err()
+                        .kind(),
+                    ErrorKind::Internal
+                );
+            }
+            let key = HeaderProtectionKey::new(alg, &vec![0; alg.key_len()]).unwrap();
+            for length in [0, HP_SAMPLE_LEN - 1, HP_SAMPLE_LEN + 1] {
+                assert_eq!(
+                    key.mask(&vec![0; length]).unwrap_err().kind(),
+                    ErrorKind::Decode
+                );
+            }
+            key.mask(&[0; HP_SAMPLE_LEN]).unwrap();
+        }
+    }
+
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)

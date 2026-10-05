@@ -30,6 +30,7 @@ const KEYS: &[(&str, SignatureScheme)] = &[
     ("p521", SignatureScheme::EcdsaSecp521r1Sha512),
     ("ed25519", SignatureScheme::Ed25519),
     ("rsa2048", SignatureScheme::RsaPssRsaeSha256),
+    ("mldsa44-seed", SignatureScheme::MlDsa44),
     ("mldsa65-seed", SignatureScheme::MlDsa65),
     ("mldsa87-seed", SignatureScheme::MlDsa87),
 ];
@@ -72,7 +73,7 @@ fn der_and_pem_load_the_same_key() {
 
 #[test]
 fn ml_dsa_seed_and_both_forms_are_the_same_key() {
-    for set in ["mldsa65", "mldsa87"] {
+    for set in ["mldsa44", "mldsa65", "mldsa87"] {
         let seed = SigningKey::from_pem(&pem(&format!("{set}-seed.pem"))).unwrap();
         let both = SigningKey::from_pem(&pem(&format!("{set}-both.pem"))).unwrap();
         assert_eq!(seed.spki(), both.spki(), "{set}");
@@ -86,7 +87,7 @@ fn ml_dsa_seed_and_both_forms_are_the_same_key() {
 
 #[test]
 fn an_ml_dsa_file_whose_halves_disagree_is_refused() {
-    for set in ["mldsa65", "mldsa87"] {
+    for set in ["mldsa44", "mldsa65", "mldsa87"] {
         let text = pem(&format!("{set}-both.pem"));
         let b64: String = text.lines().filter(|l| !l.starts_with("-----")).collect();
         let mut der = decode_base64(&b64);

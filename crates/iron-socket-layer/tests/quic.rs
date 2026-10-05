@@ -124,6 +124,50 @@ fn one_rtt_key_update_stays_in_step() {
     assert_eq!(cu.generation(), 3);
 }
 
+/// REQ-KX-005, REQ-SIG-005: the explicitly configured smaller sets also
+/// authenticate QUIC v1 and v2 and produce matching packet protection keys.
+#[test]
+fn quic_small_post_quantum_parameter_sets_complete() {
+    use iron_socket_layer::enums::SignatureScheme;
+    let pki = Pki::with_kinds(KeyKind::MlDsa44, KeyKind::MlDsa44, "server.test");
+    for version in [Version::V1, Version::V2] {
+        let mut cc = pki.client_config(Profile::PostQuantum).with_alpn(&[b"h3"]);
+        let mut sc = pki.server_config(Profile::PostQuantum).with_alpn(&[b"h3"]);
+        cc.common.groups = vec![NamedGroup::MlKem512];
+        sc.common.groups = vec![NamedGroup::MlKem512];
+        cc.common.schemes = vec![SignatureScheme::MlDsa44];
+        sc.common.schemes = vec![SignatureScheme::MlDsa44];
+        let mut c = Side {
+            conn: QuicConnection::client(Arc::new(cc), "server.test", b"client", version).unwrap(),
+            installed: vec![],
+        };
+        let mut s = Side {
+            conn: QuicConnection::server(Arc::new(sc), b"server", version).unwrap(),
+            installed: vec![],
+        };
+        for _ in 0..6 {
+            pump(&mut c, &mut s);
+            pump(&mut s, &mut c);
+        }
+        assert_eq!(c.conn.state(), HandshakeState::Connected);
+        assert_eq!(s.conn.state(), HandshakeState::Connected);
+        assert_eq!(c.conn.report().group, Some(NamedGroup::MlKem512));
+        assert_eq!(
+            c.conn.report().peer_signature_scheme,
+            Some(SignatureScheme::MlDsa44)
+        );
+        assert!(c.conn.report().has(Property::PostQuantumAuthentication));
+        let cw = key(&c, Level::Application, true);
+        let sr = key(&s, Level::Application, false);
+        let mut packet = *b"post-quantum";
+        let tag = cw.keys.packet.seal(1, b"header", &mut packet).unwrap();
+        let mut protected = packet.to_vec();
+        protected.extend_from_slice(&tag);
+        sr.keys.packet.open(1, b"header", &mut protected).unwrap();
+        assert_eq!(&protected[..packet.len()], b"post-quantum");
+    }
+}
+
 #[test]
 fn quic_without_alpn_is_refused_before_anything_is_sent() {
     let pki = Pki::new(KeyKind::EcdsaP256, "server.test");

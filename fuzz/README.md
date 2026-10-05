@@ -76,3 +76,12 @@ are the next step.
 
 When a target does crash, fix the cause and add the input as a regression test
 in `crates/iron-socket-layer/tests/robustness.rs`.
+
+## Longer campaign, 2026-10-05
+
+All six targets completed ten-minute campaigns under AddressSanitizer, with
+169,688,310 total executions and no crashes or sanitizer reports. The corpus
+includes ML-KEM-512 handshakes and ML-DSA-44 certificates. Per-target counts,
+coverage and limitations are in [the verification report](../docs/VERIFICATION-2026-10-05.md).
+The repeatable Windows runner is `./scripts/fuzz.ps1 -Seconds 600` from the
+repository root; it generates seeds from `fuzz/` and checks completion.

@@ -1,6 +1,6 @@
 //! Key exchange for every implemented `NamedGroup`, over IronCrypto.
 //!
-//! Classical ECDHE (X25519, P-256, P-384, P-521), pure ML-KEM-768 and
+//! Classical ECDHE (X25519, P-256, P-384, P-521), pure ML-KEM-512, ML-KEM-768 and
 //! ML-KEM-1024 (draft-ietf-tls-mlkem), and three hybrids
 //! (draft-ietf-tls-ecdhe-mlkem): X25519MLKEM768, SecP256r1MLKEM768 and
 //! SecP384r1MLKEM1024.
@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 
 use ic_core::traits::{KeyAgreement, RandomSource};
 use ic_core::Zeroizing;
-use ic_mlkem::{MlKem1024, MlKem768};
+use ic_mlkem::{MlKem1024, MlKem512, MlKem768};
 
 use crate::enums::NamedGroup;
 use crate::error::{Error, ErrorKind, Result};
@@ -46,6 +46,8 @@ pub const IMPLEMENTED_GROUPS: &[NamedGroup] = &[
     // their shares are over 1.5 KB.
     NamedGroup::SecP384r1MlKem1024,
     NamedGroup::MlKem1024,
+    // Category 1 is available only by explicit configuration.
+    NamedGroup::MlKem512,
 ];
 
 /// Whether this build implements `group`.
@@ -60,6 +62,7 @@ pub fn ic_ids(group: NamedGroup) -> &'static [&'static str] {
         NamedGroup::Secp256r1 => &["ecdh-p256"],
         NamedGroup::Secp384r1 => &["ecdh-p384"],
         NamedGroup::Secp521r1 => &["ecdh-p521"],
+        NamedGroup::MlKem512 => &["ml-kem-512"],
         NamedGroup::MlKem768 => &["ml-kem-768"],
         NamedGroup::X25519MlKem768 => &["ml-kem-768", "x25519"],
         NamedGroup::SecP256r1MlKem768 => &["ecdh-p256", "ml-kem-768"],
@@ -191,6 +194,7 @@ fn ec_of(group: NamedGroup) -> Option<Ec> {
 /// An ML-KEM parameter set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kem {
+    K512,
     K768,
     K1024,
 }
@@ -200,6 +204,11 @@ enum Kem {
 macro_rules! with_kem {
     ($kem:expr, $m:ident, $t:ident, $body:expr) => {
         match $kem {
+            Kem::K512 => {
+                use ic_mlkem::kem512 as $m;
+                type $t = MlKem512;
+                $body
+            }
             Kem::K768 => {
                 use ic_mlkem::kem as $m;
                 type $t = MlKem768;
@@ -289,8 +298,11 @@ impl Kem {
 }
 
 /// The parameter set of a pure ML-KEM group.
+/// REQ-KX-005: all three ML-KEM parameter sets use their corresponding
+/// IronCrypto implementation, including explicitly configured ML-KEM-512.
 fn pure_kem_of(group: NamedGroup) -> Option<Kem> {
     match group {
+        NamedGroup::MlKem512 => Some(Kem::K512),
         NamedGroup::MlKem768 => Some(Kem::K768),
         NamedGroup::MlKem1024 => Some(Kem::K1024),
         _ => None,
@@ -484,6 +496,32 @@ pub fn respond(
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+
+    /// REQ-KX-005: a direct ML-KEM-512 peer detects accidentally routing
+    /// both TLS endpoints to another parameter set.
+    #[test]
+    fn mlkem512_agrees_with_the_parameter_specific_ironcrypto_api() {
+        use ic_mlkem::kem512 as m;
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let client = KeyShare::generate(NamedGroup::MlKem512, &mut rng).unwrap();
+        let ek: &[u8; m::ENCAPS_KEY_LEN] = client.public().try_into().unwrap();
+        let mut ct = [0u8; m::CIPHERTEXT_LEN];
+        let mut peer_secret = Zeroizing::new([0u8; m::SHARED_SECRET_LEN]);
+        MlKem512::encapsulate(&mut rng, ek, &mut ct, peer_secret.get_mut()).unwrap();
+        assert_eq!(client.complete(&ct).unwrap().get(), peer_secret.get());
+
+        let mut ek = [0u8; m::ENCAPS_KEY_LEN];
+        let mut dk = Zeroizing::new([0u8; m::DECAPS_KEY_LEN]);
+        MlKem512::keygen(&mut rng, &mut ek, dk.get_mut()).unwrap();
+        let (ct, ours) = respond(NamedGroup::MlKem512, &ek, &mut rng).unwrap();
+        MlKem512::decapsulate(
+            dk.get(),
+            ct.as_slice().try_into().unwrap(),
+            peer_secret.get_mut(),
+        )
+        .unwrap();
+        assert_eq!(ours.get(), peer_secret.get());
+    }
 
     #[test]
     fn every_group_agrees_with_itself() {

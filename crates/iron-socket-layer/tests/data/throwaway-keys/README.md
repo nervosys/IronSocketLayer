@@ -4,6 +4,9 @@ These private keys protect nothing. They were generated for
 `tests/key_loading.rs` with OpenSSL 3.5.7 on 2026-09-29, so that key loading
 is checked against an independent implementation:
 
+The ML-DSA-44 fixtures were added with OpenSSL 3.5.7 on 2026-10-05 using
+the same commands below, substituting `44` for `65`.
+
 ```console
 $ openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out p256.pem   # likewise P-384, P-521
 $ openssl genpkey -algorithm ED25519 -out ed25519.pem

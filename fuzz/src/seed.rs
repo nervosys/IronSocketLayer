@@ -118,6 +118,7 @@ fn main() {
             iron_socket_layer::enums::NamedGroup::SecP384r1MlKem1024,
         ),
         ("mlkem1024", iron_socket_layer::enums::NamedGroup::MlKem1024),
+        ("mlkem512", iron_socket_layer::enums::NamedGroup::MlKem512),
     ] {
         let mut kc = (*client_config()).clone();
         kc.common.groups = vec![group];
@@ -197,6 +198,10 @@ fn main() {
     write("pki", "ech-configs", &with_sel(4, p.ech.config_list()));
     // Post-quantum certificates, self-signed, for the X.509 parser.
     for (name, kind) in [
+        (
+            "mldsa44-cert",
+            iron_socket_layer::crypto::sign::KeyKind::MlDsa44,
+        ),
         (
             "mldsa65-cert",
             iron_socket_layer::crypto::sign::KeyKind::MlDsa65,

@@ -95,4 +95,4 @@ This harness shows their effect here without any change to the library.
 * **wolfSSL.** It is not installed on this machine, and no figure for it is
   claimed anywhere in this repository. Adding it means building wolfSSL with
   its assembly enabled and driving it through its C API from this harness.
-* Anything across a real network, memory footprint, or code size.
+* Anything across a real network, final linked firmware size, or peak heap/stack use. Unlinked Cortex-M4 protocol-object size and host inline storage are measured separately in [the verification report](../docs/VERIFICATION-2026-10-05.md); they are not firmware flash/RAM budgets.

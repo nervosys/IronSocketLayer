@@ -372,6 +372,55 @@ pub fn write_plaintext(ty: ContentType, content: &[u8], out: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
+    /// REQ-REC-007: empirical Welch comparison of equal-length records with
+    /// short and long padding. This host measurement is evidence, not proof
+    /// of constant-time execution. Run an optimized build on a quiet machine.
+    #[test]
+    #[ignore = "statistical timing experiment; run in release mode on an idle host"]
+    fn padding_scan_timing_experiment() {
+        use std::time::Instant;
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut classes = [vec![0u8; 16_384], vec![0u8; 16_384]];
+        classes[0][0] = 23;
+        classes[1][16_383] = 23;
+        for class in &classes {
+            for _ in 0..1000 {
+                core::hint::black_box(content_end(core::hint::black_box(class)));
+            }
+        }
+        let mut count = [0u32; 2];
+        let mut mean = [0f64; 2];
+        let mut m2 = [0f64; 2];
+        for _ in 0..20_000 {
+            let mut choice = [0u8; 1];
+            rng.fill(&mut choice).unwrap();
+            let class = usize::from(choice[0] & 1);
+            let input = &classes[class];
+            let start = Instant::now();
+            for _ in 0..64 {
+                core::hint::black_box(content_end(core::hint::black_box(input)));
+            }
+            let elapsed = start.elapsed().as_nanos() as f64 / 64.0;
+            count[class] += 1;
+            let delta = elapsed - mean[class];
+            mean[class] += delta / f64::from(count[class]);
+            m2[class] += delta * (elapsed - mean[class]);
+        }
+        let variance = [
+            m2[0] / f64::from(count[0] - 1),
+            m2[1] / f64::from(count[1] - 1),
+        ];
+        let denominator =
+            (variance[0] / f64::from(count[0]) + variance[1] / f64::from(count[1])).sqrt();
+        assert!(denominator > 0.0);
+        let t = (mean[0] - mean[1]) / denominator;
+        println!("padding scan: samples={count:?}, mean_ns={mean:?}, Welch_t={t:.4}");
+        assert!(
+            t.abs() < 4.5,
+            "timing difference detected; investigate and repeat on an idle host"
+        );
+    }
+
     fn pair(suite: CipherSuite) -> (Protector, Protector) {
         let secret =
             Output::from_slice(&[0x42; 48][..suite_params(suite).unwrap().1.len()]).unwrap();
@@ -439,6 +488,58 @@ mod tests {
         assert!(take_record(&mut buf).is_err());
         let mut buf = alloc::vec![22, 3, 3, 0, 4, 1];
         assert!(take_record(&mut buf).unwrap().is_none());
+    }
+
+    /// REQ-REC-001, REQ-REC-004, REQ-REC-006: callers of the record API get
+    /// the same size and exhaustion checks as connections using the framer.
+    #[test]
+    fn record_boundaries_are_checked_directly() {
+        for &suite in IMPLEMENTED_SUITES {
+            let (mut w, mut r) = pair(suite);
+            let mut wire = Vec::new();
+            assert_eq!(
+                w.seal(
+                    ContentType::ApplicationData,
+                    &vec![0; MAX_PLAINTEXT + 1],
+                    0,
+                    &mut wire
+                )
+                .unwrap_err()
+                .kind(),
+                ErrorKind::Internal
+            );
+            assert!(wire.is_empty());
+            let header = [23, 3, 3, 0, 0];
+            assert_eq!(
+                r.open(&header, &mut vec![0; MAX_CIPHERTEXT + 1])
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::RecordOverflow
+            );
+            for length in 0..=TAG_LEN {
+                assert_eq!(
+                    r.open(&header, &mut vec![0; length]).unwrap_err().kind(),
+                    ErrorKind::BadRecordMac
+                );
+            }
+            // Refuse before AEAD processing, on both encryption and decryption.
+            let limit = w.key.alg().confidentiality_limit();
+            for sequence in [limit, u64::MAX] {
+                w.set_seq_for_test(sequence);
+                r.set_seq_for_test(sequence);
+                assert_eq!(
+                    w.seal(ContentType::ApplicationData, b"x", 0, &mut wire)
+                        .unwrap_err()
+                        .kind(),
+                    ErrorKind::KeyExhausted
+                );
+                assert_eq!(
+                    r.open(&header, &mut [0; TAG_LEN + 1]).unwrap_err().kind(),
+                    ErrorKind::KeyExhausted
+                );
+                assert!(wire.is_empty());
+            }
+        }
     }
 
     /// REQ-REC-001, REQ-REC-006: the key is retired at its limit, before the
