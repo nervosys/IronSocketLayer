@@ -44,12 +44,16 @@ $profile = Join-Path $output 'merged.profdata'
 if ($LASTEXITCODE -ne 0) { throw 'Profile merge failed' }
 # cargo-llvm-cov 0.8.4 misses test executables in newer Cargo build layouts.
 # Locate them directly, restricting objects to this library's tests.
+# Test binaries are named after tests/*.rs, so new ones are included without
+# editing this script.
+$binaries = @('iron_socket_layer') + @(Get-ChildItem crates/iron-socket-layer/tests -Filter '*.rs' | ForEach-Object BaseName)
+$binaryPattern = '^(' + (($binaries | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')-'
 $objects = @(Get-ChildItem $output -Filter '*.exe' -Recurse | Where-Object {
     $_.FullName -match '[\\/]build[\\/]iron-socket-layer[\\/]' -or
-    ($_.DirectoryName -match '[\\/]deps$' -and $_.Name -match '^(iron_socket_layer|config|conformance|crl|early_data|ech|external_psk|fips|handshake|interop|key_loading|ocsp|ontology_agreement|openssl_cnsa2|openssl_interop|post_handshake_auth|quic|resumption|robustness|stream|traceability)-')
+    ($_.DirectoryName -match '[\\/]deps$' -and $_.Name -match $binaryPattern)
 } | ForEach-Object { '--object=' + $_.FullName })
 if ($objects.Count -eq 0) { throw 'No instrumented test executables found' }
-$common = $objects + @("--instr-profile=$profile", '--ignore-filename-regex=(tests|IronCrypto|registry)')
+$common = $objects + @("--instr-profile=$profile", '--ignore-filename-regex=(tests|IronCrypto|registry|rustc)')
 & (Join-Path $llvm 'llvm-cov.exe') report @common --show-branch-summary |
     Tee-Object -FilePath (Join-Path $output 'summary.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Coverage report failed' }

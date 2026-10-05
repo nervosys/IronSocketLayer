@@ -1020,6 +1020,45 @@ impl KeyKind {
     }
 }
 
+/// Build IronCrypto's lazily initialized curve tables now. `REQ-FIX-002`.
+///
+/// With `std`, IronCrypto builds the P-256, P-384, P-521 and Ed25519 generator
+/// tables, and Ed25519's verification table, on first use, and that
+/// allocates. The fixed-capacity engine calls this while it initializes, so no
+/// later handshake operation does. It runs once per process, from a constant
+/// seed: the keys and signatures are discarded, and callers' random sources
+/// are not consumed. Without `std` IronCrypto has no such tables and this does
+/// nothing.
+pub fn prepare_tables() -> Result<()> {
+    #[cfg(feature = "std")]
+    {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static READY: AtomicBool = AtomicBool::new(false);
+        if READY.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut rng = ic_drbg::Rng::from_entropy(&[0x5a; 48], b"isl curve tables")
+            .map_err(|_| Error::new(ErrorKind::Internal, "table preparation"))?;
+        for (kind, scheme) in [
+            (KeyKind::EcdsaP256, SignatureScheme::EcdsaSecp256r1Sha256),
+            (KeyKind::EcdsaP384, SignatureScheme::EcdsaSecp384r1Sha384),
+            (KeyKind::EcdsaP521, SignatureScheme::EcdsaSecp521r1Sha512),
+            (KeyKind::Ed25519, SignatureScheme::Ed25519),
+        ] {
+            let key = SigningKey::generate(kind, &mut rng)?;
+            let signature = key.sign(scheme, b"table", &mut rng)?;
+            verify(
+                scheme,
+                &PublicKey::from_spki(key.spki())?,
+                b"table",
+                &signature,
+            )?;
+        }
+        READY.store(true, Ordering::Release);
+    }
+    Ok(())
+}
+
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;

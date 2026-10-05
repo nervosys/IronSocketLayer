@@ -1,106 +1,17 @@
-//! Fixed engine acceptance: an allocator counter is confined to this test binary.
-//! The library retains forbid(unsafe_code); unsafe delegation below is solely
-//! the standard GlobalAlloc instrumentation interface, never protocol code.
+//! Fixed engine acceptance, with an allocator counter confined to this test
+//! binary (see `fixed_support`).
 mod common;
+mod fixed_support;
 
 use common::*;
+use fixed_support::{no_alloc, Buffers};
 use iron_socket_layer::config::{ClientAuth, PeerVerification, Profile};
 use iron_socket_layer::crypto::{kx, sign::KeyKind};
-use iron_socket_layer::fixed::{Connection, Limits, Storage};
+use iron_socket_layer::fixed::{Connection, Limits};
 use iron_socket_layer::record::IMPLEMENTED_SUITES;
 use iron_socket_layer::report::Property;
 use iron_socket_layer::ErrorKind;
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 
-thread_local! { static GATE: Cell<bool> = const { Cell::new(false) }; static ALLOCATIONS: Cell<usize> = const { Cell::new(0) }; }
-struct CountingAllocator;
-fn count() {
-    if GATE.try_with(Cell::get).unwrap_or(false) {
-        let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
-    }
-}
-// SAFETY: each operation forwards its exact pointer/layout contract to System.
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count();
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        count();
-        unsafe { System.alloc_zeroed(layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, n: usize) -> *mut u8 {
-        count();
-        unsafe { System.realloc(ptr, layout, n) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
-struct Gate;
-impl Gate {
-    fn new() -> Self {
-        ALLOCATIONS.with(|n| n.set(0));
-        GATE.with(|g| g.set(true));
-        Self
-    }
-}
-impl Drop for Gate {
-    fn drop(&mut self) {
-        GATE.with(|g| g.set(false));
-    }
-}
-fn no_alloc<T>(f: impl FnOnce() -> T) -> T {
-    let gate = Gate::new();
-    let value = f();
-    drop(gate);
-    assert_eq!(
-        ALLOCATIONS.with(Cell::get),
-        0,
-        "allocation after initialization"
-    );
-    value
-}
-
-struct Buffers {
-    record: Vec<u8>,
-    handshake: Vec<u8>,
-    outgoing: Vec<u8>,
-    application: Vec<u8>,
-    certificates: Vec<u8>,
-    private_key: Vec<u8>,
-    public_key: Vec<u8>,
-    scratch: Vec<u8>,
-}
-impl Buffers {
-    fn new() -> Self {
-        Self {
-            record: vec![0; 16645],
-            handshake: vec![0; 32768],
-            outgoing: vec![0; 65536],
-            application: vec![0; 32768],
-            certificates: vec![0; 32768],
-            private_key: vec![0; 3234],
-            public_key: vec![0; 1665],
-            scratch: vec![0; 32768],
-        }
-    }
-    fn storage(&mut self) -> Storage<'_> {
-        Storage {
-            record: &mut self.record,
-            handshake: &mut self.handshake,
-            outgoing: &mut self.outgoing,
-            application: &mut self.application,
-            certificates: &mut self.certificates,
-            private_key: &mut self.private_key,
-            public_key: &mut self.public_key,
-            scratch: &mut self.scratch,
-        }
-    }
-}
 fn transfer(
     from: &mut Connection<'_>,
     to: &mut Connection<'_>,
@@ -184,10 +95,13 @@ fn fixed_full_handshake_and_records_do_not_allocate() {
                 c.export(b"test", b"context", &mut ce).unwrap();
                 s.export(b"test", b"context", &mut se).unwrap();
                 assert_eq!(ce, se);
+                assert!(!c.peer_closed() && !s.peer_closed());
                 c.close().unwrap();
                 transfer(&mut c, &mut s, 3).unwrap();
+                assert!(s.peer_closed() && !c.peer_closed());
                 s.close().unwrap();
                 transfer(&mut s, &mut c, 3).unwrap();
+                assert!(c.peer_closed());
             });
         }
     }
@@ -761,4 +675,39 @@ fn an_empty_record_does_not_stall_the_engine() {
             "an empty record of type {body_type} was accepted"
         );
     }
+}
+
+/// REQ-FIX-004: a long-lived connection rekeys any number of times, in both
+/// directions and on the peer's request, without using up a bounded resource
+/// (audit event slots in particular) and without allocating.
+#[test]
+fn key_updates_are_unbounded_in_number() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let (cc, sc) = mtls(&pki);
+    let (mut cb, mut sb) = (Buffers::new(), Buffers::new());
+    let mut cr = seeded(true);
+    let mut sr = seeded(false);
+    let mut c =
+        Connection::client(&cc, "server.test", &mut cr, cb.storage(), Limits::default()).unwrap();
+    let mut s = Connection::server(&sc, &mut sr, sb.storage(), Limits::default()).unwrap();
+    no_alloc(|| {
+        pump(&mut c, &mut s, 4096).unwrap();
+        let mut out = [0u8; 16];
+        for round in 0..300u32 {
+            // Each side in turn asks the other to update as well.
+            let (a, b) = if round % 2 == 0 {
+                (&mut c, &mut s)
+            } else {
+                (&mut s, &mut c)
+            };
+            a.key_update(true).unwrap();
+            transfer(a, b, 4096).unwrap();
+            transfer(b, a, 4096).unwrap();
+            b.write_application(&round.to_be_bytes()).unwrap();
+            transfer(b, a, 4096).unwrap();
+            let n = a.read_application(&mut out).unwrap();
+            assert_eq!(&out[..n], &round.to_be_bytes(), "round {round}");
+        }
+        assert!(c.is_connected() && s.is_connected());
+    });
 }

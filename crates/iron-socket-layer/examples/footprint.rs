@@ -1,6 +1,7 @@
 //! Report inline storage on this host. Owned buffers and Arc allocations are
 //! excluded; these values are not peak heap use or an embedded RAM budget.
-use iron_socket_layer::{config, quic::QuicConnection, report::SessionReport, Connection};
+//! The fixed engine's storage is whatever the caller lends it, in addition.
+use iron_socket_layer::{config, fixed, quic::QuicConnection, report::SessionReport, Connection};
 
 fn main() {
     for (name, bytes) in [
@@ -9,6 +10,14 @@ fn main() {
         ("ClientConfig", core::mem::size_of::<config::ClientConfig>()),
         ("ServerConfig", core::mem::size_of::<config::ServerConfig>()),
         ("SessionReport", core::mem::size_of::<SessionReport>()),
+        (
+            "fixed::Connection",
+            core::mem::size_of::<fixed::Connection<'static>>(),
+        ),
+        (
+            "fixed::Report",
+            core::mem::size_of::<fixed::Report<'static>>(),
+        ),
     ] {
         println!("{name}: {bytes} inline bytes");
     }

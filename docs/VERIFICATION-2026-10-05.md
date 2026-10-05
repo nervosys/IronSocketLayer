@@ -118,7 +118,86 @@ it is not final firmware flash size or a RAM bound.
 Host inline storage (64-bit): Connection 2,080 bytes; QuicConnection 2,256;
 ClientConfig 328; ServerConfig 280; SessionReport 376. Owned Vec/Box/Arc
 allocations and stack scratch space are excluded. These figures predate the
-fixed-capacity engine, whose change stores AEAD state inline in each record
-protector; they were not re-measured. Peak stack measurements and execution on
+fixed-capacity engine, which stores AEAD state inline in each record
+protector; the addendum below re-measures them. Peak stack measurements and execution on
 physical hardware remain open in [READINESS.md](READINESS.md), which also
 summarizes the fixed-capacity engine's host evidence.
+
+## Addendum: fixed-capacity engine
+
+Measured later on 2026-10-05 with the fixed-capacity engine
+(`iron_socket_layer::fixed`) in place, same host and IronCrypto commit.
+
+### Footprint
+
+`scripts/footprint.ps1`, same settings as above: protocol object text =
+378,368 bytes (was 311,594; the difference is mostly the fixed engine);
+data = 0; BSS = 0. Object SHA-256:
+`1fb098d856ef34861ddbd7d5d4f58b74acf9cc7c829909c4dbb7a93f45d88561`.
+
+Host inline storage (64-bit): Connection 3,136 bytes (was 2,080: the AEAD
+state is now inline rather than boxed); QuicConnection 3,312; ClientConfig
+328; ServerConfig 280; SessionReport 376; `fixed::Connection` 5,056;
+`fixed::Report` 168. The fixed engine's buffers are whatever the caller
+lends it, in addition; the tests use about 250 KiB per endpoint and find the
+minimum for each buffer by search.
+
+### Stack
+
+Cortex-M4 per-function frames, from the compiler (`-Z emit-stack-sizes`, now
+part of the footprint script, which writes the 40 largest). Largest in the
+fixed engine's path: `fixed::Connection::client` 7,936 bytes (it builds the
+5 KiB connection value), `crypto::hkdf_extract` 5,432 and
+`crypto::hkdf_expand` 5,368 (IronCrypto's HMAC state, inlined; its
+`Hmac<Sha384>::new` alone is 3,624), `x509::verify_chain_fixed` 3,872,
+`fixed::hello_fingerprint` 1,840, `fixed::Connection::install_handshake`
+1,800. These are single frames, not a call-chain worst case: no call-graph
+tool was available, and the path search recurses (bounded at depth 8).
+IronCrypto's own frames are not in this object.
+
+Host peak thread stack, Linux x86_64 under WSL, release build, rustc 1.95.0,
+from `cargo run --release --example fixed_stack`. Each figure is the smallest
+4 KiB-granular thread stack, found by binary search in fresh processes, on
+which a complete mutual-TLS session succeeds. The session covers both
+constructors (including the one-time curve-table build), the handshake, data
+both ways, KeyUpdate, an exporter and close. Both endpoints' connection values
+are on that stack.
+
+| Case | Stack |
+|---|---:|
+| ECDSA P-256/P-384/P-521 or Ed25519 keys, SecP384r1MLKEM1024 | 64 KiB |
+| ECDSA P-256, each other implemented group | 60–64 KiB |
+| ML-DSA-44 keys | 128 KiB |
+| ML-DSA-65 keys | 184 KiB |
+| ML-DSA-87 keys | 264 KiB |
+| IronCrypto alone: ML-DSA-44 / 65 / 87 sign | 112 / 164 / 248 KiB |
+| IronCrypto alone: ML-DSA-44 / 65 / 87 verify | 84 / 124 / 192 KiB |
+| IronCrypto alone: Ed25519 verify | 36 KiB |
+| IronCrypto alone: ECDSA sign or verify, any curve | ≤ 16 KiB (platform minimum) |
+
+ML-DSA dominates, and its stack is IronCrypto's: the session figure is the
+primitive's plus about 16 KiB. That is an IronCrypto item, recorded in
+[READINESS.md](READINESS.md). Host frames differ from Cortex-M4 frames, so
+these are not target figures.
+
+### Interoperability, robustness and fuzzing
+
+`tests/openssl_fixed.rs` runs against OpenSSL 3.5.7 with every engine call
+allocation-gated. It covers the fixed client against `s_server` for 8 key types
+× 10 groups, `s_client` against the fixed server for 7 key kinds × 10 groups,
+client certificates in both directions, and 80 KeyUpdates each asking
+OpenSSL to update too. All 5 tests pass. The owned-engine interoperability
+suite (13) and CNSA 2.0 still pass.
+
+The OpenSSL runs found two defects that the in-process tests had missed.
+Each peer KeyUpdate recorded an audit event, so the 64-slot default failed a
+session after about 55 updates. And the first ECDSA verification in a
+process built IronCrypto's P-256 table inside the allocation gate. Both
+were fixed, each with a test that failed before its fix: 
+`key_updates_are_unbounded_in_number`, and `tests/fixed_cold_start.rs`, which
+needs a separate process because any earlier key generation hides the
+allocation.
+
+`tests/robustness.rs` now runs 1,500 seeded mutations across the three
+flights of a fixed-engine handshake. Ignoring the Finished check makes it
+fail; the in-process fixed tests did not catch that mutation.

@@ -208,6 +208,7 @@ impl<'a> Connection<'a> {
         limits: Limits,
     ) -> Result<Self> {
         config.validate()?;
+        sign::prepare_tables()?;
         if config.ech_configs.is_some()
             || config.external_psk.is_some()
             || config.tickets.is_some()
@@ -249,6 +250,7 @@ impl<'a> Connection<'a> {
         limits: Limits,
     ) -> Result<Self> {
         config.validate()?;
+        sign::prepare_tables()?;
         if config.ech.is_some()
             || !config.external_psks.is_empty()
             || config.tickets.is_some()
@@ -503,6 +505,11 @@ impl<'a> Connection<'a> {
     /// Whether the handshake completed successfully.
     pub fn is_connected(&self) -> bool {
         self.report.state == State::Connected && self.report.error.is_none()
+    }
+    /// Whether the peer sent an authenticated close_notify. A transport that
+    /// ends while this is false may have been truncated. `REQ-FIX-004`.
+    pub fn peer_closed(&self) -> bool {
+        self.peer_closed
     }
     /// Encoded records ready for the transport. Borrow ends before further mutation.
     pub fn outgoing(&self) -> &[u8] {
@@ -999,7 +1006,9 @@ impl<'a> Connection<'a> {
                 if body[0] == 1 {
                     self.key_update_inner(false)?;
                 }
-                self.transition(State::Connected)
+                // Not a transition: recording one per update would let a peer
+                // (or a long-lived session) exhaust the audit event slots.
+                Ok(())
             }
             (State::Connected, 4, true) => {
                 // Tickets were not enabled. Validate framing before discarding an unsolicited ticket.

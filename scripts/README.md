@@ -10,6 +10,7 @@ They do not publish, delete corpora, or change source files.
 python scripts/coverage_gaps.py target/coverage-whole-suite/coverage.json target/coverage-whole-suite/gaps.csv
 python scripts/coverage_gaps.py target/coverage-requirements/coverage.json target/coverage-requirements/gaps.csv
 ./scripts/footprint.ps1
+cargo run --release -p iron-socket-layer --example fixed_stack   # on Linux
 ./scripts/fuzz.ps1 -Seconds 600
 cargo test -p iron-socket-layer --release --lib padding_scan_timing_experiment -- --ignored --nocapture
 ```
@@ -27,9 +28,18 @@ Requirements-only coverage selects test names cited by Test rows in
 Analysis rows are not executable tests. Their separate verification results
 must accompany this report; a coverage percentage is not certification credit.
 
-Footprint requires `llvm-size` on PATH and the Cortex-M4 target installed.
-It measures an unlinked protocol object without LTO and host inline struct
-storage. It does not measure final firmware flash, live heap or stack use.
+Footprint requires `llvm-size`, `llvm-readobj` and `llvm-cxxfilt` on PATH and
+the Cortex-M4 target installed. It measures an unlinked protocol object without
+LTO, host inline struct storage, and the 40 largest Cortex-M4 stack frames
+(`-Z emit-stack-sizes`, enabled on stable with `RUSTC_BOOTSTRAP`). Frames are
+per function, not a call-chain worst case. It does not measure final firmware
+flash, live heap or stack use.
+
+`fixed_stack` measures the host thread stack a complete fixed-engine session
+needs, per key kind and group, plus IronCrypto's ML-DSA and Ed25519
+operations alone. Each probe is a fresh child process. Run it on Linux, where
+stacks are 4 KiB-granular; Windows reserves 64 KiB units. Host figures are not
+target figures.
 
 Fuzzing requires nightly and cargo-fuzz. On Windows the MSVC AddressSanitizer
 runtime directory must be on PATH (see `fuzz/README.md`). Campaigns run
