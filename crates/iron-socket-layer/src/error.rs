@@ -297,6 +297,8 @@ impl Error {
     }
 }
 
+/// `REQ-RPT-001`: the text leads with the stable error id and names the
+/// peer's alert when there was one.
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.kind.id(), self.context)?;

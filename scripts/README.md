@@ -9,6 +9,7 @@ They do not publish, delete corpora, or change source files.
 ./scripts/coverage.ps1 -RequirementsOnly
 python scripts/coverage_gaps.py target/coverage-whole-suite/coverage.json target/coverage-whole-suite/gaps.csv
 python scripts/coverage_gaps.py target/coverage-requirements/coverage.json target/coverage-requirements/gaps.csv
+python scripts/coverage_review.py target/coverage-whole-suite/gaps.csv docs/evidence/coverage-review.csv
 ./scripts/footprint.ps1
 cargo run --release -p iron-socket-layer --example fixed_stack   # on Linux
 ./scripts/fuzz.ps1 -Seconds 600
@@ -22,6 +23,13 @@ dedicated output directory when changing the toolchain or test binary set.
 The gap inventory merges branch locations across instantiations and excludes
 the trailing unit-test modules; raw LLVM file summaries still include unit-test
 source. This is branch coverage, not MC/DC.
+
+`coverage_review.py` checks a gap inventory against the reviewed
+dispositions in `docs/evidence/coverage-review.csv`. It fails if a gap has no
+disposition, if a disposition no longer matches a gap (and is not `tested`),
+or if a gap marked `tested` is still uncovered. `--template FILE` writes the
+unreviewed gaps as rows to fill in. Dispositions are the author's, not an
+independent review.
 
 Requirements-only coverage selects test names cited by Test rows in
 `docs/TRACEABILITY.md`. Ignored network/OpenSSL tests remain ignored and

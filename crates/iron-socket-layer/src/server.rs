@@ -630,6 +630,8 @@ impl ServerHs {
             }
         }
         let ours = &ours;
+        // REQ-NEG-001: the server's preference order, or the client's when
+        // the server is configured not to prefer its own.
         let pick = if self.config.prefer_server_order {
             ours.iter().copied().find(|s| ch.suites.contains(s))
         } else {

@@ -1228,6 +1228,7 @@ impl ClientHs {
             self.config.verification,
             PeerVerification::PinnedSpki { .. }
         );
+        // REQ-PQA-001.
         // Post-quantum authentication holds only if every signature in the
         // session -- the server's chain and CertificateVerify, and ours if we
         // authenticated -- is ML-DSA.

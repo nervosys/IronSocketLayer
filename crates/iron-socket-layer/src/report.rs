@@ -252,6 +252,8 @@ impl SessionReport {
         self.properties.contains(&p)
     }
 
+    /// `REQ-RPT-002`: the trail keeps the first 256 events, and an event
+    /// without detail serializes without a detail member.
     pub(crate) fn event(&mut self, id: &'static str, detail: &str) {
         // Bounded: a hostile peer must not grow the trail without limit.
         if self.events.len() < 256 {

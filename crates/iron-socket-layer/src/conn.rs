@@ -623,6 +623,7 @@ impl Core {
         if self.is_quic() {
             return Err(Error::new(
                 ErrorKind::UnexpectedMessage,
+                // REQ-QUIC-006: RFC 9001 §6 replaces KeyUpdate with QUIC key phases.
                 "QUIC forbids the TLS KeyUpdate message",
             ));
         }
@@ -1017,6 +1018,7 @@ impl Connection {
     }
 
     /// Whether there are bytes waiting in [`Connection::take_tls`].
+    /// `REQ-CONN-008`: true exactly when bytes are queued for the transport.
     pub fn wants_write(&self) -> bool {
         matches!(&self.core.transport, Transport::Tls { outgoing, .. } if !outgoing.is_empty())
     }

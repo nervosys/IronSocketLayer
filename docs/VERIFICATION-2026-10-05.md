@@ -207,3 +207,34 @@ keys and a changed encrypted flight fails AEAD first. A unit test
 (`fixed::finished_tests::a_wrong_client_finished_is_refused`) now hands the
 server's Finished handler a wrong verify_data at the point a real handshake
 reaches it, and ignoring the check makes that test fail.
+
+### Branch coverage after the gap review
+
+Same tools and aggregation as the coverage section above, now including the
+fixed engine and its test binaries. The coverage script finds test binaries
+from `tests/*.rs`, where it previously used a fixed list.
+
+| Selection | Merged production branch outcomes | Uncovered locations |
+|---|---:|---:|
+| Before the review (fixed engine included) | 2,335 / 2,732 (85.47%) | 365 |
+| Whole ordinary suite, after | 2,683 / 2,750 (97.56%) | 67 |
+| Tests cited by Test rows in traceability, after | 2,631 / 2,750 (95.67%) | 115 |
+
+Every gap in the 365-location inventory was reviewed, as 352 keys (file,
+source text, column). Five reviewers worked by area in separate worktrees,
+writing requirements-based tests and checking each one by breaking the
+condition it guards. The dispositions are in
+[coverage-review.csv](evidence/coverage-review.csv): 290 tested, 46
+defensive, 14 unreachable, 2 environment. On the fresh run, all 62 remaining
+gap keys have a disposition, and none is marked tested
+(`scripts/coverage_review.py`). The inventories are
+[whole-suite gaps](evidence/coverage-whole-20261005b.csv) and
+[trace-cited test gaps](evidence/coverage-requirements-20261005b.csv).
+
+The review found real defects, all fixed with tests that fail without the
+fix; [READINESS.md](READINESS.md) lists them. The traceability matrix now has
+231 low-level requirements. The new ones cover the post-quantum
+authentication claim rule, suite selection, `wants_write`, QUIC's refusal of
+TLS KeyUpdate, error text, and the audit trail bound. The dispositions are
+the author's and await independent review. This is branch coverage, not
+MC/DC.

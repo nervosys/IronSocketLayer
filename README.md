@@ -200,7 +200,7 @@ DO-178C certification.** What they provide:
   through `ic_fips::check`, and record the service indicators in the session
   report. See [docs/FIPS.md](docs/FIPS.md).
 * **DO-178C DAL-A**: the `dal-a` profile narrows the protocol to one suite, one
-  group, one scheme and mandatory mutual authentication. The code carries 225
+  group, one scheme and mandatory mutual authentication. The code carries 231
   tagged low-level requirements traced to high-level requirements and to their
   verifying tests in [docs/TRACEABILITY.md](docs/TRACEABILITY.md). A test fails
   if that matrix drifts from the code. [docs/DO-178C.md](docs/DO-178C.md) lists

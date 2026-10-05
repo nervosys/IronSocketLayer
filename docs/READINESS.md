@@ -24,12 +24,51 @@ See [VERIFICATION-2026-10-05.md](VERIFICATION-2026-10-05.md) for measured result
 and their limits. Passing host tests and compiling for Cortex-M4 do not establish
 hardware behavior or certification.
 
+## Branch-gap review (author)
+
+Every uncovered production branch in a whole-suite coverage run has a
+recorded disposition in [coverage-review.csv](evidence/coverage-review.csv),
+keyed by file, source line text and column so it survives edits elsewhere.
+`scripts/coverage_review.py` checks a fresh gap inventory against it: every
+gap must have a disposition, and no gap marked `tested` may still be
+uncovered. Of the 352 gap keys reviewed, 290 now have requirements-based
+tests, and the rest are `defensive` (46), `unreachable` (14) or
+`environment` (2), each with a specific rationale. Every new test was
+checked by breaking the condition it guards. A fresh whole-suite run
+afterwards left 62 gap keys, every one reviewed and none marked `tested`.
+
+The review found and fixed real defects:
+- fixed engine: record_size_limit sent and enforced without negotiation;
+- the fixed and owned path validators disagreed on an unparseable extra
+  certificate, and reported different errors for the same bad leaf;
+- IPv6 reference identifiers accepted a leading `+`;
+- the PKCS#8 fallback reader accepted trailing bytes and fields, and ML-DSA
+  algorithm parameters;
+- server and client kept a post-quantum authentication claim after a
+  classical post-handshake authentication;
+- the client recomputed an external-PSK binder under the wrong hash after a
+  HelloRetryRequest;
+- an unrequested extension drew illegal_parameter instead of
+  unsupported_extension;
+- 0-RTT was held to the server's current policy rather than the ticket's
+  limit;
+- an empty PSK list drew illegal_parameter instead of decode_error; FIPS
+  indicators dropped unknown signature schemes; long DER lengths could be
+  truncated.
+
+Known leniencies left in place deliberately: explicitly encoded DER DEFAULT
+values (a v1 certificate version, a name-constraint minimum of 0) are
+accepted, as many real CAs emit them; a byKey OCSP responder ID is not
+compared to the signer's key hash (IronCrypto provides no SHA-1), though the
+signature is still verified against an authorized key; and a P-521 PKCS#8
+scalar missing its leading zero octet is accepted, unlike P-256 and P-384.
+
 ## Work that remains open
 
 | Work | Completion evidence | Prerequisite / owner |
 |---|---|---|
 | ML-DSA stack use | IronCrypto ML-DSA signing and verification with stack use suited to small targets (today, on the host, ML-DSA-87 signing alone needs 248 KiB of thread stack; see the verification report), with its own tests | IronCrypto maintainers; the primitive is not implemented in this repository |
-| Uncovered production branches | Review each generated gap; add a requirements-based test for reachable required behavior, or document a reviewed justification for defensive/deactivated code | Maintainer and independent verifier; a CSV inventory is a lead, not a justification |
+| Independent review of branch-gap dispositions | An independent verifier confirms or overturns each author disposition in [coverage-review.csv](evidence/coverage-review.csv), especially every `defensive`, `unreachable` and `environment` row | Independent verifier; the author review is done (see below), but it is not independent |
 | Embedded execution | Run requirements-based tests and capacity failures on a named board with its clock, entropy source, allocator policy, compiler and linker configuration recorded | Target integrator; no physical board is connected to this workspace |
 | Firmware footprint | Linked firmware map, measured peak stack and live memory under adversarial maximum inputs, for both engines (host stack figures and Cortex-M4 per-function frames for the fixed engine are in the verification report) | Target integrator; unlinked object sizes exclude cryptography and link-time removal |
 | Timing beyond the host experiment | Target assembly review and statistical measurements across representative valid and malformed inputs; include IronCrypto's primitive evidence | Target integrator and independent reviewer |
