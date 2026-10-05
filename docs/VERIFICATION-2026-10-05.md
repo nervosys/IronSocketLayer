@@ -302,7 +302,9 @@ now verifies out of line.
 
 With both changes every session needs 26 to 34 KB, and post-quantum
 authentication costs at most about 3 KB over classical. All tests,
-the no_std build and the OpenSSL suites pass on ddff292. A client whose handshake buffer cannot hold the server's flight
+the no_std build and the OpenSSL suites pass on ddff292.
+
+A client whose handshake buffer cannot hold the server's flight
 fails with `capacity-exceeded`, latched, with nothing queued. Adding one
 allocation inside the session makes the run fail, so the counter observes
 allocations.
