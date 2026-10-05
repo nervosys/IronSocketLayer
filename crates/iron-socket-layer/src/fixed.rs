@@ -185,6 +185,9 @@ pub struct Connection<'a> {
     pq_chain: bool,
     peer_pinned: bool,
     peer_record_limit: usize,
+    /// The record_size_limit this endpoint enforces: set only once both
+    /// sides sent the extension (RFC 8449, `REQ-RSL-002`).
+    local_record_limit: Option<u16>,
     ccs_count: usize,
     sent_close: bool,
     peer_closed: bool,
@@ -384,6 +387,7 @@ impl<'a> Connection<'a> {
             pq_chain: false,
             peer_pinned: false,
             peer_record_limit: record::MAX_PLAINTEXT + 1,
+            local_record_limit: None,
             ccs_count: 0,
             sent_close: false,
             peer_closed: false,
@@ -626,7 +630,7 @@ impl<'a> Connection<'a> {
                 return Err(unexpected());
             }
             let (ty, n) = read.open(&header, body)?;
-            if let Some(limit) = self.common().record_size_limit {
+            if let Some(limit) = self.local_record_limit {
                 if body.len().saturating_sub(crypto::TAG_LEN) > usize::from(limit) {
                     return Err(Error::new(
                         ErrorKind::RecordOverflow,
@@ -1214,7 +1218,11 @@ impl<'a> Connection<'a> {
                 "no signing scheme for identity",
             ))?;
         self.select_alpn(ext.get(16)?)?;
-        self.record_limit(ext.get(28)?)?;
+        // RFC 8446 section 4.2: answer record_size_limit, and so enforce
+        // ours, only for a client that offered it (RFC 8449, `REQ-RSL-002`).
+        let offered_limit = ext.get(28)?;
+        self.record_limit(offered_limit)?;
+        self.local_record_limit = common.record_size_limit.filter(|_| offered_limit.is_some());
         if let Some(status) = ext.get(5)? {
             let mut r = Reader::new(status);
             if r.u8()? == 1 {
@@ -1257,6 +1265,7 @@ impl<'a> Connection<'a> {
             })?;
             self.install_handshake(&secret.get()[..ss])?;
             let alpn = self.report.alpn;
+            let local_limit = self.local_record_limit;
             self.send_message(8, |w| {
                 w.nested(2, |w| {
                     if name.is_some() {
@@ -1265,7 +1274,7 @@ impl<'a> Connection<'a> {
                     if let Some(alpn) = alpn {
                         w.ext(16, |w| w.nested(2, |w| w.vector(1, alpn)))?;
                     }
-                    if let Some(limit) = common.record_size_limit {
+                    if let Some(limit) = local_limit {
                         w.ext(28, |w| w.u16(limit))?;
                     }
                     Ok(())
@@ -1538,7 +1547,8 @@ impl<'a> Connection<'a> {
                     self.report.alpn = Some(protocol);
                 }
                 28 if self.common().record_size_limit.is_some() => {
-                    self.record_limit(Some(bytes))?
+                    self.record_limit(Some(bytes))?;
+                    self.local_record_limit = self.common().record_size_limit;
                 }
                 10 => {
                     u16_list(bytes, 2)?;
@@ -2134,4 +2144,613 @@ fn cv_input(server: bool, hash: &[u8], out: &mut [u8; 146]) -> usize {
     out[97] = 0;
     out[98..98 + hash.len()].copy_from_slice(hash);
     98 + hash.len()
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    //! Peer misbehaviour inside protected flights. A real fixed client and
+    //! server run the handshake; a test then seals hand-made messages with the
+    //! sending peer's own traffic secret, so the receiver sees exactly what a
+    //! broken or hostile peer holding those keys would send.
+    use super::*;
+    use crate::crypto::sign::{KeyKind, SigningKey};
+    use crate::x509::{CertificateParams, RootStore};
+
+    const NAME: &str = "server.test";
+
+    fn rng() -> ic_drbg::Rng {
+        ic_drbg::Rng::from_os().unwrap()
+    }
+
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    struct Pki {
+        ca: Vec<u8>,
+        cc: ClientConfig,
+        sc: ServerConfig,
+    }
+
+    fn params<'a>(
+        cn: &'a str,
+        dns: &'a [&'a str],
+        usage: &'a [Usage],
+        serial: u8,
+    ) -> CertificateParams<'a> {
+        let t = now();
+        CertificateParams {
+            subject_cn: cn,
+            dns_names: dns,
+            ip_addresses: &[],
+            not_before: t - 3600,
+            not_after: t + 86_400,
+            is_ca: usage.is_empty(),
+            path_len: if usage.is_empty() { Some(1) } else { None },
+            usage,
+            serial: [serial; 16],
+        }
+    }
+
+    /// A CA, a server identity for NAME and a client identity, all P-256,
+    /// with X25519 key exchange and no tickets.
+    fn pki() -> Pki {
+        let mut r = rng();
+        let ca_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let ca =
+            x509::self_signed(&params("Fixed Test Root", &[], &[], 1), &ca_key, &mut r).unwrap();
+        let server_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let server = x509::issue(
+            &params(NAME, &[NAME], &[Usage::ServerAuth], 2),
+            server_key.spki(),
+            &ca,
+            &ca_key,
+            &mut r,
+        )
+        .unwrap();
+        let client_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let client = x509::issue(
+            &params("device", &[], &[Usage::ClientAuth], 3),
+            client_key.spki(),
+            &ca,
+            &ca_key,
+            &mut r,
+        )
+        .unwrap();
+        let mut roots = RootStore::new();
+        roots.add_der(&ca).unwrap();
+        let mut cc = ClientConfig::new(crate::config::Profile::Default, roots).unwrap();
+        cc.tickets = None;
+        cc.common.groups = vec![NamedGroup::X25519];
+        cc.identity = Some(Identity::new(vec![client], client_key).unwrap());
+        let mut sc = ServerConfig::new(
+            crate::config::Profile::Default,
+            Identity::new(vec![server], server_key).unwrap(),
+        )
+        .unwrap();
+        sc.tickets = None;
+        sc.common.groups = vec![NamedGroup::X25519];
+        Pki { ca, cc, sc }
+    }
+
+    struct Buffers([Vec<u8>; 8]);
+    impl Buffers {
+        fn new() -> Self {
+            Self([16645, 32768, 65536, 32768, 32768, 3234, 1665, 32768].map(|n| vec![0; n]))
+        }
+        fn storage(&mut self) -> Storage<'_> {
+            let [record, handshake, outgoing, application, certificates, private_key, public_key, scratch] =
+                &mut self.0;
+            Storage {
+                record,
+                handshake,
+                outgoing,
+                application,
+                certificates,
+                private_key,
+                public_key,
+                scratch,
+            }
+        }
+    }
+
+    fn take(conn: &mut Connection<'_>) -> Vec<u8> {
+        let bytes = conn.outgoing().to_vec();
+        conn.consume_outgoing(bytes.len()).unwrap();
+        bytes
+    }
+
+    /// Split a flight into records.
+    fn records(mut bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        while !bytes.is_empty() {
+            let n = 5 + usize::from(u16::from_be_bytes([bytes[3], bytes[4]]));
+            out.push(bytes[..n].to_vec());
+            bytes = &bytes[n..];
+        }
+        out
+    }
+
+    /// One protected record carrying `content` of type `ty`.
+    fn seal(key: &mut Protector, ty: ContentType, content: &[u8]) -> Vec<u8> {
+        let mut out = vec![0; content.len() + 5 + 1 + crypto::TAG_LEN];
+        let n = key.seal_into(ty, content, 0, &mut out).unwrap();
+        out.truncate(n);
+        out
+    }
+
+    /// Decrypt protected handshake records and split them into messages.
+    fn messages(key: &mut Protector, recs: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let mut plain = Vec::new();
+        for rec in recs {
+            let mut rec = rec.clone();
+            let header: [u8; 5] = rec[..5].try_into().unwrap();
+            let (ty, n) = key.open(&header, &mut rec[5..]).unwrap();
+            assert_eq!(ty, ContentType::Handshake);
+            plain.extend_from_slice(&rec[5..5 + n]);
+        }
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < plain.len() {
+            let n = 4
+                + ((usize::from(plain[at + 1]) << 16)
+                    | (usize::from(plain[at + 2]) << 8)
+                    | usize::from(plain[at + 3]));
+            out.push(plain[at..at + n].to_vec());
+            at += n;
+        }
+        out
+    }
+
+    fn msg(ty: u8, body: &[u8]) -> Vec<u8> {
+        let n = body.len() as u32;
+        [&[ty][..], &n.to_be_bytes()[1..], body].concat()
+    }
+    fn v8(b: &[u8]) -> Vec<u8> {
+        [&[b.len() as u8][..], b].concat()
+    }
+    fn v16(b: &[u8]) -> Vec<u8> {
+        [&(b.len() as u16).to_be_bytes()[..], b].concat()
+    }
+    fn v24(b: &[u8]) -> Vec<u8> {
+        [&(b.len() as u32).to_be_bytes()[1..], b].concat()
+    }
+    fn ext(ty: u16, body: &[u8]) -> Vec<u8> {
+        [&ty.to_be_bytes()[..], &v16(body)].concat()
+    }
+
+    /// The client has processed only the server's real ServerHello. `f` gets
+    /// the client, the server's remaining messages (EncryptedExtensions,
+    /// Certificate, CertificateVerify, Finished) and a key sealing as the
+    /// server at the client's next handshake sequence number.
+    fn after_server_hello<R>(
+        cc: &ClientConfig,
+        sc: &ServerConfig,
+        f: impl FnOnce(&mut Connection<'_>, Vec<Vec<u8>>, Protector) -> R,
+    ) -> R {
+        let (mut cb, mut sb) = (Buffers::new(), Buffers::new());
+        let (mut cr, mut sr) = (rng(), rng());
+        let mut c = Connection::client(cc, NAME, &mut cr, cb.storage(), Limits::default()).unwrap();
+        let mut s = Connection::server(sc, &mut sr, sb.storage(), Limits::default()).unwrap();
+        s.receive(&take(&mut c)).unwrap();
+        let recs = records(&take(&mut s));
+        c.receive(&recs[0]).unwrap();
+        assert_eq!(c.report.state, State::WaitEncryptedExtensions);
+        let suite = s.suite.unwrap();
+        let secret = s.local_hs_secret.clone().unwrap();
+        let msgs = messages(&mut Protector::new(suite, &secret).unwrap(), &recs[1..]);
+        assert_eq!(
+            msgs.iter().map(|m| m[0]).collect::<Vec<_>>(),
+            [8, 11, 15, 20]
+        );
+        f(&mut c, msgs, Protector::new(suite, &secret).unwrap())
+    }
+
+    /// The server has sent its flight and waits for the client's; `f` gets
+    /// the server and a key sealing as the client.
+    fn server_awaiting_client<R>(
+        cc: &ClientConfig,
+        sc: &ServerConfig,
+        f: impl FnOnce(&mut Connection<'_>, Protector) -> R,
+    ) -> R {
+        let (mut cb, mut sb) = (Buffers::new(), Buffers::new());
+        let (mut cr, mut sr) = (rng(), rng());
+        let mut c = Connection::client(cc, NAME, &mut cr, cb.storage(), Limits::default()).unwrap();
+        let mut s = Connection::server(sc, &mut sr, sb.storage(), Limits::default()).unwrap();
+        s.receive(&take(&mut c)).unwrap();
+        let recs = records(&take(&mut s));
+        c.receive(&recs[0]).unwrap();
+        let key = Protector::new(s.suite.unwrap(), c.local_hs_secret.as_ref().unwrap()).unwrap();
+        f(&mut s, key)
+    }
+
+    /// A completed handshake; `f` gets both sides.
+    fn connected<R>(
+        cc: &ClientConfig,
+        sc: &ServerConfig,
+        f: impl FnOnce(&mut Connection<'_>, &mut Connection<'_>) -> R,
+    ) -> R {
+        let (mut cb, mut sb) = (Buffers::new(), Buffers::new());
+        let (mut cr, mut sr) = (rng(), rng());
+        let mut c = Connection::client(cc, NAME, &mut cr, cb.storage(), Limits::default()).unwrap();
+        let mut s = Connection::server(sc, &mut sr, sb.storage(), Limits::default()).unwrap();
+        for _ in 0..4 {
+            s.receive(&take(&mut c)).unwrap();
+            c.receive(&take(&mut s)).unwrap();
+        }
+        assert!(c.is_connected() && s.is_connected());
+        f(&mut c, &mut s)
+    }
+
+    /// Seal as the connected server, with its current write key.
+    fn from_server(s: &mut Connection<'_>, ty: ContentType, content: &[u8]) -> Vec<u8> {
+        seal(s.write.as_mut().unwrap(), ty, content)
+    }
+
+    /// The failure is latched: the same error again, everything erased.
+    fn assert_latched(conn: &mut Connection<'_>, error: Error) {
+        assert_eq!(conn.report.error, Some(error));
+        assert_eq!(conn.receive(&[22]).unwrap_err(), error);
+        assert_eq!(conn.report.state, State::Failed);
+        assert!(conn.outgoing().is_empty() && conn.read.is_none() && conn.write.is_none());
+    }
+
+    fn refused(conn: &mut Connection<'_>, input: &[u8], kind: ErrorKind, context: &str) {
+        let e = conn.receive(input).unwrap_err();
+        assert_eq!(e.kind(), kind, "{e}");
+        assert_eq!(e.context(), context);
+        assert_latched(conn, e);
+    }
+
+    /// REQ-FIX-005: application data protected under handshake keys, before
+    /// the handshake completes, is UnexpectedMessage.
+    #[test]
+    fn application_data_before_the_handshake_completes_is_unexpected() {
+        let p = pki();
+        after_server_hello(&p.cc, &p.sc, |c, _, mut key| {
+            let rec = seal(&mut key, ContentType::ApplicationData, b"too early");
+            refused(
+                c,
+                &rec,
+                ErrorKind::UnexpectedMessage,
+                "fixed handshake state",
+            );
+        });
+    }
+
+    /// REQ-FIX-005: application data arriving between the fragments of a
+    /// handshake message is UnexpectedMessage (RFC 8446 section 5.1).
+    #[test]
+    fn application_data_inside_a_fragmented_handshake_message_is_unexpected() {
+        let p = pki();
+        connected(&p.cc, &p.sc, |c, s| {
+            let first = from_server(s, ContentType::Handshake, &[24, 0]);
+            c.receive(&first).unwrap();
+            let data = from_server(s, ContentType::ApplicationData, b"interleaved");
+            refused(
+                c,
+                &data,
+                ErrorKind::UnexpectedMessage,
+                "fixed handshake state",
+            );
+        });
+    }
+
+    /// REQ-FIX-005: handshake bytes after the peer's Finished in the same
+    /// record, which would be protected under the wrong key, are
+    /// UnexpectedMessage (RFC 8446 section 5.1).
+    #[test]
+    fn handshake_bytes_after_finished_in_one_record_are_unexpected() {
+        let p = pki();
+        after_server_hello(&p.cc, &p.sc, |c, msgs, mut key| {
+            let mut flight = msgs.concat();
+            flight.extend_from_slice(&[24, 0, 0, 1, 0]);
+            let rec = seal(&mut key, ContentType::Handshake, &flight);
+            refused(
+                c,
+                &rec,
+                ErrorKind::UnexpectedMessage,
+                "fixed handshake state",
+            );
+        });
+        // The same flight without the trailing message completes.
+        after_server_hello(&p.cc, &p.sc, |c, msgs, mut key| {
+            let rec = seal(&mut key, ContentType::Handshake, &msgs.concat());
+            c.receive(&rec).unwrap();
+            assert!(c.is_connected());
+        });
+    }
+
+    /// REQ-FIX-005: once record_size_limit is negotiated, a protected record
+    /// whose inner plaintext exceeds this endpoint's limit is RecordOverflow
+    /// (RFC 8449, REQ-RSL-002).
+    #[test]
+    fn a_record_over_the_negotiated_limit_is_overflow() {
+        let mut p = pki();
+        p.cc.common.record_size_limit = Some(64);
+        p.sc.common.record_size_limit = Some(64);
+        connected(&p.cc, &p.sc, |c, s| {
+            let fits = from_server(s, ContentType::ApplicationData, &[1; 63]);
+            c.receive(&fits).unwrap();
+            let over = from_server(s, ContentType::ApplicationData, &[1; 64]);
+            refused(
+                c,
+                &over,
+                ErrorKind::RecordOverflow,
+                "local record_size_limit",
+            );
+        });
+    }
+
+    /// REQ-FIX-005: a KeyUpdate whose body is not exactly one byte of value
+    /// 0 or 1 is IllegalParameter (RFC 8446 section 4.6.3).
+    #[test]
+    fn malformed_key_update_is_illegal_parameter() {
+        let p = pki();
+        for body in [&[24, 0, 0, 2, 0, 0][..], &[24, 0, 0, 1, 2][..]] {
+            connected(&p.cc, &p.sc, |c, s| {
+                let rec = from_server(s, ContentType::Handshake, body);
+                refused(c, &rec, ErrorKind::IllegalParameter, "KeyUpdate request");
+            });
+        }
+    }
+
+    fn ticket(lifetime: u32, ticket: &[u8]) -> Vec<u8> {
+        let body = [
+            &lifetime.to_be_bytes()[..],
+            &[0, 0, 0, 7],
+            &v8(&[1]),
+            &v16(ticket),
+            &v16(&[]),
+        ]
+        .concat();
+        msg(4, &body)
+    }
+
+    /// REQ-FIX-005: a client without tickets checks an unsolicited
+    /// NewSessionTicket's framing before discarding it: a lifetime over seven
+    /// days or an empty ticket is IllegalParameter (RFC 8446 section 4.6.1);
+    /// a well-formed one is ignored and the connection stays usable.
+    #[test]
+    fn unsolicited_session_tickets_are_validated_then_discarded() {
+        let p = pki();
+        connected(&p.cc, &p.sc, |c, s| {
+            let rec = from_server(s, ContentType::Handshake, &ticket(604_800, b"ticket"));
+            c.receive(&rec).unwrap();
+            let data = from_server(s, ContentType::ApplicationData, b"still here");
+            c.receive(&data).unwrap();
+            assert!(c.is_connected());
+            let mut out = [0; 16];
+            assert_eq!(c.read_application(&mut out).unwrap(), 10);
+        });
+        for (lifetime, t) in [(604_801, &b"ticket"[..]), (3600, &b""[..])] {
+            connected(&p.cc, &p.sc, |c, s| {
+                let rec = from_server(s, ContentType::Handshake, &ticket(lifetime, t));
+                refused(
+                    c,
+                    &rec,
+                    ErrorKind::IllegalParameter,
+                    "session ticket framing",
+                );
+            });
+        }
+    }
+
+    fn encrypted_extensions(exts: &[Vec<u8>]) -> Vec<u8> {
+        msg(8, &v16(&exts.concat()))
+    }
+
+    /// REQ-FIX-005: EncryptedExtensions may acknowledge server_name only
+    /// with an empty body and only when the client sent it, and may carry
+    /// record_size_limit only when the client offered it (RFC 8446 section
+    /// 4.2, RFC 6066 section 3, RFC 8449).
+    #[test]
+    fn unrequested_or_malformed_encrypted_extensions_are_refused() {
+        let p = pki();
+        let mut no_sni = p.cc.clone();
+        no_sni.send_sni = false;
+        for (cc, exts, kind, context) in [
+            (
+                &no_sni,
+                vec![ext(0, &[])],
+                ErrorKind::IllegalParameter,
+                "SNI acknowledgement",
+            ),
+            (
+                &p.cc,
+                vec![ext(0, &[0, 0])],
+                ErrorKind::IllegalParameter,
+                "SNI acknowledgement",
+            ),
+            (
+                &p.cc,
+                vec![ext(28, &[0, 64])],
+                ErrorKind::UnsupportedExtension,
+                "unsolicited EncryptedExtensions extension",
+            ),
+        ] {
+            after_server_hello(cc, &p.sc, |c, _, mut key| {
+                let ee = encrypted_extensions(&exts);
+                let rec = seal(&mut key, ContentType::Handshake, &ee);
+                refused(c, &rec, kind, context);
+            });
+        }
+        // The client that sent SNI accepts the empty acknowledgement.
+        after_server_hello(&p.cc, &p.sc, |c, _, mut key| {
+            let ee = encrypted_extensions(&[ext(0, &[])]);
+            c.receive(&seal(&mut key, ContentType::Handshake, &ee))
+                .unwrap();
+            assert_eq!(c.report.state, State::WaitCertificateRequest);
+        });
+    }
+
+    /// REQ-FIX-005: a CertificateRequest with a non-empty context during the
+    /// handshake is IllegalParameter (RFC 8446 section 4.3.2), and one with
+    /// more signature schemes than the 32 slots is CapacityExceeded.
+    #[test]
+    fn malformed_certificate_requests_are_refused() {
+        let p = pki();
+        let schemes = |n: usize| ext(13, &v16(&[4, 3].repeat(n)));
+        for (request, kind, context) in [
+            (
+                msg(13, &[v8(&[1]), v16(&schemes(1))].concat()),
+                ErrorKind::IllegalParameter,
+                "handshake CertificateRequest context",
+            ),
+            (
+                msg(13, &[v8(&[]), v16(&schemes(33))].concat()),
+                ErrorKind::CapacityExceeded,
+                "CertificateRequest signature slots",
+            ),
+        ] {
+            after_server_hello(&p.cc, &p.sc, |c, msgs, mut key| {
+                c.receive(&seal(&mut key, ContentType::Handshake, &msgs[0]))
+                    .unwrap();
+                let rec = seal(&mut key, ContentType::Handshake, &request);
+                refused(c, &rec, kind, context);
+            });
+        }
+        // 32 schemes fit.
+        after_server_hello(&p.cc, &p.sc, |c, msgs, mut key| {
+            c.receive(&seal(&mut key, ContentType::Handshake, &msgs[0]))
+                .unwrap();
+            let request = msg(13, &[v8(&[]), v16(&schemes(32))].concat());
+            c.receive(&seal(&mut key, ContentType::Handshake, &request))
+                .unwrap();
+            assert_eq!(c.report.state, State::WaitCertificate);
+        });
+    }
+
+    fn certificate(context: &[u8], entries: &[(&[u8], Vec<u8>)]) -> Vec<u8> {
+        let list: Vec<u8> = entries
+            .iter()
+            .flat_map(|(der, exts)| [v24(der), v16(exts)].concat())
+            .collect();
+        msg(11, &[v8(context), v24(&list)].concat())
+    }
+
+    fn status(ty: u8) -> Vec<u8> {
+        ext(5, &[&[ty][..], &v24(b"not an OCSP response")].concat())
+    }
+
+    /// REQ-FIX-005: the client refuses a server Certificate with a request
+    /// context, an empty entry, or entry extensions it did not request: SCT,
+    /// a status when revocation checking is off, a status on any but the end
+    /// entity, or a status of a type other than OCSP (RFC 8446 section 4.4.2,
+    /// RFC 6066 section 8).
+    #[test]
+    fn malformed_server_certificates_are_refused() {
+        let p = pki();
+        let leaf = p.sc.identities[0].chain[0].clone();
+        let mut off = p.cc.clone();
+        off.revocation = crate::config::Revocation::Off;
+        let unsupported = (
+            ErrorKind::UnsupportedExtension,
+            "certificate entry extension not requested",
+        );
+        let cases: [(&ClientConfig, Vec<u8>, (ErrorKind, &str)); 6] = [
+            (
+                &p.cc,
+                certificate(&[1], &[(&leaf, vec![])]),
+                (ErrorKind::IllegalParameter, "Certificate context"),
+            ),
+            (
+                &p.cc,
+                certificate(&[], &[(&[], vec![])]),
+                (ErrorKind::IllegalParameter, "empty certificate entry"),
+            ),
+            (
+                &p.cc,
+                certificate(&[], &[(&leaf, ext(18, &[0, 0]))]),
+                unsupported,
+            ),
+            (&off, certificate(&[], &[(&leaf, status(1))]), unsupported),
+            (
+                &p.cc,
+                certificate(&[], &[(&leaf, vec![]), (&p.ca, status(1))]),
+                unsupported,
+            ),
+            (
+                &p.cc,
+                certificate(&[], &[(&leaf, status(2))]),
+                (ErrorKind::IllegalParameter, "certificate status type"),
+            ),
+        ];
+        for (cc, cert, (kind, context)) in cases {
+            after_server_hello(cc, &p.sc, |c, msgs, mut key| {
+                c.receive(&seal(&mut key, ContentType::Handshake, &msgs[0]))
+                    .unwrap();
+                let rec = seal(&mut key, ContentType::Handshake, &cert);
+                refused(c, &rec, kind, context);
+            });
+        }
+    }
+
+    /// REQ-FIX-005: a server never requests certificate status from its
+    /// client, so a client Certificate entry carrying one is
+    /// UnsupportedExtension.
+    #[test]
+    fn client_certificate_entry_extensions_are_refused() {
+        let mut p = pki();
+        let mut roots = RootStore::new();
+        roots.add_der(&p.ca).unwrap();
+        p.sc.client_auth = ClientAuth::Required(PeerVerification::Roots(roots));
+        let leaf = p.cc.identity.as_ref().unwrap().chain[0].clone();
+        server_awaiting_client(&p.cc, &p.sc, |s, mut key| {
+            assert_eq!(s.report.state, State::WaitCertificate);
+            let cert = certificate(&[], &[(&leaf, status(1))]);
+            let rec = seal(&mut key, ContentType::Handshake, &cert);
+            refused(
+                s,
+                &rec,
+                ErrorKind::UnsupportedExtension,
+                "certificate entry extension not requested",
+            );
+        });
+    }
+
+    /// REQ-FIX-005: a CertificateVerify with a scheme that may not sign a
+    /// TLS 1.3 handshake (RSASSA-PKCS1-v1_5), or one the client did not
+    /// offer, is IllegalParameter before any signature check (RFC 8446
+    /// section 4.4.3).
+    #[test]
+    fn certificate_verify_with_an_unoffered_scheme_is_refused() {
+        let p = pki();
+        let mut no_ed25519 = p.cc.clone();
+        no_ed25519
+            .common
+            .schemes
+            .retain(|s| *s != SignatureScheme::Ed25519);
+        for (cc, scheme) in [
+            (&p.cc, SignatureScheme::RsaPkcs1Sha256),
+            (&no_ed25519, SignatureScheme::Ed25519),
+        ] {
+            // Offered but not for handshakes, or allowed but not offered.
+            assert_ne!(
+                cc.common.schemes.contains(&scheme),
+                scheme.allowed_in_handshake()
+            );
+            after_server_hello(cc, &p.sc, |c, msgs, mut key| {
+                for m in &msgs[..2] {
+                    c.receive(&seal(&mut key, ContentType::Handshake, m))
+                        .unwrap();
+                }
+                assert_eq!(c.report.state, State::WaitCertificateVerify);
+                let cv = msg(
+                    15,
+                    &[&scheme.to_wire().to_be_bytes()[..], &v16(&[0x30; 64])].concat(),
+                );
+                let rec = seal(&mut key, ContentType::Handshake, &cv);
+                refused(
+                    c,
+                    &rec,
+                    ErrorKind::IllegalParameter,
+                    "unoffered CertificateVerify scheme",
+                );
+            });
+        }
+    }
 }
