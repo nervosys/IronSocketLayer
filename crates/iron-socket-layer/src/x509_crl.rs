@@ -2481,4 +2481,160 @@ mod tests {
                 .contains("malformed CRL entry extensions")
         );
     }
+
+    /// REQ-CRL-003: a PEM text with no `X509 CRL` block is a configuration
+    /// error, not an empty store that later reads as "no CRL needed".
+    #[test]
+    fn pem_text_without_crl_blocks_is_refused() {
+        for text in [
+            "",
+            "no blocks here",
+            "-----BEGIN CERTIFICATE-----
+AAAA
+-----END CERTIFICATE-----
+",
+        ] {
+            let e = CrlStore::new().add_pem(text).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::InvalidConfig);
+            assert_eq!(e.context(), "no X509 CRL blocks");
+        }
+    }
+
+    /// The fixture's CRL with ecdsa-with-SHA384 replaced, in both places,
+    /// by ecdsa-with-SHA224 (RFC 5758 section 3.2): well formed, but not a
+    /// scheme this build verifies.
+    fn with_unverifiable_algorithm(crl: &[u8]) -> Vec<u8> {
+        let sha384 = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03];
+        let mut out = crl.to_vec();
+        let mut replaced = 0;
+        let mut i = 0;
+        while i + sha384.len() <= out.len() {
+            if out[i..i + sha384.len()] == sha384 {
+                out[i + sha384.len() - 1] = 0x01;
+                replaced += 1;
+            }
+            i += 1;
+        }
+        assert_eq!(replaced, 2);
+        out
+    }
+
+    /// REQ-CRL-001: a CRL whose signature algorithm this build cannot verify
+    /// is passed over: it neither shows a certificate good nor revokes it,
+    /// and an authentic CRL beside it is still used.
+    #[test]
+    fn crls_under_unverifiable_algorithms_are_passed_over() {
+        let f = fx();
+        let serial = Certificate::parse(&f.leaf).unwrap().serial().to_vec();
+        let good = make(&f, &[], f.now - 60, f.now + 3600);
+        let listing = make(&f, &[(&serial, f.now - 30)], f.now - 60, f.now + 3600);
+        let ca = Certificate::parse(&f.ca).unwrap();
+        let leaf = Certificate::parse(&f.leaf).unwrap();
+        let check_with = |crls: &[&[u8]]| {
+            let mut store = CrlStore::new();
+            for crl in crls {
+                store.add_der(crl).unwrap();
+            }
+            check(
+                &leaf,
+                ca.subject,
+                ca.spki,
+                ca.ext.key_usage,
+                &store,
+                f.now,
+                crate::crypto::sign::VERIFY_SCHEMES,
+            )
+        };
+        let unknown_good = with_unverifiable_algorithm(&good);
+        let unknown_listing = with_unverifiable_algorithm(&listing);
+        assert!(scheme_from_alg(&parse(&unknown_good).unwrap().sig_alg).is_err());
+        assert!(!check_with(&[&unknown_good]).unwrap());
+        assert!(!check_with(&[&unknown_listing]).unwrap());
+        assert!(check_with(&[&unknown_good, &good]).unwrap());
+        assert!(check_with(&[&unknown_listing, &good]).unwrap());
+        assert_eq!(
+            check_with(&[&unknown_good, &listing]).unwrap_err().kind(),
+            ErrorKind::CertificateRevoked
+        );
+    }
+
+    /// REQ-CRL-001: a CRL counts only under a signature scheme the caller
+    /// allows; under any other it neither shows good nor revokes.
+    #[test]
+    fn crls_under_disallowed_schemes_count_for_nothing() {
+        let f = fx();
+        let serial = Certificate::parse(&f.leaf).unwrap().serial().to_vec();
+        let good = make(&f, &[], f.now - 60, f.now + 3600);
+        let listing = make(&f, &[(&serial, f.now - 30)], f.now - 60, f.now + 3600);
+        let ca = Certificate::parse(&f.ca).unwrap();
+        let leaf = Certificate::parse(&f.leaf).unwrap();
+        let check_under = |crl: &[u8], allowed: &[SignatureScheme]| {
+            let mut store = CrlStore::new();
+            store.add_der(crl).unwrap();
+            check(
+                &leaf,
+                ca.subject,
+                ca.spki,
+                ca.ext.key_usage,
+                &store,
+                f.now,
+                allowed,
+            )
+        };
+        let p384 = [SignatureScheme::EcdsaSecp384r1Sha384];
+        let others = [
+            SignatureScheme::EcdsaSecp256r1Sha256,
+            SignatureScheme::Ed25519,
+            SignatureScheme::MlDsa65,
+        ];
+        assert!(check_under(&good, &p384).unwrap());
+        assert_eq!(
+            check_under(&listing, &p384).unwrap_err().kind(),
+            ErrorKind::CertificateRevoked
+        );
+        assert!(!check_under(&good, &others).unwrap());
+        assert!(!check_under(&listing, &others).unwrap());
+        assert!(!check_under(&good, &[]).unwrap());
+    }
+
+    /// REQ-CRL-018: issued CRL numbers are nonnegative minimal INTEGERs
+    /// (RFC 5280 section 5.2.3), so a value whose top bit is set gains a
+    /// leading zero octet and is accepted by the parser.
+    #[test]
+    fn issued_crl_numbers_are_nonnegative_minimal_integers() {
+        let f = fx();
+        for (number, content) in [
+            (0u64, &[0u8][..]),
+            (0x7f, &[0x7f][..]),
+            (0x80, &[0x00, 0x80][..]),
+            (0xff, &[0x00, 0xff][..]),
+            (0x0100, &[0x01, 0x00][..]),
+            (0x8000, &[0x00, 0x80, 0x00][..]),
+            (
+                u64::MAX,
+                &[0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff][..],
+            ),
+        ] {
+            let crl = build(
+                &f.ca,
+                &f.ca_key,
+                &[],
+                f.now - 60,
+                f.now + 3600,
+                number,
+                &mut ic_drbg::Rng::from_os().unwrap(),
+            )
+            .unwrap();
+            CrlStore::new().add_der(&crl).unwrap();
+            let mut integer = Vec::new();
+            push_tlv(&mut integer, T_INTEGER, content);
+            let mut expected = Vec::new();
+            push_tlv(&mut expected, T_OID, OID_CRL_NUMBER);
+            push_tlv(&mut expected, T_OCTET_STRING, &integer);
+            assert!(
+                crl.windows(expected.len()).any(|w| w == expected),
+                "{number:#x}"
+            );
+        }
+    }
 }

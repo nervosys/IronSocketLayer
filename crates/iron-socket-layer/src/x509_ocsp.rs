@@ -3290,4 +3290,180 @@ mod tests {
             }
         }
     }
+
+    /// The ResponderID, producedAt and responses fields of a response's
+    /// ResponseData, each as a complete TLV.
+    fn response_data_fields(response: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut outer = Der::new(response);
+        let mut body = outer.nested(T_SEQUENCE).unwrap();
+        body.expect(T_ENUMERATED).unwrap();
+        let mut bytes = Der::new(body.expect(T_CTX0).unwrap())
+            .nested(T_SEQUENCE)
+            .unwrap();
+        bytes.expect(T_OID).unwrap();
+        let mut basic = Der::new(bytes.expect(T_OCTET_STRING).unwrap())
+            .nested(T_SEQUENCE)
+            .unwrap();
+        let mut fields = Der::new(basic.expect(T_SEQUENCE).unwrap());
+        let responder = fields.tlv().unwrap().2.to_vec();
+        let produced = fields.expect_raw(T_GENERALIZED_TIME).unwrap().to_vec();
+        let responses = fields.expect_raw(T_SEQUENCE).unwrap().to_vec();
+        fields.finish().unwrap();
+        (responder, produced, responses)
+    }
+
+    fn response_data(fields: &[&[u8]]) -> Vec<u8> {
+        let mut tbs = Vec::new();
+        push_tlv(&mut tbs, T_SEQUENCE, &fields.concat());
+        tbs
+    }
+
+    /// REQ-OCSP-007: RFC 6960 section 4.2.1 makes producedAt a
+    /// GeneralizedTime; an authentic response whose producedAt is the UTCTime
+    /// alternative is refused, while the same time as GeneralizedTime is
+    /// accepted.
+    #[test]
+    fn produced_at_requires_generalized_time() {
+        let f = fixture();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let good = make(&f, CertStatus::Good, f.now, f.now + 60);
+        let (responder, produced, responses) = response_data_fields(&good);
+        let mut generalized = Der::new(&produced);
+        let time = generalized.expect(T_GENERALIZED_TIME).unwrap();
+        let mut utc = Vec::new();
+        push_tlv(&mut utc, super::super::T_UTC_TIME, &time[2..]);
+        assert_eq!(
+            parse_time(super::super::T_UTC_TIME, &time[2..]).unwrap(),
+            f.now
+        );
+        let control = sign_response(
+            response_data(&[&responder, &produced, &responses]),
+            &f.ca_key,
+            None,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(check(&f, &control, f.now).unwrap().status, CertStatus::Good);
+        let signed = sign_response(
+            response_data(&[&responder, &utc, &responses]),
+            &f.ca_key,
+            None,
+            &mut rng,
+        )
+        .unwrap();
+        let e = check(&f, &signed, f.now).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::BadCertificateStatus);
+        assert_eq!(e.context(), "producedAt is not GeneralizedTime");
+    }
+
+    /// REQ-OCSP-007: RFC 6960 section 4.2.1 makes a SingleResponse's
+    /// thisUpdate a GeneralizedTime; the UTCTime alternative is refused.
+    #[test]
+    fn single_response_this_update_requires_generalized_time() {
+        let f = fixture();
+        let mut encoded = Vec::new();
+        generalized_time(&mut encoded, f.now).unwrap();
+        let mut time_der = Der::new(&encoded);
+        let time = time_der.expect(T_GENERALIZED_TIME).unwrap();
+        for tag in [T_GENERALIZED_TIME, super::super::T_UTC_TIME] {
+            let mut cert_id = hash_alg_id(OID_SHA256);
+            push_tlv(&mut cert_id, T_OCTET_STRING, &[0; 32]);
+            push_tlv(&mut cert_id, T_OCTET_STRING, &[0; 32]);
+            push_tlv(&mut cert_id, T_INTEGER, &[1]);
+            let mut body = Vec::new();
+            push_tlv(&mut body, T_SEQUENCE, &cert_id);
+            push_tlv(&mut body, T_GOOD, &[]);
+            push_tlv(
+                &mut body,
+                tag,
+                if tag == T_GENERALIZED_TIME {
+                    time
+                } else {
+                    &time[2..]
+                },
+            );
+            match parse_single(&body) {
+                Ok(single) => {
+                    assert_eq!(tag, T_GENERALIZED_TIME);
+                    assert_eq!(single.this_update, f.now);
+                }
+                Err(e) => {
+                    assert_eq!(tag, super::super::T_UTC_TIME);
+                    assert_eq!(e.kind(), ErrorKind::BadCertificateStatus);
+                    assert_eq!(e.context(), "thisUpdate is not GeneralizedTime");
+                }
+            }
+        }
+    }
+
+    /// REQ-OCSP-001, REQ-OCSP-015: a delegated responder may identify itself
+    /// by key hash rather than by name; its attached certificate is then
+    /// considered whatever its subject, and still must be authorized by the
+    /// issuer. The hash below is synthetic: this verifier does not match it
+    /// against the key (IronCrypto has no SHA-1), only its encoding.
+    #[test]
+    fn delegated_responders_may_be_identified_by_key() {
+        let f = fixture();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut by_key = Vec::new();
+        let mut hash = Vec::new();
+        push_tlv(&mut hash, T_OCTET_STRING, &[0x5a; 20]);
+        push_tlv(&mut by_key, T_CTX2, &hash);
+        for (eku, accepted) in [(Some(OID_KP_OCSP_SIGNING), true), (None, false)] {
+            let (cert, key) = responder(&f, eku);
+            let by_name = build_signed(
+                &f.leaf,
+                &f.ca,
+                &key,
+                Some(&cert),
+                CertStatus::Good,
+                f.now,
+                f.now + 60,
+                &mut rng,
+            )
+            .unwrap();
+            let (_, produced, responses) = response_data_fields(&by_name);
+            let signed = sign_response(
+                response_data(&[&by_key, &produced, &responses]),
+                &key,
+                Some(&cert),
+                &mut rng,
+            )
+            .unwrap();
+            let result = check(&f, &signed, f.now);
+            if accepted {
+                let v = result.unwrap();
+                assert!(v.delegated);
+                assert_eq!(v.status, CertStatus::Good);
+            } else {
+                let e = result.unwrap_err();
+                assert_eq!(e.kind(), ErrorKind::BadCertificateStatus);
+                assert_eq!(
+                    e.context(),
+                    "OCSP response is not signed by the issuer or an authorized responder"
+                );
+            }
+        }
+    }
+
+    /// REQ-OCSP-022: issuance refuses an issuer certificate that did not
+    /// issue the leaf (the leaf's issuer Name differs), before any signing.
+    #[test]
+    fn ocsp_issuance_requires_the_leafs_issuer() {
+        let f = fixture();
+        let (ca, key) = other_ca(&f, "Another CA");
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let e = build_response(
+            &f.leaf,
+            &ca,
+            &key,
+            CertStatus::Good,
+            f.now,
+            f.now + 60,
+            &mut rng,
+        )
+        .unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::InvalidConfig);
+        assert_eq!(e.context(), "issuer does not match the certificate");
+    }
 }
