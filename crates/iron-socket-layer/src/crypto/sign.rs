@@ -613,12 +613,11 @@ impl SigningKey {
     /// ML-DSA-65 in the seed form of draft-ietf-lamps-dilithium-certificates,
     /// or seed and expanded key together, which must agree. `REQ-SIG-004`.
     pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self> {
-        // As for SPKI: what ic_pkix does not accept falls through to a reader
-        // that accepts only ML-DSA.
-        let parsed = match ic_pkix::PrivateKeyInfo::from_der(der_bytes) {
-            Ok(p) => p,
-            Err(_) => return Self::from_pkcs8_fallback(der_bytes),
-        };
+        // ic_pkix reads the PrivateKeyInfo; a file it refuses is malformed.
+        // ML-DSA, which PrivateKeyInfo reports as unsupported, has its own
+        // reader in ic_pkix.
+        let parsed = ic_pkix::PrivateKeyInfo::from_der(der_bytes)
+            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "malformed PKCS#8 private key"))?;
         match parsed {
             ic_pkix::PrivateKeyInfo::Ec {
                 algorithm,
@@ -647,7 +646,13 @@ impl SigningKey {
                 ErrorKind::InvalidConfig,
                 "an X25519 key agrees keys; it cannot sign",
             )),
-            ic_pkix::PrivateKeyInfo::Unsupported { .. } => Self::from_pkcs8_fallback(der_bytes),
+            ic_pkix::PrivateKeyInfo::Unsupported { oid } if MlDsa::from_oid(oid).is_some() => {
+                Self::from_pkcs8_mldsa(der_bytes)
+            }
+            ic_pkix::PrivateKeyInfo::Unsupported { .. } => Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "unsupported private key algorithm",
+            )),
         }
     }
 
@@ -668,62 +673,39 @@ impl SigningKey {
         Self::from_pkcs8_der(&der_buf.get()[..n])
     }
 
-    /// PKCS#8 forms `ic_pkix` does not name: ML-DSA-44, ML-DSA-65 and ML-DSA-87.
-    fn from_pkcs8_fallback(der_bytes: &[u8]) -> Result<Self> {
-        let bad = |_| Error::new(ErrorKind::InvalidConfig, "malformed PKCS#8 private key");
-        let mut outer = Reader::new(der_bytes);
-        let mut seq = outer.sequence().map_err(bad)?;
-        // As strict as ic_pkix: nothing after the PrivateKeyInfo, and nothing
-        // after privateKey inside it (attributes are refused there too).
-        outer.finish().map_err(bad)?;
-        seq.expect_version(0).map_err(bad)?;
-        let mut alg = seq.sequence().map_err(bad)?;
-        let oid = alg.oid().map_err(bad)?;
-        let key = seq.octet_string().map_err(bad)?;
-        seq.finish().map_err(bad)?;
-        if let Some(p) = MlDsa::from_oid(oid) {
-            // Parameters MUST be absent for ML-DSA (RFC 9881), as in SPKI.
-            alg.finish().map_err(bad)?;
-            // Seed form: [0] IMPLICIT OCTET STRING (SIZE (32)), i.e. 0x80 0x20.
-            if key.len() == 34 && key[0] == 0x80 && key[1] == 0x20 {
-                let mut seed = Zeroizing::new([0u8; 32]);
-                seed.get_mut().copy_from_slice(&key[2..]);
-                return Self::mldsa_from_seed(p, seed.get());
-            }
-            // Both form: SEQUENCE { seed OCTET STRING (32), expandedKey OCTET STRING }.
-            // OpenSSL 3.5 writes this by default. The key is rebuilt from the
-            // seed and the expanded copy must match it, so a file whose two
-            // halves disagree is refused rather than half-trusted.
-            if key.first() == Some(&der::SEQUENCE) {
-                let mut inner = Reader::new(key);
-                let mut both = inner.sequence().map_err(bad)?;
-                inner.finish().map_err(bad)?;
-                let seed_bytes = both.octet_string().map_err(bad)?;
-                let expanded = both.octet_string().map_err(bad)?;
-                both.finish().map_err(bad)?;
-                let seed: &[u8; 32] = seed_bytes.try_into().map_err(|_| {
-                    Error::new(ErrorKind::InvalidConfig, "ML-DSA seed must be 32 bytes")
-                })?;
-                let key = Self::mldsa_from_seed(p, seed)?;
-                if let KeyImpl::MlDsa(_, sk) = &key.inner {
-                    if !ic_core::ct::verify(sk.get(), expanded) {
-                        return Err(Error::new(
-                            ErrorKind::InvalidConfig,
-                            "ML-DSA expanded key does not match its seed",
-                        ));
-                    }
-                }
-                return Ok(key);
-            }
-            return Err(Error::new(
+    /// ML-DSA PKCS#8 (RFC 9881), parsed by `ic_pkix::MlDsaPrivateKey`. The
+    /// seed is required: the key is rebuilt from it, and a file that also
+    /// carries the expanded key must match it, so a file whose two halves
+    /// disagree is refused rather than half-trusted. The expanded-only form is
+    /// refused, since nothing here could check it.
+    fn from_pkcs8_mldsa(der_bytes: &[u8]) -> Result<Self> {
+        // The algorithm is ML-DSA, so any refusal here (attributes,
+        // parameters, a wrong length, an unknown form) is a malformed file.
+        let parsed = ic_pkix::MlDsaPrivateKey::from_der(der_bytes)
+            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "malformed PKCS#8 private key"))?;
+        let p = match parsed.parameter_set() {
+            ic_pkix::MlDsaParameterSet::MlDsa44 => MlDsa::P44,
+            ic_pkix::MlDsaParameterSet::MlDsa65 => MlDsa::P65,
+            ic_pkix::MlDsaParameterSet::MlDsa87 => MlDsa::P87,
+        };
+        let seed: &[u8; 32] = parsed
+            .seed()
+            .ok_or(Error::new(
                 ErrorKind::InvalidConfig,
-                "unrecognised ML-DSA private key form",
-            ));
+                "ML-DSA private key without its seed: the expanded-only form cannot be checked",
+            ))?
+            .try_into()
+            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "ML-DSA seed must be 32 bytes"))?;
+        let key = Self::mldsa_from_seed(p, seed)?;
+        if let (Some(expanded), KeyImpl::MlDsa(_, sk)) = (parsed.expanded_key(), &key.inner) {
+            if !ic_core::ct::verify(sk.get(), expanded) {
+                return Err(Error::new(
+                    ErrorKind::InvalidConfig,
+                    "ML-DSA expanded key does not match its seed",
+                ));
+            }
         }
-        Err(Error::new(
-            ErrorKind::InvalidConfig,
-            "unsupported private key algorithm",
-        ))
+        Ok(key)
     }
 
     /// An ECDSA P-256 key from its 32-byte scalar.
@@ -1109,11 +1091,7 @@ mod tests {
             let mut pkcs8 = Vec::new();
             push_tlv(&mut pkcs8, der::SEQUENCE, &body);
             let e = SigningKey::from_pkcs8_der(&pkcs8).err().unwrap();
-            assert!(
-                e.to_string()
-                    .contains("unrecognised ML-DSA private key form"),
-                "{e}"
-            );
+            assert!(e.to_string().contains("malformed PKCS#8"), "{e}");
         }
         let mut alg = Vec::new();
         push_tlv(&mut alg, der::OID, ic_pkix::oid::EC_PUBLIC_KEY);
@@ -1300,7 +1278,20 @@ mod tests {
             push_tlv(&mut alg, der::OID, oid);
             let mut key = alloc::vec![0x80u8, 0x21];
             key.extend_from_slice(&[7u8; 32]);
-            refused(&pkcs8(&alg, &key), "unrecognised ML-DSA private key form");
+            refused(&pkcs8(&alg, &key), "malformed PKCS#8 private key");
+        }
+        // The expanded-only form (RFC 9881 expandedKey): well formed, but
+        // without the seed nothing here can check it, so it is refused.
+        for (oid, len) in [
+            (OID_ML_DSA_44, 2560),
+            (OID_ML_DSA_65, 4032),
+            (OID_ML_DSA_87, 4896),
+        ] {
+            let mut alg = Vec::new();
+            push_tlv(&mut alg, der::OID, oid);
+            let mut key = Vec::new();
+            push_tlv(&mut key, der::OCTET_STRING, &alloc::vec![0u8; len]);
+            refused(&pkcs8(&alg, &key), "expanded-only form");
         }
     }
 
