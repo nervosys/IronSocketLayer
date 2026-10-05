@@ -60,8 +60,9 @@ Known leniencies left in place deliberately: explicitly encoded DER DEFAULT
 values (a v1 certificate version, a name-constraint minimum of 0) are
 accepted, as many real CAs emit them; a byKey OCSP responder ID is not
 compared to the signer's key hash (IronCrypto provides no SHA-1), though the
-signature is still verified against an authorized key; and a P-521 PKCS#8
-scalar missing its leading zero octet is accepted, unlike P-256 and P-384.
+signature is still verified against an authorized key. P-521 keys are now
+read by ic_pkix alone, like P-256 and P-384, so a P-521 scalar missing its
+leading zero octet is refused.
 
 ## Work that remains open
 

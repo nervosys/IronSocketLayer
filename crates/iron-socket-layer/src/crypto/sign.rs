@@ -233,13 +233,13 @@ pub enum PublicKey<'a> {
 impl<'a> PublicKey<'a> {
     /// Parse a DER `SubjectPublicKeyInfo`.
     ///
-    /// P-256, P-384, Ed25519 and RSA go through `ic_pkix`; P-521 and ML-DSA,
-    /// which it does not name, are read here with its DER reader.
+    /// P-256, P-384, P-521, Ed25519 and RSA go through `ic_pkix`; ML-DSA,
+    /// which it does not name, is read here with its DER reader.
     pub fn from_spki(spki: &'a [u8]) -> Result<Self> {
         let bad = |_| Error::new(ErrorKind::BadCertificate, "malformed SubjectPublicKeyInfo");
-        // ic_pkix refuses curves it does not name (P-521) with an error rather
-        // than `Unsupported`, so any failure falls through to the reader below,
-        // which is the stricter of the two for the forms it accepts.
+        // Anything ic_pkix does not accept falls through to the reader below,
+        // which accepts only ML-DSA: a key ic_pkix refuses for an algorithm it
+        // names is never given a second, laxer reading.
         match ic_pkix::PublicKeyInfo::from_der(spki) {
             Ok(ic_pkix::PublicKeyInfo::Rsa { modulus, exponent }) => {
                 return Ok(Self::Rsa { modulus, exponent })
@@ -280,19 +280,6 @@ impl<'a> PublicKey<'a> {
                 MlDsa::P65 => Self::MlDsa65(key),
                 MlDsa::P87 => Self::MlDsa87(key),
             });
-        }
-        if oid == ic_pkix::oid::EC_PUBLIC_KEY {
-            let curve = alg.oid().map_err(bad)?;
-            alg.finish().map_err(bad)?;
-            if curve == OID_P521 {
-                if key.len() != 133 || key[0] != 0x04 {
-                    return Err(Error::new(
-                        ErrorKind::BadCertificate,
-                        "P-521 point encoding",
-                    ));
-                }
-                return Ok(Self::EcP521(key));
-            }
         }
         Err(Error::new(
             ErrorKind::UnsupportedCertificate,
@@ -600,9 +587,8 @@ impl SigningKey {
     /// ML-DSA-65 in the seed form of draft-ietf-lamps-dilithium-certificates,
     /// or seed and expanded key together, which must agree. `REQ-SIG-004`.
     pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self> {
-        // As for SPKI: ic_pkix errors on curves it does not name (P-521)
-        // instead of reporting them unsupported, so an error falls through to
-        // the reader for the forms it cannot handle.
+        // As for SPKI: what ic_pkix does not accept falls through to a reader
+        // that accepts only ML-DSA.
         let parsed = match ic_pkix::PrivateKeyInfo::from_der(der_bytes) {
             Ok(p) => p,
             Err(_) => return Self::from_pkcs8_fallback(der_bytes),
@@ -656,7 +642,7 @@ impl SigningKey {
         Self::from_pkcs8_der(&der_buf.get()[..n])
     }
 
-    /// PKCS#8 forms `ic_pkix` does not name: P-521, ML-DSA-44, ML-DSA-65 and ML-DSA-87.
+    /// PKCS#8 forms `ic_pkix` does not name: ML-DSA-44, ML-DSA-65 and ML-DSA-87.
     fn from_pkcs8_fallback(der_bytes: &[u8]) -> Result<Self> {
         let bad = |_| Error::new(ErrorKind::InvalidConfig, "malformed PKCS#8 private key");
         let mut outer = Reader::new(der_bytes);
@@ -707,14 +693,6 @@ impl SigningKey {
                 ErrorKind::InvalidConfig,
                 "unrecognised ML-DSA private key form",
             ));
-        }
-        if oid == ic_pkix::oid::EC_PUBLIC_KEY && alg.oid().map_err(bad)? == OID_P521 {
-            // ECPrivateKey ::= SEQUENCE { version 1, privateKey OCTET STRING, ... }
-            let mut ec = Reader::new(key);
-            let mut body = ec.sequence().map_err(bad)?;
-            body.expect_version(1).map_err(bad)?;
-            let scalar = body.octet_string().map_err(bad)?;
-            return Self::ecdsa_p521(scalar);
         }
         Err(Error::new(
             ErrorKind::InvalidConfig,
@@ -1327,24 +1305,26 @@ mod tests {
         }
     }
 
-    /// `REQ-SIG-004`: a P-521 key whose scalar was written without its
-    /// leading zero byte, which ic_pkix refuses for its length, loads through
-    /// the fallback reader as the same key as its 66-byte form.
+    /// `REQ-SIG-004`: P-521 keys are read by ic_pkix alone, like P-256 and
+    /// P-384. The 66-byte scalar loads; one written without its leading zero
+    /// octet (RFC 5915 fixes the length) is refused rather than given a
+    /// second, laxer reading.
     #[test]
-    fn a_p521_scalar_without_its_leading_zero_is_the_same_key() {
+    fn a_p521_scalar_must_have_its_full_length() {
         let mut scalar = [1u8; 66];
         scalar[0] = 0;
         let (alg, full) = p521_parts(&scalar);
         let (_, short) = p521_parts(&scalar[1..]);
         let a = SigningKey::from_pkcs8_der(&pkcs8(&alg, &full)).unwrap();
-        let b = SigningKey::from_pkcs8_der(&pkcs8(&alg, &short)).unwrap();
-        assert_eq!(b.kind_id(), "key:ecdsa-p521");
-        assert_eq!(a.spki(), b.spki());
+        assert_eq!(a.kind_id(), "key:ecdsa-p521");
         assert_eq!(a.spki(), SigningKey::ecdsa_p521(&scalar).unwrap().spki());
+        let e = SigningKey::from_pkcs8_der(&pkcs8(&alg, &short)).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::InvalidConfig, "{e}");
     }
 
-    /// `REQ-SIG-004`: the fallback reader for ML-DSA and P-521 PKCS#8 is as
-    /// strict as ic_pkix is for the other algorithms: bytes after the
+    /// `REQ-SIG-004`: the fallback reader for ML-DSA PKCS#8 is as strict as
+    /// ic_pkix is for the other algorithms, and P-521 (now read by ic_pkix)
+    /// is held to the same rules: bytes after the
     /// PrivateKeyInfo, a field after privateKey (attributes included) and,
     /// for ML-DSA, AlgorithmIdentifier parameters (RFC 9881 requires them
     /// absent) are malformed, while the same key without them loads.
@@ -1369,7 +1349,6 @@ mod tests {
         let mut scalar = [1u8; 66];
         scalar[0] = 0;
         cases.push(p521_parts(&scalar));
-        cases.push(p521_parts(&scalar[1..]));
         for (alg, key) in cases {
             let good = pkcs8(&alg, &key);
             SigningKey::from_pkcs8_der(&good).unwrap();
