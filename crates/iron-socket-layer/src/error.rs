@@ -352,4 +352,21 @@ mod tests {
             Some(AlertDescription::DecodeError)
         );
     }
+
+    /// The error-id contract of AGENTS.md (no LLR row covers error text): an
+    /// error's text starts with its stable id, and one recording a peer's
+    /// alert names that alert too, so the cause of a failure the peer
+    /// reported is not lost when the error is printed.
+    #[test]
+    fn a_peer_alert_is_named_in_the_error_text() {
+        let e = Error::from_peer(AlertDescription::HandshakeFailure);
+        assert_eq!(
+            e.to_string(),
+            "error:peer-alert: peer sent a fatal alert (alert:handshake-failure)"
+        );
+        assert_eq!(
+            Error::new(ErrorKind::Decode, "x").to_string(),
+            "error:decode: x"
+        );
+    }
 }

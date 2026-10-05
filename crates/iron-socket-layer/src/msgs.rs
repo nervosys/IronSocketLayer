@@ -1740,4 +1740,76 @@ mod tests {
             "unknown CertificateStatusType",
         );
     }
+
+    /// A ClientHello body: legacy_version 0x0303, random, empty session ID,
+    /// `suites` as the cipher_suites vector body, null compression, `rest`.
+    fn raw_hello(suites: &[u8], rest: &[u8]) -> Vec<u8> {
+        let mut v = alloc::vec![0x03, 0x03];
+        v.extend_from_slice(&[0x11; 32]);
+        v.push(0);
+        v.extend_from_slice(&(suites.len() as u16).to_be_bytes());
+        v.extend_from_slice(suites);
+        v.extend_from_slice(&[1, 0]);
+        v.extend_from_slice(rest);
+        v
+    }
+
+    /// REQ-MSG-004: a cipher_suites vector of odd length cannot hold whole
+    /// two-byte suites and is a decode error.
+    #[test]
+    fn an_odd_length_cipher_suite_list_is_a_decode_error() {
+        for suites in [&[0x13u8][..], &[0x13, 0x01, 0x13][..]] {
+            let e = ClientHello::decode(&raw_hello(suites, &[])).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::Decode, "{e}");
+            assert!(e.to_string().contains("cipher_suites"), "{e}");
+        }
+    }
+
+    /// REQ-MSG-006: hellos with no extension block decode as the
+    /// well-formed pre-TLS 1.3 messages they are, carrying nothing that
+    /// selects TLS 1.3: a ClientHello with no supported versions, groups or
+    /// signature algorithms, and a ServerHello with no selected version or
+    /// key share. The handshake layers refuse both for that absence.
+    #[test]
+    fn hellos_without_extensions_select_nothing() {
+        let ch = ClientHello::decode(&raw_hello(&[0x13, 0x01], &[])).unwrap();
+        assert_eq!(ch.suites, [CipherSuite::TlsAes128GcmSha256]);
+        assert!(ch.versions.is_empty() && ch.groups.is_empty() && ch.sig_algs.is_empty());
+
+        let mut sh = alloc::vec![0x03, 0x03];
+        sh.extend_from_slice(&[0x22; 32]);
+        sh.extend_from_slice(&[0, 0x13, 0x01, 0]);
+        let sh = ServerHello::decode(&sh).unwrap();
+        assert_eq!(sh.suite, Some(CipherSuite::TlsAes128GcmSha256));
+        assert_eq!(sh.selected_version, None);
+        assert_eq!(sh.key_share, None);
+    }
+
+    /// REQ-MSG-011: a status_request whose CertificateStatusType is not
+    /// ocsp(1) is not an OCSP request: the hello decodes and asks for no
+    /// staple, while the same extension with type ocsp(1) does ask.
+    #[test]
+    fn a_status_request_of_another_type_asks_for_no_staple() {
+        for (status_type, asks) in [(1u8, true), (2, false), (0xff, false)] {
+            let body = [status_type, 0, 0, 0, 0];
+            let mut ext = 5u16.to_be_bytes().to_vec();
+            ext.extend_from_slice(&(body.len() as u16).to_be_bytes());
+            ext.extend_from_slice(&body);
+            let mut block = (ext.len() as u16).to_be_bytes().to_vec();
+            block.extend_from_slice(&ext);
+            let ch = ClientHello::decode(&raw_hello(&[0x13, 0x01], &block)).unwrap();
+            assert_eq!(ch.status_request, asks, "status_type {status_type}");
+        }
+    }
+
+    /// REQ-MSG-004: a pre_shared_key offer with no identities (and so no
+    /// binders) is refused; RFC 8446 §4.2.11 gives both vectors a nonzero
+    /// minimum length.
+    #[test]
+    fn a_psk_offer_without_identities_is_refused() {
+        assert_eq!(
+            OfferedPsks::decode(&[0, 0, 0, 0]).unwrap_err().kind(),
+            ErrorKind::IllegalParameter
+        );
+    }
 }

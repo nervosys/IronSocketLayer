@@ -683,4 +683,32 @@ mod tests {
             );
         }
     }
+
+    /// REQ-KS-001: the key-schedule value types refuse sizes they cannot
+    /// hold as internal errors, before copying: a secret longer than any
+    /// hash output, and an AEAD key of any length other than its algorithm's.
+    #[test]
+    fn secret_and_aead_key_lengths_are_bounded() {
+        assert_eq!(
+            Output::from_slice(&[1; MAX_HASH_LEN + 1])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Internal
+        );
+        let max = Output::from_slice(&[1; MAX_HASH_LEN]).unwrap();
+        assert_eq!(max.as_bytes(), &[1; MAX_HASH_LEN][..]);
+        for alg in [
+            AeadAlg::Aes128Gcm,
+            AeadAlg::Aes256Gcm,
+            AeadAlg::ChaCha20Poly1305,
+        ] {
+            for length in [0, alg.key_len() - 1, alg.key_len() + 1] {
+                assert_eq!(
+                    AeadKey::new(alg, &vec![7; length]).unwrap_err().kind(),
+                    ErrorKind::Internal,
+                    "{alg:?} {length}"
+                );
+            }
+        }
+    }
 }
