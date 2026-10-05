@@ -68,7 +68,6 @@ leading zero octet is refused.
 
 | Work | Completion evidence | Prerequisite / owner |
 |---|---|---|
-| ML-DSA stack use | IronCrypto ML-DSA signing and verification with stack use suited to small targets (today, on the host, ML-DSA-87 signing alone needs 248 KiB of thread stack; see the verification report), with its own tests | IronCrypto maintainers; the primitive is not implemented in this repository |
 | Independent review of branch-gap dispositions | An independent verifier confirms or overturns each author disposition in [coverage-review.csv](evidence/coverage-review.csv), especially every `defensive`, `unreachable` and `environment` row | Independent verifier; the author review is done (see below), but it is not independent |
 | Embedded execution | Run requirements-based tests and capacity failures on a named board with its clock, entropy source, allocator policy, compiler and linker configuration recorded | Target integrator; no physical board is connected to this workspace |
 | Firmware footprint | Linked firmware map, measured peak stack and live memory under adversarial maximum inputs, for both engines (host stack figures and Cortex-M4 per-function frames for the fixed engine are in the verification report) | Target integrator; unlinked object sizes exclude cryptography and link-time removal |

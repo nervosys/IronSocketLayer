@@ -175,10 +175,26 @@ are on that stack.
 | IronCrypto alone: Ed25519 verify | 36 KiB |
 | IronCrypto alone: ECDSA sign or verify, any curve | ≤ 16 KiB (platform minimum) |
 
-ML-DSA dominates, and its stack is IronCrypto's: the session figure is the
-primitive's plus about 16 KiB. That is an IronCrypto item, recorded in
-[READINESS.md](READINESS.md). Host frames differ from Cortex-M4 frames, so
-these are not target figures.
+ML-DSA dominated, and its stack was IronCrypto's: the session figure was
+the primitive's plus about 16 KiB. IronCrypto commit b0dbcb4 stops ML-DSA
+holding the matrix A: each entry is resampled where it is used. Measured
+again the same way on that commit:
+
+| Case | Before | After |
+|---|---:|---:|
+| Session, ML-DSA-44 / 65 / 87 keys | 128 / 184 / 264 KiB | 64 / 64 / 68 KiB |
+| Session, ECDSA or Ed25519 keys, any group | 60–64 KiB | 64 KiB |
+| IronCrypto alone: ML-DSA-44 / 65 / 87 sign | 112 / 164 / 248 KiB | 32 / 40 / 48 KiB |
+| IronCrypto alone: ML-DSA-44 / 65 / 87 verify | 84 / 124 / 192 KiB | 32 / 36 / 32 KiB |
+
+Every session now needs about the same stack, which is the engine's own.
+IronCrypto reports, from its byte-granular stack painting on Windows, the
+same reductions: ML-DSA-87 sign 242.6 to 47.7 KiB, verify 174.5 to 17.8 KiB,
+keygen 345.0 to 55.0 KiB. Signing takes 1.7 to 1.9 times as long, and
+verification is unchanged. Outputs are unchanged: IronCrypto's ACVP cases
+pass, and so do this repository's tests and the OpenSSL suites (OpenSSL
+verifies our ML-DSA signatures and certificate chains). Host frames differ
+from Cortex-M4 frames, so these are not target figures.
 
 ### Interoperability, robustness and fuzzing
 
