@@ -46,6 +46,7 @@ ic-drbg = { path = "../IronCrypto/crates/ic-drbg", version = ">=0.2.10, <0.3", d
 ic-ec = { path = "../IronCrypto/crates/ic-ec", version = ">=0.2.10, <0.3", default-features = false }
 ic-rsa = { path = "../IronCrypto/crates/ic-rsa", version = ">=0.2.10, <0.3", default-features = false }
 ic-pkix = { path = "../IronCrypto/crates/ic-pkix", version = ">=0.2.10, <0.3", default-features = false }
+ic-hpke = { path = "../IronCrypto/crates/ic-hpke", version = ">=0.2.10, <0.3", default-features = false }
 ic-mlkem = { path = "../IronCrypto/crates/ic-mlkem", version = ">=0.2.10, <0.3", default-features = false }
 ic-mldsa = { path = "../IronCrypto/crates/ic-mldsa", version = ">=0.2.10, <0.3", default-features = false }
 ic-fips = { path = "../IronCrypto/crates/ic-fips", version = ">=0.2.10, <0.3", default-features = false }

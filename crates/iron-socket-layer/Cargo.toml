@@ -18,7 +18,7 @@ default = ["std"]
 # supplies randomness and time.
 std = [
     "ic-core/std", "ic-hash/std", "ic-mac/std", "ic-kdf/std", "ic-cipher/std",
-    "ic-drbg/std", "ic-ec/std", "ic-rsa/std", "ic-pkix/std", "ic-mlkem/std",
+    "ic-drbg/std", "ic-ec/std", "ic-rsa/std", "ic-pkix/std", "ic-hpke/std", "ic-mlkem/std",
     "ic-mldsa/std", "ic-fips/std", "ic-ontology/std", "isl-ontology/std",
 ]
 
@@ -33,6 +33,7 @@ ic-drbg = { workspace = true }
 ic-ec = { workspace = true }
 ic-rsa = { workspace = true }
 ic-pkix = { workspace = true }
+ic-hpke = { workspace = true }
 ic-mlkem = { workspace = true }
 ic-mldsa = { workspace = true }
 ic-fips = { workspace = true }
