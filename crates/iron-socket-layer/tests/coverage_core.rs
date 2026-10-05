@@ -39,6 +39,31 @@ fn indicators_are_reported_unenforced_and_refused_enforced() {
             .kind(),
         ErrorKind::PolicyViolation
     );
+    // A scheme with no IronCrypto identifier is reported, never dropped,
+    // and refused under enforcement.
+    let ind = session_indicators(
+        suite,
+        NamedGroup::X25519,
+        &[SignatureScheme::EcdsaSha1],
+        false,
+    )
+    .unwrap();
+    assert!(
+        ind.entries
+            .contains(&("sigscheme:ecdsa-sha1", "not-approved")),
+        "{ind:?}"
+    );
+    assert_eq!(
+        session_indicators(
+            suite,
+            NamedGroup::Secp256r1,
+            &[SignatureScheme::EcdsaSha1],
+            true
+        )
+        .unwrap_err()
+        .kind(),
+        ErrorKind::PolicyViolation
+    );
     let approved = session_indicators(
         suite,
         NamedGroup::Secp256r1,

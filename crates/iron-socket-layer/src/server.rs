@@ -575,8 +575,12 @@ impl ServerHs {
         {
             return Ok(false);
         }
+        // REQ-0RTT-003: the client was promised the ticket's limit, and is
+        // held to it once its data is accepted. A ticket promising more
+        // than the current policy allows is declined, never cut short.
         if st.external_psk
             || st.max_early_data == 0
+            || (!core.is_quic() && st.max_early_data > policy.max_early_data)
             || st.suite != suite
             || alpn.unwrap_or(&[]) != st.alpn.as_slice()
         {
@@ -870,11 +874,9 @@ impl ServerHs {
                 core.install_read(Level::Early, &early)?;
                 self.pending_hs_read = Some(c_hs.clone());
             }
-            core.early_budget = self
-                .config
-                .early_data
+            core.early_budget = resumption
                 .as_ref()
-                .map(|p| p.max_early_data as usize);
+                .map(|(_, st)| st.max_early_data as usize);
             core.report.early_data = "early-data:accepted";
             core.report.event("event:early-data-accepted", "");
         } else {

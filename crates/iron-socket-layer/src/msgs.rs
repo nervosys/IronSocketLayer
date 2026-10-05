@@ -691,7 +691,12 @@ impl OfferedPsks {
             }
             binders.push(b.to_vec());
         }
-        if identities.is_empty() || identities.len() != binders.len() {
+        // identities<7..2^16-1> and binders<33..2^16-1>: an empty list is
+        // out of range, a decode error (RFC 8446 §4.2.11, §6.2).
+        if identities.is_empty() || binders.is_empty() {
+            return Err(decode_err("empty PSK identity or binder list"));
+        }
+        if identities.len() != binders.len() {
             return Err(illegal("PSK identities and binders do not pair up"));
         }
         Ok(Self {
@@ -1807,8 +1812,24 @@ mod tests {
     /// minimum length.
     #[test]
     fn a_psk_offer_without_identities_is_refused() {
+        // Both lists empty: below their minimum lengths, a decode error.
         assert_eq!(
             OfferedPsks::decode(&[0, 0, 0, 0]).unwrap_err().kind(),
+            ErrorKind::Decode
+        );
+        // One identity, no binders: also out of range.
+        let one_identity = [0, 7, 0, 1, b'x', 0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            OfferedPsks::decode(&one_identity).unwrap_err().kind(),
+            ErrorKind::Decode
+        );
+        // One identity, two binders: well-formed but unpaired.
+        let mut unpaired = vec![0, 7, 0, 1, b'x', 0, 0, 0, 0, 0, 66, 32];
+        unpaired.extend_from_slice(&[0; 32]);
+        unpaired.push(32);
+        unpaired.extend_from_slice(&[0; 32]);
+        assert_eq!(
+            OfferedPsks::decode(&unpaired).unwrap_err().kind(),
             ErrorKind::IllegalParameter
         );
     }

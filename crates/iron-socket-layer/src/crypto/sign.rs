@@ -502,10 +502,12 @@ pub fn push_tlv(out: &mut Vec<u8>, tag: u8, body: &[u8]) {
         out.push(n as u8);
     } else if n <= 0xff {
         out.extend_from_slice(&[0x81, n as u8]);
-    } else if n <= 0xffff {
-        out.extend_from_slice(&[0x82, (n >> 8) as u8, n as u8]);
     } else {
-        out.extend_from_slice(&[0x83, (n >> 16) as u8, (n >> 8) as u8, n as u8]);
+        // Long form with as many length octets as the size needs (X.690
+        // §8.1.3.5), so no length is ever truncated.
+        let octets = (usize::BITS - n.leading_zeros()).div_ceil(8) as usize;
+        out.push(0x80 | octets as u8);
+        out.extend_from_slice(&n.to_be_bytes()[core::mem::size_of::<usize>() - octets..]);
     }
     out.extend_from_slice(body);
 }
@@ -1274,7 +1276,9 @@ mod tests {
     /// reads back the same content.
     #[test]
     fn push_tlv_lengths_match_the_ic_pkix_writer() {
-        for n in [0usize, 0x7f, 0x80, 0xff, 0x100, 0xffff, 0x1_0000, 0x12_3456] {
+        for n in [
+            0usize, 0x7f, 0x80, 0xff, 0x100, 0xffff, 0x1_0000, 0x12_3456, 0x100_0000,
+        ] {
             let body = alloc::vec![0xa5u8; n];
             let mut ours = Vec::new();
             push_tlv(&mut ours, der::OCTET_STRING, &body);

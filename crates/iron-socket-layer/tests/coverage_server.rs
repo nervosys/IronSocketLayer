@@ -849,6 +849,30 @@ fn early_data_needs_the_tickets_suite() {
     assert_eq!(c.take_rejected_early_data().as_deref(), Some(REQUEST));
 }
 
+/// REQ-0RTT-003: early data is held to the max_early_data_size of the
+/// ticket the client used, the limit it was promised. A server whose policy
+/// has since shrunk below that declines the early data and the client gets
+/// it back, rather than accepting and then aborting a client that stayed
+/// within its ticket. An unchanged policy still accepts.
+#[test]
+fn early_data_is_held_to_the_tickets_limit() {
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    let (cc, sc) = early_configs(&pki);
+    let cc = Arc::new(cc);
+    get_ticket(&cc, &Arc::new(sc.clone()), NAME);
+    let mut shrunk = sc.clone();
+    shrunk.early_data = Some(EarlyDataPolicy::new(16));
+    assert!(REQUEST.len() > 16);
+    let (mut c, s) = early_attempt(&cc, &Arc::new(shrunk), NAME);
+    assert!(s.report().resumed);
+    assert_eq!(s.report().early_data, "early-data:rejected");
+    assert_eq!(c.take_rejected_early_data().as_deref(), Some(REQUEST));
+
+    get_ticket(&cc, &Arc::new(sc.clone()), NAME);
+    let (_, s) = early_attempt(&cc, &Arc::new(sc), NAME);
+    assert_eq!(s.report().early_data, "early-data:accepted");
+}
+
 /// REQ-0RTT-001: 0-RTT needs the ticket's ALPN protocol. A server that
 /// negotiates a different protocol on resumption refuses the early data.
 #[test]

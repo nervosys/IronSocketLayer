@@ -116,14 +116,27 @@ pub fn session_indicators(
 ) -> Result<Indicators> {
     let mut ids: Vec<&'static str> = suite_ic_ids(suite);
     ids.extend_from_slice(kx::ic_ids(group));
+    let mut unknown: Vec<&'static str> = Vec::new();
     for s in schemes {
-        if let Some(id) = sign::ic_id(*s) {
-            ids.push(id);
+        match sign::ic_id(*s) {
+            Some(id) => ids.push(id),
+            None => unknown.push(s.id()),
         }
+    }
+    // A scheme the module has no identifier for cannot be approved: refuse
+    // it under enforcement, and report it rather than drop it otherwise.
+    if enforce && !unknown.is_empty() {
+        return Err(Error::new(
+            ErrorKind::PolicyViolation,
+            "signature scheme unknown to the FIPS module",
+        ));
     }
     let mut out = Indicators::default();
     if !enforce && ic_fips::mode().is_none() {
         return Ok(out);
+    }
+    for id in unknown {
+        out.entries.push((id, "not-approved"));
     }
     for id in ids {
         match ic_fips::check(id) {
