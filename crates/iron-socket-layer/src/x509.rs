@@ -619,6 +619,11 @@ fn parse_ipv6(s: &str) -> Option<[u8; 16]> {
                 if p.is_empty() || p.len() > 4 {
                     return None;
                 }
+                // RFC 4291 section 2.2: hexadecimal digits only;
+                // from_str_radix alone would also take a leading '+'.
+                if !p.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return None;
+                }
                 v.push(u16::from_str_radix(p, 16).ok()?);
             }
         }
@@ -2278,18 +2283,20 @@ pub fn check_leaf_fixed(der: &[u8], opts: &VerifyOptions<'_>) -> Result<()> {
             "unknown critical extension",
         ));
     }
-    if leaf.is_ca()
-        || leaf
-            .ext
-            .key_usage
-            .is_some_and(|ku| ku & KU_DIGITAL_SIGNATURE == 0)
-    {
-        return Err(Error::new(
-            ErrorKind::CertificateUsage,
-            "leaf cannot sign handshakes",
-        ));
+    let cannot_sign = || Error::new(ErrorKind::CertificateUsage, "leaf cannot sign handshakes");
+    if leaf.is_ca() {
+        return Err(cannot_sign());
     }
+    // Validity before key usage, in the order `verify_chain` checks them, so
+    // both validators refuse a leaf failing both for the same reason.
     leaf.check_validity(opts.now)?;
+    if leaf
+        .ext
+        .key_usage
+        .is_some_and(|ku| ku & KU_DIGITAL_SIGNATURE == 0)
+    {
+        return Err(cannot_sign());
+    }
     leaf.check_eku(opts.usage)?;
     check_key_policy(&leaf.subject_public_key()?, opts)
 }
@@ -2310,8 +2317,10 @@ pub fn verify_chain_fixed<'a>(
     check_leaf_fixed(end_entity, opts)?;
     let leaf = Certificate::parse(end_entity)?;
     let mut ints: [Option<Certificate<'a>>; 7] = core::array::from_fn(|_| None);
+    // Like `verify_chain`, ignore certificates that do not parse; an empty
+    // slot is never a candidate.
     for (slot, der) in ints.iter_mut().zip(intermediates) {
-        *slot = Some(Certificate::parse(der)?);
+        *slot = Certificate::parse(der).ok();
     }
     let mut report = FixedChainReport {
         crl_checked: false,
@@ -5341,6 +5350,138 @@ mod tests {
         assert!(Certificate::parse(&[0x30, 0x84, 0xff, 0xff, 0xff, 0xff]).is_err());
         assert!(Certificate::parse(&[0x30, 0x80, 0x00, 0x00]).is_err());
     }
+
+    /// REQ-X509-066: an RSA PKCS#1 v1.5 signature AlgorithmIdentifier carries
+    /// an absent or empty NULL parameter (RFC 4055 section 5); a NULL with
+    /// content is malformed, not a parameter to ignore.
+    #[test]
+    fn rsa_signature_null_parameters_must_be_empty() {
+        let alg = |params: &[u8]| {
+            let mut alg = Vec::new();
+            push_tlv(&mut alg, T_OID, OID_RSA_SHA256);
+            alg.extend_from_slice(params);
+            alg
+        };
+        for params in [&[][..], &[T_NULL, 0][..]] {
+            assert_eq!(
+                scheme_from_alg(&alg(params)).unwrap(),
+                SignatureScheme::RsaPkcs1Sha256
+            );
+        }
+        for params in [&[T_NULL, 1, 0][..], &[T_NULL, 2, 0, 0][..]] {
+            let e = scheme_from_alg(&alg(params)).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::BadCertificate);
+            assert_eq!(e.context(), "NULL with content");
+        }
+    }
+
+    /// REQ-X509-001: GeneralizedTime admits the years 0000 to 9999, and a
+    /// date in January or February of year 0 precedes the March 1 from
+    /// which the civil-day algorithm counts eras, so its year term is
+    /// negative there. It converts by the proleptic Gregorian calendar (year
+    /// 0 is a leap year; 0000-01-01 is 719 528 days before 1970-01-01, as
+    /// Python's `datetime` also computes) and clamps to 0 as a validity
+    /// time, without a panic.
+    #[test]
+    fn year_zero_times_convert_by_the_proleptic_calendar() {
+        assert_eq!(days_from_civil(0, 1, 1), -719_528);
+        assert_eq!(days_from_civil(0, 2, 29), -719_469);
+        assert_eq!(days_from_civil(0, 3, 1), -719_468);
+        assert_eq!(days_from_civil(1, 1, 1), -719_162);
+        for t in [&b"00000101000000Z"[..], b"00000229235959Z"] {
+            assert_eq!(parse_time(T_GENERALIZED_TIME, t).unwrap(), 0);
+        }
+        assert!(parse_time(T_GENERALIZED_TIME, b"00000230000000Z").is_err());
+    }
+
+    /// REQ-X509-003: reference IP addresses use the RFC 4291 section 2.2
+    /// text forms: eight groups of one to four hexadecimal digits, or fewer
+    /// around a single "::" that stands for at least one zero group, and
+    /// dotted quads have exactly four decimal parts. Anything else is not an
+    /// address.
+    #[test]
+    fn ip_address_text_requires_exact_groups_and_digits() {
+        assert_eq!(IpAddr::parse("192.0.2.1.5"), None);
+        let full = IpAddr::parse("2001:db8:0:0:0:0:0:1").unwrap();
+        assert_eq!(IpAddr::parse("2001:db8::1"), Some(full));
+        assert_eq!(
+            IpAddr::parse("1:2:3:4:5:6:7:8"),
+            Some(IpAddr::V6([0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8]))
+        );
+        for text in [
+            "1:2:3:4::5:6:7:8",
+            "::1:2:3:4:5:6:7:8",
+            "1:2:3:4:5:6:7:",
+            ":1:2:3:4:5:6:7",
+            "1::2:",
+            "12345::1",
+            "1:2:3:4:5:6:7:12345",
+            "1:2:3:4:5:6:7:00008",
+            "00001::",
+            "1:2:3:4:5:6:7",
+            "::+1",
+            "+1::",
+            "1:2:3:4:5:6:7:+8",
+            "::ffff:+1.2.3.4",
+        ] {
+            assert_eq!(IpAddr::parse(text), None, "{text}");
+        }
+    }
+
+    /// REQ-X509-040: the display common name is read from a complete Name:
+    /// attributes of other types are passed over wherever they sit, and a
+    /// Name without a CN has none.
+    #[test]
+    fn common_name_passes_over_other_attributes() {
+        let attribute = |oid: &[u8], tag: u8, value: &[u8]| {
+            let mut atv = Vec::new();
+            push_tlv(&mut atv, T_OID, oid);
+            push_tlv(&mut atv, tag, value);
+            let mut seq = Vec::new();
+            push_tlv(&mut seq, T_SEQUENCE, &atv);
+            let mut set = Vec::new();
+            push_tlv(&mut set, T_SET, &seq);
+            set
+        };
+        let name = |rdns: &[Vec<u8>]| {
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_SEQUENCE, &rdns.concat());
+            out
+        };
+        // id-at-organizationName, 2.5.4.10.
+        let org = attribute(&[0x55, 0x04, 0x0a], T_UTF8, b"Example Org");
+        let cn = attribute(OID_CN, T_PRINTABLE, b"Example Root");
+        assert_eq!(
+            name_common_name(&name(&[org.clone(), cn.clone()])),
+            Some("Example Root")
+        );
+        assert_eq!(
+            name_common_name(&name(&[cn, org.clone()])),
+            Some("Example Root")
+        );
+        assert_eq!(name_common_name(&name(&[org])), None);
+    }
+
+    /// REQ-X509-003: a wildcard stands for exactly one nonempty label, so it
+    /// does not match a reference name whose first label is empty.
+    #[test]
+    fn a_wildcard_never_matches_an_empty_label() {
+        assert!(dns_matches("*.example.com", "a.example.com"));
+        assert!(!dns_matches("*.example.com", ".example.com"));
+    }
+
+    /// REQ-X509-068: decipherOnly (bit 8) is the one KeyUsage bit in the
+    /// second octet; the encoder keeps that octet, with seven unused bits
+    /// after it and a zero first octet when no other bit is set (X.690
+    /// section 11.2.2).
+    #[test]
+    fn key_usage_encoding_reaches_the_second_octet() {
+        assert_eq!(key_usage_bits(1 << 8), [7, 0x00, 0x80]);
+        assert_eq!(
+            key_usage_bits(KU_DIGITAL_SIGNATURE | 1 << 8),
+            [7, 0x80, 0x80]
+        );
+    }
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -6578,6 +6719,7 @@ mod chain_tests {
 
     struct Pki {
         root: Vec<u8>,
+        root_key: SigningKey,
         int: Vec<u8>,
         int_key: SigningKey,
         leaf: Vec<u8>,
@@ -6610,6 +6752,7 @@ mod chain_tests {
         roots.add_der(&root).unwrap();
         Pki {
             root,
+            root_key,
             int,
             int_key,
             leaf,
@@ -8034,5 +8177,696 @@ mod chain_tests {
         leaf[at + oid.len() - 1] = 0x03; // ecdsa-with-SHA384
         let e = Certificate::parse(&leaf).unwrap_err();
         assert!(e.to_string().contains("signature algorithm differs"), "{e}");
+    }
+
+    /// Re-sign `original` with `key` after `edit` rewrites its TBS fields:
+    /// the explicit version INTEGER content (None when omitted), the other
+    /// fields before the extensions as complete TLVs, and the extension
+    /// entries (None when the [3] field is omitted).
+    fn rebuild_tbs(
+        original: &[u8],
+        key: &SigningKey,
+        edit: impl FnOnce(&mut Option<Vec<u8>>, &mut Vec<Vec<u8>>, &mut Option<Vec<Vec<u8>>>),
+    ) -> Vec<u8> {
+        let parsed = Certificate::parse(original).unwrap();
+        let mut outer = Der::new(original).nested(T_SEQUENCE).unwrap();
+        outer.expect(T_SEQUENCE).unwrap();
+        let algorithm = outer.expect_raw(T_SEQUENCE).unwrap();
+        let mut fields = Der::new(parsed.tbs).nested(T_SEQUENCE).unwrap();
+        let mut version = fields
+            .optional(T_CTX0)
+            .unwrap()
+            .map(|v| Der::new(v).expect(T_INTEGER).unwrap().to_vec());
+        let mut others = Vec::new();
+        let mut extensions = None;
+        while !fields.is_empty() {
+            if fields.peek() == Some(T_CTX3) {
+                let mut list = Der::new(fields.expect(T_CTX3).unwrap())
+                    .nested(T_SEQUENCE)
+                    .unwrap();
+                let mut entries = Vec::new();
+                while !list.is_empty() {
+                    entries.push(list.expect_raw(T_SEQUENCE).unwrap().to_vec());
+                }
+                extensions = Some(entries);
+            } else {
+                others.push(fields.tlv().unwrap().2.to_vec());
+            }
+        }
+        edit(&mut version, &mut others, &mut extensions);
+        let mut body = Vec::new();
+        if let Some(v) = version {
+            let mut integer = Vec::new();
+            push_tlv(&mut integer, T_INTEGER, &v);
+            push_tlv(&mut body, T_CTX0, &integer);
+        }
+        for field in others {
+            body.extend_from_slice(&field);
+        }
+        if let Some(entries) = extensions {
+            let mut list = Vec::new();
+            push_tlv(&mut list, T_SEQUENCE, &entries.concat());
+            push_tlv(&mut body, T_CTX3, &list);
+        }
+        let mut tbs = Vec::new();
+        push_tlv(&mut tbs, T_SEQUENCE, &body);
+        let signature = key
+            .sign(parsed.signature_scheme().unwrap(), &tbs, &mut rng())
+            .unwrap();
+        let mut content = tbs;
+        content.extend_from_slice(algorithm);
+        let mut bits = alloc::vec![0];
+        bits.extend_from_slice(&signature);
+        push_tlv(&mut content, T_BIT_STRING, &bits);
+        let mut der = Vec::new();
+        push_tlv(&mut der, T_SEQUENCE, &content);
+        der
+    }
+
+    fn extension_oid(entry: &[u8]) -> &[u8] {
+        Der::new(entry)
+            .nested(T_SEQUENCE)
+            .unwrap()
+            .expect(T_OID)
+            .unwrap()
+    }
+
+    /// REQ-X509-011: RFC 5280 section 4.1.2.1 defines versions v1(0) to
+    /// v3(2), and section 4.1.2.9 allows extensions only in v3. A higher
+    /// version, or extensions under an implicit or explicit v1 or v2, are
+    /// refused at parse time.
+    #[test]
+    fn unknown_versions_and_pre_v3_extensions_are_refused() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original = self_signed(&params("Version fixture", &[], true), &key, &mut r).unwrap();
+        Certificate::parse(&rebuild_tbs(&original, &key, |_, _, _| {})).unwrap();
+        for version in [3u8, 4, 0x7f] {
+            let e = Certificate::parse(&rebuild_tbs(&original, &key, |v, _, _| {
+                *v = Some(alloc::vec![version])
+            }))
+            .unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::BadCertificate);
+            assert_eq!(e.context(), "unknown certificate version");
+        }
+        for version in [None, Some(0u8), Some(1)] {
+            let e = Certificate::parse(&rebuild_tbs(&original, &key, |v, _, _| {
+                *v = version.map(|n| alloc::vec![n])
+            }))
+            .unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::BadCertificate);
+            assert_eq!(e.context(), "extensions in a certificate that is not v3");
+        }
+    }
+
+    /// REQ-X509-014: an explicit Extensions field holds SEQUENCE SIZE
+    /// (1..MAX) OF Extension (RFC 5280 section 4.1); an empty list is
+    /// malformed, where omitting the field is not.
+    #[test]
+    fn an_empty_extensions_list_is_refused() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original = self_signed(&params("Ext fixture", &[], true), &key, &mut r).unwrap();
+        let e = Certificate::parse(&rebuild_tbs(&original, &key, |_, _, x| {
+            *x = Some(Vec::new())
+        }))
+        .unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::BadCertificate);
+        assert_eq!(e.context(), "empty extensions list");
+        let v3_without = rebuild_tbs(&original, &key, |_, _, x| *x = None);
+        assert_eq!(
+            Certificate::parse(&v3_without).unwrap().extension_count(),
+            0
+        );
+    }
+
+    /// REQ-X509-041: RFC 5280 section 4.2 forbids more than one instance of
+    /// an extension; a repeated identifier is refused wherever the repeat
+    /// sits, while the same entries once each are accepted in any order.
+    #[test]
+    fn a_repeated_extension_is_refused() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original =
+            self_signed(&params("dup", &["dup.example.com"], false), &key, &mut r).unwrap();
+        let count = Certificate::parse(&original).unwrap().extension_count();
+        for index in 0..count {
+            for position in [0, index, count] {
+                let duplicated = rebuild_tbs(&original, &key, |_, _, x| {
+                    let entries = x.as_mut().unwrap();
+                    let copy = entries[index].clone();
+                    entries.insert(position, copy);
+                });
+                let e = Certificate::parse(&duplicated).unwrap_err();
+                assert_eq!(e.kind(), ErrorKind::BadCertificate, "{index} at {position}");
+                assert_eq!(e.context(), "duplicate extension");
+            }
+        }
+        let reversed = rebuild_tbs(&original, &key, |_, _, x| x.as_mut().unwrap().reverse());
+        assert_eq!(
+            Certificate::parse(&reversed).unwrap().extension_count(),
+            count
+        );
+    }
+
+    /// REQ-X509-029: an iPAddress SAN is an OCTET STRING of four (IPv4) or
+    /// sixteen (IPv6) octets (RFC 5280 section 4.2.1.6); any other length,
+    /// including the eight- and thirty-two-octet constraint forms, is refused.
+    #[test]
+    fn ip_address_alternative_names_require_address_lengths() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let original =
+            self_signed(&params("ip", &["ip.example.com"], false), &key, &mut r).unwrap();
+        for len in [0usize, 1, 3, 4, 5, 8, 15, 16, 17, 32] {
+            let cert = rebuild_tbs(&original, &key, |_, _, x| {
+                for entry in x.as_mut().unwrap().iter_mut() {
+                    if extension_oid(entry) == OID_EXT_SAN {
+                        let mut names = Vec::new();
+                        push_tlv(&mut names, T_GN_DNS, b"ip.example.com");
+                        push_tlv(&mut names, T_GN_IP, &alloc::vec![7u8; len]);
+                        let mut value = Vec::new();
+                        push_tlv(&mut value, T_SEQUENCE, &names);
+                        let mut replaced = Vec::new();
+                        push_ext(&mut replaced, OID_EXT_SAN, false, &value);
+                        *entry = replaced;
+                    }
+                }
+            });
+            match Certificate::parse(&cert) {
+                Ok(c) => {
+                    assert!(len == 4 || len == 16, "{len}");
+                    assert_eq!(c.ip_addresses()[0].octets(), alloc::vec![7u8; len]);
+                }
+                Err(e) => {
+                    assert!(len != 4 && len != 16, "{len}");
+                    assert_eq!(e.kind(), ErrorKind::BadCertificate);
+                    assert_eq!(e.context(), "iPAddress length");
+                }
+            }
+        }
+    }
+
+    /// REQ-X509-003: the SAN accessors report each name in its own family:
+    /// dNSName entries as text, iPAddress entries as IPv4 or IPv6 by length,
+    /// and a certificate without a SAN has neither.
+    #[test]
+    fn alternative_name_accessors_separate_the_families() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        // 65.66.67.68 is also the UTF-8 text "ABCD", and the DNS name is
+        // sixteen octets long, so neither family can pass for the other.
+        let ips = [
+            IpAddr::V4([65, 66, 67, 68]),
+            IpAddr::parse("2001:db8::1").unwrap(),
+        ];
+        let both = CertificateParams {
+            ip_addresses: &ips,
+            ..params("names", &["a.example.com", "abcd.example.org"], false)
+        };
+        let c = self_signed(&both, &key, &mut r).unwrap();
+        let c = Certificate::parse(&c).unwrap();
+        assert_eq!(c.dns_names(), ["a.example.com", "abcd.example.org"]);
+        assert_eq!(c.ip_addresses(), ips);
+        let only_v6 = CertificateParams {
+            ip_addresses: &ips[1..],
+            ..params("v6", &[], false)
+        };
+        let c = self_signed(&only_v6, &key, &mut r).unwrap();
+        let c = Certificate::parse(&c).unwrap();
+        assert!(c.dns_names().is_empty());
+        assert_eq!(c.ip_addresses(), &ips[1..]);
+        let ca = self_signed(&params("CA", &[], true), &key, &mut r).unwrap();
+        let ca = Certificate::parse(&ca).unwrap();
+        assert!(ca.ext.san.is_none());
+        assert!(ca.dns_names().is_empty());
+        assert!(ca.ip_addresses().is_empty());
+    }
+
+    /// REQ-X509-006: anyExtendedKeyUsage places no purpose restriction (RFC
+    /// 5280 section 4.2.1.12), so a leaf asserting only it is accepted for
+    /// either TLS role, by both validators.
+    #[test]
+    fn any_extended_key_usage_permits_either_role() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let mut r = rng();
+        let lk = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let mut purposes = Vec::new();
+        push_tlv(&mut purposes, T_OID, OID_ANY_EKU);
+        let mut value = Vec::new();
+        push_tlv(&mut value, T_SEQUENCE, &purposes);
+        let mut ext = Vec::new();
+        push_ext(&mut ext, OID_EXT_EKU, false, &value);
+        let issuer = Certificate::parse(&p.int).unwrap();
+        let leaf = build(
+            &CertificateParams {
+                usage: &[],
+                ..params("any", &["any.example.com"], false)
+            },
+            lk.spki(),
+            issuer.subject_der(),
+            &key_identifier(issuer.spki_der()).unwrap(),
+            &p.int_key,
+            &mut r,
+            &[ext],
+        )
+        .unwrap();
+        for usage in [Usage::ServerAuth, Usage::ClientAuth] {
+            let o = VerifyOptions::new(NOW, usage, ALL);
+            verify_both(&leaf, &[&p.int], &p.roots, &o).unwrap();
+        }
+    }
+
+    /// REQ-X509-006: keyCertSign and digitalSignature are demanded only when
+    /// a KeyUsage extension is present (RFC 5280 section 4.2.1.3); an issuer
+    /// and a leaf without one are accepted by both validators.
+    #[test]
+    fn absent_key_usage_does_not_restrict_either_role() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let drop_ku =
+            |_: &mut Option<Vec<u8>>, _: &mut Vec<Vec<u8>>, x: &mut Option<Vec<Vec<u8>>>| {
+                x.as_mut()
+                    .unwrap()
+                    .retain(|e| extension_oid(e) != OID_EXT_KU)
+            };
+        let int = rebuild_tbs(&p.int, &p.root_key, drop_ku);
+        assert_eq!(Certificate::parse(&int).unwrap().ext.key_usage, None);
+        let leaf = rebuild_tbs(&p.leaf, &p.int_key, drop_ku);
+        assert_eq!(Certificate::parse(&leaf).unwrap().ext.key_usage, None);
+        verify_both(&leaf, &[&int], &p.roots, &opts()).unwrap();
+        verify_both(&leaf, &[&p.int], &p.roots, &opts()).unwrap();
+        verify_both(&p.leaf, &[&int], &p.roots, &opts()).unwrap();
+    }
+
+    /// REQ-X509-013: RFC 5280 section 4.1.2.2 requires a positive serial, so
+    /// an all-zero configured serial is issued as the minimal INTEGER 1, and
+    /// a high first octet gains its sign padding.
+    #[test]
+    fn issued_serials_are_positive_minimal_integers() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let mut high = [0u8; 16];
+        high[15] = 0x80;
+        for (serial, expected) in [([0u8; 16], &[1u8][..]), (high, &[0, 0x80][..])] {
+            let p = CertificateParams {
+                serial,
+                ..params("serial", &[], true)
+            };
+            let c = self_signed(&p, &key, &mut r).unwrap();
+            assert_eq!(Certificate::parse(&c).unwrap().serial(), expected);
+        }
+    }
+
+    /// REQ-X509-022: validity times are encoded with four-digit years, so the
+    /// last representable second, 9999-12-31T23:59:59Z (RFC 5280 section
+    /// 4.1.2.5), is issued and round-trips, and one second later is refused
+    /// as invalid configuration.
+    #[test]
+    fn issued_validity_ends_at_year_9999() {
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let last = parse_time(T_GENERALIZED_TIME, b"99991231235959Z").unwrap();
+        assert_eq!(last, 253_402_300_799);
+        let p = |not_after| CertificateParams {
+            not_after,
+            ..params("far", &[], true)
+        };
+        let c = self_signed(&p(last), &key, &mut r).unwrap();
+        assert_eq!(Certificate::parse(&c).unwrap().not_after(), last);
+        for not_after in [last + 1, u64::MAX] {
+            let e = self_signed(&p(not_after), &key, &mut r).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::InvalidConfig);
+            assert_eq!(e.context(), "certificate time beyond year 9999");
+        }
+    }
+
+    /// REQ-X509-002, REQ-FIX-003: when every candidate issuer fails, the
+    /// first specific reason is reported by both validators; a later
+    /// candidate's different failure does not overwrite it.
+    #[test]
+    fn the_first_specific_path_failure_is_reported() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let mut r = rng();
+        let expired = issue(
+            &CertificateParams {
+                not_before: NOW - 2 * DAY,
+                not_after: NOW - DAY,
+                ..params("Int", &[], true)
+            },
+            p.int_key.spki(),
+            &p.root,
+            &p.root_key,
+            &mut r,
+        )
+        .unwrap();
+        let not_ca = issue(
+            &params("Int", &[], false),
+            p.int_key.spki(),
+            &p.root,
+            &p.root_key,
+            &mut r,
+        )
+        .unwrap();
+        assert_eq!(
+            err(verify_both(
+                &p.leaf,
+                &[&expired, &not_ca],
+                &p.roots,
+                &opts()
+            )),
+            ErrorKind::CertificateExpired
+        );
+        assert_eq!(
+            err(verify_both(
+                &p.leaf,
+                &[&not_ca, &expired],
+                &p.roots,
+                &opts()
+            )),
+            ErrorKind::CertificateUsage
+        );
+    }
+
+    /// `n` CA certificates named "Hub" under one key, each validly issuing the
+    /// others, and a leaf that any of them could have issued.
+    fn hub_graph(n: u8) -> (SigningKey, Vec<Vec<u8>>, Vec<u8>) {
+        let mut r = rng();
+        let hub_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let hub = self_signed(&params("Hub", &[], true), &hub_key, &mut r).unwrap();
+        let hubs = (1..=n)
+            .map(|i| {
+                let params = CertificateParams {
+                    serial: [i; 16],
+                    ..params("Hub", &[], true)
+                };
+                issue(&params, hub_key.spki(), &hub, &hub_key, &mut r).unwrap()
+            })
+            .collect();
+        let lk = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let leaf = issue(
+            &params("l", &["l.example.com"], false),
+            lk.spki(),
+            &hub,
+            &hub_key,
+            &mut r,
+        )
+        .unwrap();
+        (hub_key, hubs, leaf)
+    }
+
+    /// REQ-X509-002, REQ-FIX-003: seven hubs fit the fixed slots, and both
+    /// validators exhaust the same budget among intermediate candidates.
+    #[test]
+    fn a_seven_slot_adversarial_graph_exhausts_both_budgets() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let (_, hubs, leaf) = hub_graph(7);
+        let ints: Vec<&[u8]> = hubs.iter().map(|h| &h[..]).collect();
+        let e = verify_both(&leaf, &ints, &p.roots, &opts()).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::UnknownCa, "{e}");
+        assert_eq!(e.context(), "path search budget exhausted");
+        let fixed = verify_chain_fixed(&leaf, &ints, &p.roots, &opts())
+            .err()
+            .unwrap();
+        assert_eq!(fixed.context(), "path search budget exhausted");
+    }
+
+    /// REQ-X509-002, REQ-FIX-003: attempts at trust anchors draw on the same
+    /// budget. An anchor with the hubs' name and key is tried at every step
+    /// and always refused by its name constraints, so attempts alternate
+    /// between anchor and intermediate and the budget runs out on an anchor
+    /// attempt, in both validators.
+    #[test]
+    fn anchor_attempts_draw_on_the_search_budget() {
+        let mut r = rng();
+        let (hub_key, hubs, leaf) = hub_graph(7);
+        let mut base = Vec::new();
+        push_tlv(&mut base, T_GN_DNS, b"example.org");
+        let mut subtree = Vec::new();
+        push_tlv(&mut subtree, T_SEQUENCE, &base);
+        let mut body = Vec::new();
+        push_tlv(&mut body, T_CTX0, &subtree);
+        let mut nc = Vec::new();
+        push_tlv(&mut nc, T_SEQUENCE, &body);
+        let mut ext = Vec::new();
+        push_ext(&mut ext, OID_EXT_NC, true, &nc);
+        let anchor = build(
+            &params("Hub", &[], true),
+            hub_key.spki(),
+            &encode_name("Hub"),
+            &key_identifier(hub_key.spki()).unwrap(),
+            &hub_key,
+            &mut r,
+            &[ext],
+        )
+        .unwrap();
+        let mut roots = RootStore::new();
+        roots.add_der(&anchor).unwrap();
+        assert_eq!(
+            err(verify_both(&leaf, &[], &roots, &opts())),
+            ErrorKind::CertificateUsage
+        );
+        let ints: Vec<&[u8]> = hubs.iter().map(|h| &h[..]).collect();
+        let e = verify_both(&leaf, &ints, &roots, &opts()).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::UnknownCa, "{e}");
+        assert_eq!(e.context(), "path search budget exhausted");
+    }
+
+    /// REQ-X509-002, REQ-FIX-003: candidates that cannot be the issuer are
+    /// passed over without a signature check: the leaf itself when it names
+    /// itself as issuer, and a same-named CA whose subject key identifier
+    /// disagrees with the authority key identifier. Neither is reported as a
+    /// bad issuer; the path is simply unknown.
+    #[test]
+    fn impossible_issuers_are_not_tried() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let mut r = rng();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let own = self_signed(&params("self", &["self.example.com"], false), &key, &mut r).unwrap();
+        assert_eq!(
+            err(verify_both(&own, &[&own], &RootStore::new(), &opts())),
+            ErrorKind::UnknownCa
+        );
+        let other = self_signed(&params("Int", &[], true), &key, &mut r).unwrap();
+        assert_eq!(
+            err(verify_both(&p.leaf, &[&other], &p.roots, &opts())),
+            ErrorKind::UnknownCa
+        );
+        verify_both(&p.leaf, &[&other, &p.int], &p.roots, &opts()).unwrap();
+    }
+
+    /// REQ-FIX-003: a depth limit beyond the fixed search's eight slots is
+    /// CapacityExceeded there, while the owned validator honours it.
+    #[test]
+    fn depth_limits_beyond_the_fixed_slots_are_refused() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let mut o = opts();
+        o.max_depth = 9;
+        assert_eq!(
+            verify_chain_fixed(&p.leaf, &[&p.int], &p.roots, &o)
+                .err()
+                .map(|e| e.kind()),
+            Some(ErrorKind::CapacityExceeded)
+        );
+        assert_eq!(
+            verify_both(&p.leaf, &[&p.int], &p.roots, &o).unwrap().depth,
+            2
+        );
+        o.max_depth = 8;
+        verify_chain_fixed(&p.leaf, &[&p.int], &p.roots, &o).unwrap();
+    }
+
+    /// REQ-CRL-003, REQ-FIX-003: both validators check every certificate
+    /// below the anchor against a CRL from its own issuer. A path is reported
+    /// CRL-checked only when every link is covered; with require_crl, a
+    /// missing CRL for any link, or no CRL store at all, is
+    /// BadCertificateStatus.
+    #[test]
+    fn crls_cover_every_link_in_both_validators() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let mut r = rng();
+        let leaf_crl =
+            crl::build(&p.int, &p.int_key, &[], NOW - 60, NOW + 3600, 1, &mut r).unwrap();
+        let int_crl =
+            crl::build(&p.root, &p.root_key, &[], NOW - 60, NOW + 3600, 1, &mut r).unwrap();
+        let mut both = crl::CrlStore::new();
+        both.add_der(&leaf_crl).unwrap();
+        both.add_der(&int_crl).unwrap();
+        let mut leaf_only = crl::CrlStore::new();
+        leaf_only.add_der(&leaf_crl).unwrap();
+        let mut int_only = crl::CrlStore::new();
+        int_only.add_der(&int_crl).unwrap();
+
+        let mut o = opts();
+        o.crls = Some(&both);
+        assert!(
+            verify_both(&p.leaf, &[&p.int], &p.roots, &o)
+                .unwrap()
+                .crl_checked
+        );
+        for partial in [&leaf_only, &int_only] {
+            o.crls = Some(partial);
+            o.require_crl = false;
+            let report = verify_both(&p.leaf, &[&p.int], &p.roots, &o).unwrap();
+            assert!(!report.crl_checked);
+            o.require_crl = true;
+            assert_eq!(
+                err(verify_both(&p.leaf, &[&p.int], &p.roots, &o)),
+                ErrorKind::BadCertificateStatus
+            );
+        }
+        o.crls = None;
+        assert_eq!(
+            err(verify_both(&p.leaf, &[&p.int], &p.roots, &o)),
+            ErrorKind::BadCertificateStatus
+        );
+        o.crls = Some(&both);
+        assert!(
+            verify_both(&p.leaf, &[&p.int], &p.roots, &o)
+                .unwrap()
+                .crl_checked
+        );
+    }
+
+    /// REQ-X509-001: a bundle loads what it can. A block whose base64 or DER
+    /// is broken is skipped, an unterminated block ends the scan, and a
+    /// bundle that adds nothing to a store already holding anchors reports
+    /// zero instead of failing.
+    #[test]
+    fn pem_bundles_skip_unusable_blocks() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let other = pki([KeyKind::EcdsaP256; 3]);
+        let pem = |d: &[u8]| {
+            let mut out = alloc::vec![0u8; d.len().div_ceil(3) * 4];
+            ic_core::codec::base64_encode(d, &mut out).unwrap();
+            alloc::format!(
+                "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+                String::from_utf8(out).unwrap()
+            )
+        };
+        let bad_base64 = "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n";
+        let bad_der = pem(&[0x30, 0x03, 0x02, 0x01, 0x00]);
+        let unterminated = pem(&other.root).replace("-----END CERTIFICATE-----\n", "");
+        let text = alloc::format!(
+            "{}{bad_base64}{bad_der}{}{unterminated}",
+            pem(&p.root),
+            pem(&p.int)
+        );
+        let mut store = RootStore::new();
+        assert_eq!(store.add_pem_bundle(&text).unwrap(), 2);
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.add_pem_bundle(&pem(&p.root)).unwrap(), 0);
+        assert_eq!(store.add_pem_bundle(bad_base64).unwrap(), 0);
+        assert_eq!(store.len(), 2);
+        for nothing in [bad_base64, bad_der.as_str(), unterminated.as_str()] {
+            assert_eq!(
+                RootStore::new().add_pem_bundle(nothing).unwrap_err().kind(),
+                ErrorKind::InvalidConfig
+            );
+        }
+    }
+
+    /// REQ-FIX-003: certificates in the peer's list that do not parse are
+    /// ignored by both validators, as `verify_chain` documents, wherever they
+    /// sit; the fixed search reaches the same path instead of refusing.
+    #[test]
+    fn unparseable_extra_certificates_are_ignored_by_both_validators() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let truncated = &p.int[..p.int.len() - 1];
+        for junk in [
+            &[0x30, 0x00][..],
+            &[0x30, 0x03, 0x02, 0x01, 0x00],
+            truncated,
+        ] {
+            for ints in [[junk, &p.int[..]], [&p.int[..], junk]] {
+                let report = verify_both(&p.leaf, &ints, &p.roots, &opts()).unwrap();
+                assert_eq!(report.depth, 2);
+                verify_chain_fixed(&p.leaf, &ints, &p.roots, &opts()).unwrap();
+            }
+        }
+    }
+
+    /// REQ-FIX-003, REQ-X509-006: both validators check a leaf's validity
+    /// before its key usage, so a leaf that is expired and also lacks
+    /// digitalSignature is refused for the same reason by each; a current one
+    /// lacking it is a usage failure in both.
+    #[test]
+    fn leaf_checks_run_in_the_same_order_in_both_validators() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let mut r = rng();
+        let lk = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let expired = issue(
+            &CertificateParams {
+                not_before: NOW - 2 * DAY,
+                not_after: NOW - DAY,
+                ..params("leaf", &["leaf.example.com"], false)
+            },
+            lk.spki(),
+            &p.int,
+            &p.int_key,
+            &mut r,
+        )
+        .unwrap();
+        // keyEncipherment (bit 2) only.
+        let mut ku = Vec::new();
+        push_tlv(&mut ku, T_BIT_STRING, &key_usage_bits(1 << 2));
+        let mut entry = Vec::new();
+        push_ext(&mut entry, OID_EXT_KU, true, &ku);
+        let no_signing = |x: &mut Option<Vec<Vec<u8>>>| {
+            for e in x.as_mut().unwrap().iter_mut() {
+                if extension_oid(e) == OID_EXT_KU {
+                    *e = entry.clone();
+                }
+            }
+        };
+        let expired = rebuild_tbs(&expired, &p.int_key, |_, _, x| no_signing(x));
+        let current = rebuild_tbs(&p.leaf, &p.int_key, |_, _, x| no_signing(x));
+        assert_eq!(
+            err(verify_both(&expired, &[&p.int], &p.roots, &opts())),
+            ErrorKind::CertificateExpired
+        );
+        assert_eq!(
+            err(verify_both(&current, &[&p.int], &p.roots, &opts())),
+            ErrorKind::CertificateUsage
+        );
+    }
+
+    /// REQ-X509-008: name constraints apply to names of their own form (RFC
+    /// 5280 section 4.2.1.10). Under DNS-only constraints, URI and rfc822Name
+    /// SAN entries are outside their scope and passed over, while the
+    /// dNSName beside them is still bound by them.
+    #[test]
+    fn other_name_forms_are_outside_dns_constraints() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let ca = constrained(&p, &[(T_GN_DNS, b"example.com")], &[]);
+        let issuer = Certificate::parse(&ca.0).unwrap();
+        let mut r = rng();
+        let mut leaf_with = |dns: &str| {
+            let lk = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+            let mut names = Vec::new();
+            push_tlv(&mut names, 0x86, b"https://evil.org/");
+            push_tlv(&mut names, 0x81, b"admin@evil.org");
+            push_tlv(&mut names, T_GN_DNS, dns.as_bytes());
+            let mut value = Vec::new();
+            push_tlv(&mut value, T_SEQUENCE, &names);
+            let mut ext = Vec::new();
+            push_ext(&mut ext, OID_EXT_SAN, false, &value);
+            build(
+                &params("leaf", &[], false),
+                lk.spki(),
+                issuer.subject_der(),
+                &key_identifier(issuer.spki_der()).unwrap(),
+                &ca.1,
+                &mut r,
+                &[ext],
+            )
+            .unwrap()
+        };
+        let inside = leaf_with("a.example.com");
+        let outside = leaf_with("a.evil.org");
+        verify_both(&inside, &[&ca.0, &p.int], &p.roots, &opts()).unwrap();
+        assert_eq!(
+            err(verify_both(&outside, &[&ca.0, &p.int], &p.roots, &opts())),
+            ErrorKind::CertificateUsage
+        );
     }
 }
