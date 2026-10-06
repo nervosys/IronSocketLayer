@@ -108,9 +108,9 @@ in-memory tests are backed by handshakes with independent implementations:
   IV, header protection for AES and ChaCha20), RFC 9180 Appendix A.1.1 (HPKE)
   and the RFC 8446 HelloRetryRequest constant.
 
-Robustness is checked separately. Six libFuzzer targets under
+Robustness is checked separately. Eight libFuzzer targets under
 AddressSanitizer cover every peer-facing parser and whole client, server and
-QUIC connections (`fuzz/`). Branch coverage is measured, with each refusal it
+QUIC connections, for both engines (`fuzz/`). Branch coverage is measured, with each refusal it
 found untested now pinned by a test that fails when the check is removed
 (`docs/DO-178C.md`).
 

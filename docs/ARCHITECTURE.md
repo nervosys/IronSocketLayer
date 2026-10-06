@@ -133,8 +133,11 @@ with the issuer bound by the signature; SHA-2 CertIDs are checked in full.
 * `crypto/mod.rs`: hashes and the running transcript, HMAC, HKDF and
   HKDF-Expand-Label, AEADs, QUIC header protection.
 * `crypto/kx.rs`: every key-exchange group, including the hybrid encodings.
-* `crypto/sign.rs`: signing keys (PKCS#8, PEM, generation), SPKI parsing and
-  signature verification.
+* `crypto/sign.rs`: signing keys (PKCS#8, PEM, generation; ML-DSA private
+  keys through `ic_pkix::MlDsaPrivateKey`), SPKI parsing and signature
+  verification.
+* `crypto/hpke.rs`: an adapter over IronCrypto's `ic-hpke` (RFC 9180 base
+  mode), naming the identifiers ECH uses and mapping its errors.
 
 Each function reports the IronCrypto ontology ids it uses, which is what lets
 `policy` check them through `ic_fips::check` and lets the agreement tests
