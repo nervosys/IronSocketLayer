@@ -939,3 +939,29 @@ fn a_finished_of_the_wrong_length_is_decode_error() {
         assert_eq!(s.read_tls(&rec).unwrap_err().kind(), kind, "{len}");
     }
 }
+
+/// REQ-0RTT-008: with no 0-RTT to skip, an application-data record before
+/// any keys, even an empty one, is unexpected_message: a zero skip budget
+/// covers a zero-length record no better than any other. Found by
+/// tlsfuzzer's test-tls13-zero-length-data, which sends one between the
+/// fragments of a ClientHello.
+#[test]
+fn an_empty_application_data_record_before_keys_is_refused() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = Arc::new(server_config(&pki));
+    // Alone, before anything.
+    let mut s = Connection::server(sc.clone()).unwrap();
+    let e = s.read_tls(&[23, 3, 3, 0, 0]).unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::UnexpectedMessage, "{e}");
+    // Between two fragments of a ClientHello.
+    let hello = Connection::client(Arc::new(pki.client_config(Profile::Default)), "server.test")
+        .unwrap()
+        .take_tls();
+    let mut first = vec![22, 3, 1, 0, 2];
+    first.extend_from_slice(&hello[5..7]);
+    let mut s = Connection::server(sc).unwrap();
+    s.read_tls(&first).unwrap();
+    let e = s.read_tls(&[23, 3, 3, 0, 0]).unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::UnexpectedMessage, "{e}");
+    assert!(!s.take_tls().is_empty(), "an alert");
+}

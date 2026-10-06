@@ -900,7 +900,11 @@ impl Connection {
                 }
                 Transport::Tls { read: None, .. } => {
                     if ty == ContentType::ApplicationData {
-                        if self.core.skip_early_budget >= rec.body.len() {
+                        // REQ-0RTT-008: only while there is 0-RTT to skip;
+                        // a zero budget does not cover an empty record.
+                        if self.core.skip_early_budget != 0
+                            && self.core.skip_early_budget >= rec.body.len()
+                        {
                             self.core.skip_early_budget -= rec.body.len();
                             continue;
                         }

@@ -309,17 +309,40 @@ pub(crate) fn pem_blocks(text: &str, label: &str) -> Result<Vec<Vec<u8>>, String
     Ok(out)
 }
 
-/// Serve TLS on `port`, echoing each connection's first message and printing
-/// its session report as one JSON line.
-pub fn serve(
-    cert_path: &str,
-    key_path: &str,
-    bind: &str,
-    port: u16,
-    profile: Option<&str>,
-    alpn: Option<&str>,
-    once: bool,
-) -> Result<(), String> {
+/// What `isl serve` serves, and how.
+#[derive(Clone, Copy)]
+pub struct ServeOptions<'a> {
+    /// PEM certificate chain, leaf first.
+    pub cert_path: &'a str,
+    /// PKCS#8 PEM private key.
+    pub key_path: &'a str,
+    /// Address to bind.
+    pub bind: &'a str,
+    /// Port to listen on.
+    pub port: u16,
+    /// Profile id, or the default.
+    pub profile: Option<&'a str>,
+    /// Comma-separated ALPN protocols.
+    pub alpn: Option<&'a str>,
+    /// Stop after one connection.
+    pub once: bool,
+    /// Answer one HTTP request per connection instead of echoing.
+    pub http: bool,
+}
+
+/// Serve TLS, echoing what each connection sends (or answering one HTTP
+/// request) and printing its session report as one JSON line.
+pub fn serve(o: &ServeOptions<'_>) -> Result<(), String> {
+    let ServeOptions {
+        cert_path,
+        key_path,
+        bind,
+        port,
+        profile,
+        alpn,
+        once,
+        http,
+    } = *o;
     let profile = parse_profile(profile)?;
     prepare(profile)?;
     let chain = pem_blocks(
@@ -347,6 +370,33 @@ pub fn serve(
         let _ = sock.set_write_timeout(Some(TIMEOUT));
         let limits = ironsocketlayer::stream::Timeouts::new(TIMEOUT, TIMEOUT);
         match TlsStream::accept_with(sock, config.clone(), limits) {
+            Ok(mut tls) if http => {
+                // As `openssl s_server -www` does, which conformance suites
+                // such as tlsfuzzer expect: read one request to its blank
+                // line, answer once, close.
+                const END: &[u8] = b"\r\n\r\n";
+                let mut req = Vec::new();
+                let mut buf = vec![0u8; 16 * 1024];
+                while !req.windows(4).any(|w| w == END) && req.len() < 64 * 1024 {
+                    match tls.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                if req.windows(4).any(|w| w == END) {
+                    let body = b"<html><body>isl</body></html>\r\n";
+                    let head = format!(
+                        "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
+                        body.len()
+                    );
+                    // One record, as tlsfuzzer expects one.
+                    let mut response = head.into_bytes();
+                    response.extend_from_slice(body);
+                    let _ = tls.write_all(&response);
+                }
+                let _ = tls.close();
+                println!("{}", tls.report().to_json());
+            }
             Ok(mut tls) => {
                 // Echo what arrives until the peer closes or goes quiet for
                 // half a second after its first message, so a request of

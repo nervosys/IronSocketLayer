@@ -70,11 +70,16 @@ versions may change the API.
     tolerated two;
   - after a HelloRetryRequest, a server kept skipping undecryptable records
     as rejected 0-RTT data after the second ClientHello; such a record is
-    now `bad_record_mac` (RFC 8446 §4.2.10).
+    now `bad_record_mac` (RFC 8446 §4.2.10);
+  - an empty application-data record before any keys was silently skipped
+    (a zero skip budget covered a zero-length record), so a handshake
+    stalled; it is `unexpected_message`.
 - A `TlsStream` over TCP whose handshake failed could lose its own alert:
   closing the socket with the peer's bytes unread made the kernel send a
   reset, which on Linux discarded the alert before the peer read it. The TCP
   constructors now close gracefully. Found with tlsfuzzer.
+- `isl serve --http` answers one HTTP request per connection, as
+  `openssl s_server -www` does, for conformance suites such as tlsfuzzer.
 - `isl serve` echoes whole messages (it echoed one read of at most 4 KiB),
   uses the handshake deadline, and keeps its idle limit with
   `TlsStream::set_timeouts`, which is new.

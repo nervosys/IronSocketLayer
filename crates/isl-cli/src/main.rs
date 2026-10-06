@@ -28,7 +28,7 @@ USAGE:
     isl capabilities [--json]
     isl selftest [--json]
     isl probe <host[:port]> [--profile <p>] [--alpn h2,http/1.1] [--ech] [--json]
-    isl serve --cert <chain.pem> --key <pkcs8.pem> [--bind 127.0.0.1] [--port 8443] [--profile <p>] [--alpn ..] [--once]
+    isl serve --cert <chain.pem> --key <pkcs8.pem> [--bind 127.0.0.1] [--port 8443] [--profile <p>] [--alpn ..] [--once] [--http]
     isl inspect <cert.pem> [--json]
     isl verify <chain.pem> --roots <roots.pem> [--name <host>] [--client] [--json]
     isl check-config <config.json|-> [--json]
@@ -579,15 +579,16 @@ failed: {e} ({})",
                 Some(Ok(p)) => p,
                 Some(Err(_)) => return usage_error("bad --port"),
             };
-            match net::serve(
-                cert,
-                key,
-                args.option("bind").unwrap_or("127.0.0.1"),
+            match net::serve(&net::ServeOptions {
+                cert_path: cert,
+                key_path: key,
+                bind: args.option("bind").unwrap_or("127.0.0.1"),
                 port,
-                args.option("profile"),
-                args.option("alpn"),
-                args.flag("once"),
-            ) {
+                profile: args.option("profile"),
+                alpn: args.option("alpn"),
+                once: args.flag("once"),
+                http: args.flag("http"),
+            }) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("error: {e}");
