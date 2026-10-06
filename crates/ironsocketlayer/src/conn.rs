@@ -846,11 +846,13 @@ impl Connection {
                         ..
                     }
                 );
-                // At most two compatibility CCS records (one per flight, and
-                // one more around a HelloRetryRequest), as the fixed engine
-                // allows: not an unbounded stream. REQ-CONN-004.
+                // One compatibility CCS record: a client sends it after its
+                // first ClientHello or before its second flight, not both
+                // (RFC 8446 Appendix D.4), and a server once. A second is
+                // unexpected_message, as tlsfuzzer and OpenSSL expect.
+                // REQ-CONN-004.
                 self.core.ccs_seen = self.core.ccs_seen.saturating_add(1);
-                if rec.body != [1] || !allowed || self.core.ccs_seen > 2 {
+                if rec.body != [1] || !allowed || self.core.ccs_seen > 1 {
                     return Err(Error::new(
                         ErrorKind::UnexpectedMessage,
                         "unexpected ChangeCipherSpec",

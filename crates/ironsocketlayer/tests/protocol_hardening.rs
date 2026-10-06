@@ -227,7 +227,9 @@ fn application_data_inside_a_fragmented_handshake_message_is_refused() {
     );
 }
 
-/// REQ-CONN-004: at most two compatibility ChangeCipherSpec records.
+/// REQ-CONN-004: one compatibility ChangeCipherSpec record (RFC 8446
+/// appendix D.4); a second is unexpected_message, as tlsfuzzer's
+/// test-tls13-multiple-ccs-messages expects.
 #[test]
 fn change_cipher_spec_records_are_bounded() {
     let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
@@ -235,7 +237,6 @@ fn change_cipher_spec_records_are_bounded() {
         Connection::client(Arc::new(pki.client_config(Profile::Default)), "server.test").unwrap();
     let mut s = Connection::server(Arc::new(pki.server_config(Profile::Default))).unwrap();
     s.read_tls(&c.take_tls()).unwrap();
-    s.read_tls(&[20u8, 3, 3, 0, 1, 1]).unwrap();
     s.read_tls(&[20u8, 3, 3, 0, 1, 1]).unwrap();
     assert_eq!(
         s.read_tls(&[20u8, 3, 3, 0, 1, 1]).unwrap_err().kind(),

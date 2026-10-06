@@ -64,7 +64,10 @@ versions may change the API.
   - a record's inner plaintext (content, type and padding) may not exceed
     2^14 + 1 bytes (RFC 8446 §5.4); only the content was limited, so up to
     2^14 + 239 bytes were accepted;
-  - a Finished of the wrong length is `decode_error`, not `decrypt_error`.
+  - a Finished of the wrong length is `decode_error`, not `decrypt_error`;
+  - a second compatibility ChangeCipherSpec is `unexpected_message`, in
+    both engines: a peer sends at most one (RFC 8446 appendix D.4). 0.2
+    tolerated two.
 - A `TlsStream` over TCP whose handshake failed could lose its own alert:
   closing the socket with the peer's bytes unread made the kernel send a
   reset, which on Linux discarded the alert before the peer read it. The TCP

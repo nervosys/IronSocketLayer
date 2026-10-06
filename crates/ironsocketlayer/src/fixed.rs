@@ -651,7 +651,7 @@ impl<'a> Connection<'a> {
                 || self.report.state == State::Connected
                 || (self.report.state == State::WaitClientHello && !self.retried)
                 || self.report.state == State::Start
-                || self.ccs_count == 2
+                || self.ccs_count == 1
             {
                 return Err(unexpected());
             }
