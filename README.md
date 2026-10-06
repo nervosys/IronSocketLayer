@@ -115,6 +115,11 @@ in-memory tests are backed by handshakes with independent implementations:
   IV, header protection for AES and ChaCha20), RFC 9180 Appendix A.1.1 (HPKE)
   and the RFC 8446 HelloRetryRequest constant.
 
+Conformance is also checked by an independent suite, tlsfuzzer: its TLS 1.3
+scripts found eight defects, all fixed, and every remaining failure is
+classified in [docs/VERIFICATION-2026-10-06-tlsfuzzer.md](docs/VERIFICATION-2026-10-06-tlsfuzzer.md)
+(`scripts/tlsfuzzer.sh` reproduces the run).
+
 Robustness is checked separately. Eight libFuzzer targets under
 AddressSanitizer cover every peer-facing parser and whole client, server and
 QUIC connections, for both engines (`fuzz/`). Branch coverage is measured, with each refusal it

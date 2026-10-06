@@ -1288,6 +1288,11 @@ pub fn take_message(buf: &mut Vec<u8>, max: usize) -> Result<Option<(HandshakeTy
         return Ok(None);
     }
     let len = u32::from_be_bytes([0, buf[1], buf[2], buf[3]]) as usize;
+    // REQ-KS-004: a Finished is as long as a hash; one announced longer than
+    // any is malformed, refused on its header, not buffered.
+    if buf[0] == 20 && len > crate::crypto::MAX_HASH_LEN {
+        return Err(decode_err("Finished has the wrong length"));
+    }
     if len > max {
         return Err(Error::new(
             ErrorKind::IllegalParameter,

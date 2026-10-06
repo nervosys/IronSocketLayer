@@ -13,6 +13,7 @@ python scripts/coverage_review.py target/coverage-whole-suite/gaps.csv docs/evid
 ./scripts/footprint.ps1
 cargo run --release -p ironsocketlayer --example fixed_stack   # on Linux
 sh scripts/qemu-m4.sh   # emulated Cortex-M4; needs qemu-system-arm
+sh scripts/tlsfuzzer.sh ~/tlsfuzzer-work   # tlsfuzzer TLS 1.3 conformance; Linux, python3, git, openssl
 ./scripts/fuzz.ps1 -Seconds 600
 cargo test -p ironsocketlayer --release --lib padding_scan_timing_experiment -- --ignored --nocapture
 ```

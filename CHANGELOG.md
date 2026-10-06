@@ -73,7 +73,13 @@ versions may change the API.
     now `bad_record_mac` (RFC 8446 §4.2.10);
   - an empty application-data record before any keys was silently skipped
     (a zero skip budget covered a zero-length record), so a handshake
-    stalled; it is `unexpected_message`.
+    stalled; it is `unexpected_message`;
+  - a Finished announced longer than any hash is refused on its header.
+
+### Verification
+- tlsfuzzer's 57 TLS 1.3 scripts, run with `scripts/tlsfuzzer.sh`; the
+  results and the classification of every remaining failure are in
+  `docs/VERIFICATION-2026-10-06-tlsfuzzer.md`.
 - A `TlsStream` over TCP whose handshake failed could lose its own alert:
   closing the socket with the peer's bytes unread made the kernel send a
   reset, which on Linux discarded the alert before the peer read it. The TCP

@@ -923,9 +923,26 @@ fn tlsfuzzer_refusals() {
 
 /// REQ-KS-004: a client Finished padded or truncated (tlsfuzzer's
 /// test-tls13-finished) is decode_error; one of the right length that does
-/// not verify stays decrypt_error.
+/// not verify stays decrypt_error. One announced as 16 MiB is refused on its
+/// header alone.
 #[test]
 fn a_finished_of_the_wrong_length_is_decode_error() {
+    {
+        let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+        let mut s = Connection::server(Arc::new(server_config(&pki))).unwrap();
+        let (mut w, _) = raw_before_client_finished(&mut s);
+        let header = [20u8, 0xff, 0xff, 0xff];
+        let rec = seal(&mut w, ContentType::Handshake, &header);
+        let e = s.read_tls(&rec).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Decode, "{e}");
+        // One alert, and nothing more however much follows.
+        let mut out = s.take_tls();
+        assert!(record::take_record(&mut out).unwrap().is_some());
+        assert!(out.is_empty(), "exactly one record");
+        let more = seal(&mut w, ContentType::Handshake, &[0u8; 1000]);
+        assert!(s.read_tls(&more).is_err());
+        assert!(s.take_tls().is_empty(), "no second alert");
+    }
     for (len, kind) in [
         (28usize, ErrorKind::Decode),
         (40, ErrorKind::Decode),
