@@ -89,7 +89,8 @@ Connection: close
     )
     .map_err(|e| e.to_string())?;
     let mut body = Vec::new();
-    let _ = tls.read_to_end(&mut body);
+    // Bounded: a DNS JSON answer is small.
+    let _ = (&mut tls).take(64 * 1024).read_to_end(&mut body);
     let body = String::from_utf8_lossy(&body);
     let at = body
         .find("ech=")
@@ -103,6 +104,38 @@ Connection: close
     let n = ic_core::codec::base64_decode(b64.as_bytes(), &mut out).map_err(|e| e.to_string())?;
     out.truncate(n);
     Ok(out)
+}
+
+/// Whether an address is one an agent's probe should not reach without the
+/// operator's say-so: loopback, private (RFC 1918, unique-local), link-local
+/// (including cloud metadata at 169.254.169.254), shared, unspecified,
+/// multicast or broadcast. IPv4-mapped IPv6 addresses are judged as IPv4.
+pub fn is_internal(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || o[0] == 0
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_internal(IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 /// Run one handshake over TCP; returns the connection and any transport error.
@@ -119,7 +152,13 @@ fn handshake_once(
         .map_err(|e| e.to_string())?;
     let mut conn = Connection::client(Arc::new(config), host).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; 32 * 1024];
+    // An absolute bound as well as the per-read one: a peer trickling a byte
+    // just inside each read timeout cannot hold the probe indefinitely.
+    let deadline = std::time::Instant::now() + 3 * TIMEOUT;
     let transport_error = loop {
+        if std::time::Instant::now() > deadline {
+            break Some("handshake deadline exceeded".into());
+        }
         let out = conn.take_tls();
         if !out.is_empty() {
             if let Err(e) = sock.write_all(&out) {
@@ -155,6 +194,7 @@ pub fn tls_probe(
     profile: Option<&str>,
     alpn: Option<&str>,
     ech: bool,
+    allow_internal: bool,
 ) -> Result<Json, String> {
     let (host, port) = split_target(target)?;
     let profile = parse_profile(profile)?;
@@ -171,6 +211,14 @@ pub fn tls_probe(
         .map_err(|e| format!("resolve {host}: {e}"))?
         .next()
         .ok_or_else(|| format!("{host} did not resolve"))?;
+    // The address checked is the address connected to, so a name that
+    // resolves differently on a second lookup cannot slip past.
+    if !allow_internal && is_internal(addr.ip()) {
+        return Err(format!(
+            "{host} resolves to {}, a loopback, private, link-local or otherwise internal address;              the MCP server does not probe those unless ISL_MCP_ALLOW_PRIVATE=1 is set",
+            addr.ip()
+        ));
+    }
     let (mut conn, mut transport_error) = handshake_once(addr, &host, config.clone())?;
     let mut retried = false;
     if conn.error().map(|e| e.kind()) == Some(ironsocketlayer::ErrorKind::EchRejected) {
@@ -262,6 +310,7 @@ fn pem_blocks(text: &str, label: &str) -> Result<Vec<Vec<u8>>, String> {
 pub fn serve(
     cert_path: &str,
     key_path: &str,
+    bind: &str,
     port: u16,
     profile: Option<&str>,
     alpn: Option<&str>,
@@ -282,11 +331,13 @@ pub fn serve(
     config.common.alpn = alpn_list(alpn);
     let config = Arc::new(config);
     config.validate().map_err(|e| e.to_string())?;
-    let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|e| e.to_string())?;
-    eprintln!("isl: serving {} on port {port}", profile.id());
+    let listener =
+        TcpListener::bind((bind, port)).map_err(|e| format!("bind {bind}:{port}: {e}"))?;
+    eprintln!("isl: serving {} on {bind}:{port}", profile.id());
     for sock in listener.incoming() {
         let Ok(sock) = sock else { continue };
         let _ = sock.set_read_timeout(Some(TIMEOUT));
+        let _ = sock.set_write_timeout(Some(TIMEOUT));
         match TlsStream::accept(sock, config.clone()) {
             Ok(mut tls) => {
                 let mut buf = [0u8; 4096];
@@ -337,6 +388,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn internal_addresses_are_recognised() {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "fd12::1",
+            "::ffff:10.0.0.1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(is_internal(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "100.128.0.1",
+            "2606:4700::1111",
+            "::ffff:1.1.1.1",
+        ] {
+            assert!(!is_internal(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    /// The MCP server's probe refuses an internal target before connecting.
+    #[test]
+    fn the_mcp_probe_refuses_internal_targets() {
+        let e = tls_probe("127.0.0.1:9", None, None, false, false).unwrap_err();
+        assert!(e.contains("ISL_MCP_ALLOW_PRIVATE"), "{e}");
+    }
+
+    #[test]
     fn targets_parse_or_are_refused_without_touching_the_network() {
         assert_eq!(
             split_target("example.com").unwrap(),
@@ -348,8 +439,8 @@ mod tests {
         );
         assert_eq!(split_target("[::1]:853").unwrap(), ("::1".into(), 853));
         for bad in ["", "exa mple.com", "example.com:99999", "\u{0}", "a..b"] {
-            assert!(tls_probe(bad, None, None, false).is_err(), "{bad:?}");
+            assert!(tls_probe(bad, None, None, false, true).is_err(), "{bad:?}");
         }
-        assert!(tls_probe("example.com", Some("no-such-profile"), None, false).is_err());
+        assert!(tls_probe("example.com", Some("no-such-profile"), None, false, true).is_err());
     }
 }

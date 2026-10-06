@@ -1021,7 +1021,16 @@ impl ClientHs {
                 sha256,
                 check_names,
             } => {
-                check_pinned(leaf, sha256, now)?;
+                let opts = x509::VerifyOptions {
+                    now,
+                    usage: Usage::ServerAuth,
+                    allowed_schemes: &self.config.common.schemes,
+                    max_depth: 8,
+                    min_rsa_bits: self.config.common.profile.min_rsa_bits(),
+                    crls: None,
+                    require_crl: false,
+                };
+                check_pinned(leaf, sha256, &opts)?;
                 if *check_names {
                     self.name_check(leaf)?;
                 }
@@ -1346,7 +1355,7 @@ impl ClientHs {
     /// Keep a NewSessionTicket for the next connection to this name.
     fn on_ticket(&mut self, core: &mut Core, body: &[u8]) -> Result<()> {
         let nst = msgs::NewSessionTicket::decode(body)?;
-        core.report.tickets_received += 1;
+        core.report.tickets_received = core.report.tickets_received.saturating_add(1);
         core.report.event("event:ticket-received", "");
         let (Some(store), Some(res), Some(suite)) =
             (&self.config.tickets, &self.resumption_master, core.suite)
@@ -1415,7 +1424,16 @@ impl ClientHs {
 
 /// Check a pinned end-entity certificate: its key digest and its validity.
 /// `REQ-X509-007`.
-pub(crate) fn check_pinned(leaf: &[u8], pins: &[[u8; 32]], now: u64) -> Result<()> {
+/// A pinned peer: the key must be pinned, and the leaf must still pass the
+/// same checks as a leaf on a validated path (validity, CA flag, key usage,
+/// extended key usage for `opts.usage`, critical extensions, key policy), as
+/// the fixed-capacity engine already requires. Pinning replaces the path,
+/// not the leaf checks. `REQ-X509-075`.
+pub(crate) fn check_pinned(
+    leaf: &[u8],
+    pins: &[[u8; 32]],
+    opts: &x509::VerifyOptions<'_>,
+) -> Result<()> {
     let cert = x509::Certificate::parse(leaf)?;
     let d = HashAlg::Sha256.digest(cert.spki_der());
     if !pins.iter().any(|p| ic_core::ct::verify(p, d.as_bytes())) {
@@ -1424,15 +1442,7 @@ pub(crate) fn check_pinned(leaf: &[u8], pins: &[[u8; 32]], now: u64) -> Result<(
             "peer key is not the pinned key",
         ));
     }
-    if now < cert.not_before() || now > cert.not_after() {
-        return Err(Error::new(
-            ErrorKind::CertificateExpired,
-            "pinned certificate outside its validity period",
-        ));
-    }
-    // The key must be one we can verify with.
-    cert.subject_public_key()?;
-    Ok(())
+    x509::check_leaf_fixed(leaf, opts)
 }
 
 /// Groups a client sends shares for first, for a given config (used by tests).

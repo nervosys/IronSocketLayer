@@ -360,7 +360,11 @@ impl Revocation {
 /// An external pre-shared key (RFC 8446 §2.2, RFC 9257): an identity and a
 /// secret provisioned out of band, bound to one hash.
 ///
-/// Use each key between exactly two parties. Identities travel in the clear.
+/// Use each key between exactly two parties, **and in one direction only**:
+/// a node that holds the same key as both a client and a server will accept
+/// its own ClientHello reflected back to it (the "Selfie" attack, RFC 9257
+/// §4.1). Provision one key for A-to-B and another for B-to-A, or use
+/// certificates. Identities travel in the clear, so make them unguessable.
 #[derive(Clone)]
 pub struct ExternalPsk {
     /// The identity sent to the server.

@@ -3,8 +3,8 @@
 //! Only PSK **with (EC)DHE** (`psk_dhe_ke`) is implemented. Every resumed
 //! handshake still runs a fresh key exchange, so resumption keeps forward
 //! secrecy, and with a post-quantum group keeps post-quantum confidentiality.
-//! `psk_ke` (PSK alone) is never offered or accepted, and 0-RTT early data is
-//! not implemented.
+//! `psk_ke` (PSK alone) is never offered or accepted. 0-RTT early data is
+//! opt-in, on the first identity of a resumption only (see `server.rs`).
 //!
 //! Server tickets are **stateless**: the resumption PSK and the facts the
 //! server needs to trust it again are sealed with AES-256-GCM under a ticket
@@ -286,7 +286,27 @@ const MAX_LEAF_IN_TICKET: usize = 16 * 1024;
 
 impl TicketState {
     fn encode(&self) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(96 + self.client_leaf.len());
+        let leaf_len = if self.client_leaf.len() <= MAX_LEAF_IN_TICKET {
+            self.client_leaf.len()
+        } else {
+            0
+        };
+        // The exact size, so the buffer holding the PSK never reallocates
+        // (which would leave an unzeroized copy behind). The caller wraps
+        // the result in a SecretVec.
+        let len = 1
+            + 2
+            + 8
+            + 4
+            + (1 + self.psk.len())
+            + (2 + self.server_name.len())
+            + 1
+            + (3 + leaf_len)
+            + 4
+            + (1 + self.alpn.len())
+            + 4
+            + (2 + self.quic_params.len());
+        let mut out = Vec::with_capacity(len);
         put_u8(&mut out, STATE_VERSION);
         put_u16(&mut out, self.suite.to_wire());
         out.extend_from_slice(&self.created.to_be_bytes());
@@ -309,6 +329,7 @@ impl TicketState {
         put_vec(&mut out, Prefix::U8, &self.alpn)?;
         put_u32(&mut out, self.max_early_data);
         put_vec(&mut out, Prefix::U16, &self.quic_params)?;
+        debug_assert_eq!(out.len(), len, "ticket state size");
         Ok(out)
     }
 

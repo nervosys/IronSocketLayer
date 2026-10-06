@@ -47,7 +47,7 @@ pub enum Level {
     Handshake,
     /// Application traffic keys (QUIC "1-RTT").
     Application,
-    /// 0-RTT early data keys (TLS over TCP only in this build).
+    /// 0-RTT early data keys (TLS over TCP, and exported to the QUIC stack).
     Early,
 }
 
@@ -201,6 +201,11 @@ pub(crate) struct Core {
     pub(crate) transport: Transport,
     pub(crate) transcript: Transcript,
     pub(crate) hs_buf: Vec<u8>,
+    /// Compatibility ChangeCipherSpec records received.
+    pub(crate) ccs_seen: u8,
+    /// A KeyUpdate answering the peer's request has been sent, and no
+    /// application data since.
+    pub(crate) key_update_answered: bool,
     pub(crate) app_in: VecDeque<u8>,
     pub(crate) report: SessionReport,
     pub(crate) state: HandshakeState,
@@ -353,6 +358,8 @@ impl Core {
             transport,
             transcript: Transcript::new(),
             hs_buf: Vec::new(),
+            ccs_seen: 0,
+            key_update_answered: false,
             app_in: VecDeque::new(),
             report,
             state: HandshakeState::Start,
@@ -614,7 +621,7 @@ impl Core {
             let next = p.next_generation(suite)?;
             *p = next;
         }
-        self.report.key_updates_sent += 1;
+        self.report.key_updates_sent = self.report.key_updates_sent.saturating_add(1);
         self.report.event("event:key-update-sent", request.id());
         Ok(())
     }
@@ -647,10 +654,14 @@ impl Core {
             let next = p.next_generation(suite)?;
             *p = next;
         }
-        self.report.key_updates_received += 1;
+        self.report.key_updates_received = self.report.key_updates_received.saturating_add(1);
         self.report.event("event:key-update-received", req.id());
-        if req == KeyUpdateRequest::UpdateRequested {
+        // RFC 8446 §4.6.3: a receiver that is silent answers any number of
+        // requests with one update, so a peer cannot make each of its
+        // KeyUpdates reflect another (REQ-CONN-010).
+        if req == KeyUpdateRequest::UpdateRequested && !self.key_update_answered {
             self.send_key_update(KeyUpdateRequest::UpdateNotRequested)?;
+            self.key_update_answered = true;
         }
         Ok(())
     }
@@ -823,7 +834,11 @@ impl Connection {
                         ..
                     }
                 );
-                if rec.body != [1] || !allowed {
+                // At most two compatibility CCS records (one per flight, and
+                // one more around a HelloRetryRequest), as the fixed engine
+                // allows: not an unbounded stream. REQ-CONN-004.
+                self.core.ccs_seen = self.core.ccs_seen.saturating_add(1);
+                if rec.body != [1] || !allowed || self.core.ccs_seen > 2 {
                     return Err(Error::new(
                         ErrorKind::UnexpectedMessage,
                         "unexpected ChangeCipherSpec",
@@ -907,6 +922,14 @@ impl Connection {
                 self.core.hs_buf.extend_from_slice(content);
                 self.process_handshake()?;
             }
+            // REQ-CONN-009: a handshake message split across records must
+            // not have other content interleaved between its fragments.
+            ContentType::Alert | ContentType::ApplicationData if !self.core.hs_buf.is_empty() => {
+                return Err(Error::new(
+                    ErrorKind::UnexpectedMessage,
+                    "record interleaved with a fragmented handshake message",
+                ))
+            }
             ContentType::Alert => self.core.on_alert(content)?,
             ContentType::ApplicationData if self.core.early_budget.is_some() => {
                 // Accepted 0-RTT data, within max_early_data. REQ-0RTT-003.
@@ -957,6 +980,7 @@ impl Connection {
             || core.state != HandshakeState::Connected
             || core.early_budget.is_some()
             || core.skip_early_budget != 0
+            || !core.hs_buf.is_empty()
         {
             return Ok(false);
         }
@@ -1075,6 +1099,7 @@ impl Connection {
                 }
             }
             self.core.report.bytes_sent += chunk.len() as u64;
+            self.core.key_update_answered = false;
         }
         Ok(())
     }
@@ -1187,10 +1212,18 @@ impl Connection {
     }
 
     /// After [`ErrorKind::EchRejected`], the `ECHConfigList` the server sent
-    /// to retry with. It was authenticated by the handshake as the public
-    /// name; reconnect with it in `ClientConfig::ech_configs`.
+    /// to retry with; reconnect with it in `ClientConfig::ech_configs`.
+    ///
+    /// `None` unless the handshake failed with exactly `EchRejected`: only
+    /// then was the list authenticated, by a certificate for the public name
+    /// and the server's Finished. A list from a handshake that failed in any
+    /// other way may come from an attacker, and retrying with it would encrypt
+    /// the real server name to them. `REQ-ECH-010`.
     pub fn ech_retry_configs(&self) -> Option<&[u8]> {
-        self.core.ech_retry_configs.as_deref()
+        match self.core.error {
+            Some(e) if e.kind() == ErrorKind::EchRejected => self.core.ech_retry_configs.as_deref(),
+            _ => None,
+        }
     }
 
     /// The latched error, if the connection failed.
@@ -1900,11 +1933,8 @@ mod tests {
         s.read_tls(&c.take_tls()).unwrap();
         let e = c.read_tls(&s.take_tls()).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::CertificateExpired, "{e}");
-        assert!(
-            e.to_string()
-                .contains("pinned certificate outside its validity period"),
-            "{e}"
-        );
+        // The same leaf check as on a validated path (REQ-X509-075).
+        assert!(e.to_string().contains("certificate has expired"), "{e}");
     }
 
     /// REQ-MSG-006: the client refuses a server Certificate message with a

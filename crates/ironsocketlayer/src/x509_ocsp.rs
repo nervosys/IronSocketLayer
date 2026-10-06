@@ -157,7 +157,12 @@ fn check_extensions(encoded: &[u8]) -> Result<()> {
         return Err(bad("empty OCSP extensions list"));
     }
     let encoded_list = list.rest();
+    let mut count = 0usize;
     while !list.is_empty() {
+        count += 1;
+        if count > crate::x509::MAX_EXTENSIONS {
+            return Err(bad("too many OCSP extensions"));
+        }
         let consumed = encoded_list.len() - list.rest().len();
         let mut extension = list.nested(T_SEQUENCE)?;
         let oid = extension.expect(T_OID)?;
@@ -314,6 +319,12 @@ pub fn verify_response(
     allowed_schemes: &[SignatureScheme],
 ) -> Result<OcspVerified> {
     let leaf = Certificate::parse(leaf_der)?;
+    // REQ-OCSP-033: a certificate cannot attest its own revocation status. A leaf trusted
+    // directly as an anchor is its own "issuer"; a staple signed by its key
+    // would only show that whoever holds the key says it is not revoked.
+    if leaf.spki == issuer_spki {
+        return Err(bad("a certificate cannot attest its own revocation status"));
+    }
     let wrap = |e: Error| {
         if e.kind() == ErrorKind::BadCertificate {
             bad(e.context())
@@ -417,7 +428,11 @@ pub fn verify_response(
     let mut signed = identifies_issuer && sign::verify(scheme, &issuer_key, tbs, signature).is_ok();
     if !signed {
         if let Some(mut list) = certs {
-            while !list.is_empty() && !signed {
+            // At most a few attached certificates are tried as delegated
+            // responders: each one tried costs a signature verification.
+            let mut tried = 0usize;
+            while !list.is_empty() && !signed && tried < MAX_RESPONDER_CANDIDATES {
+                tried += 1;
                 let (_, _, whole) = list.tlv().map_err(wrap)?;
                 let Ok(responder) = Certificate::parse(whole) else {
                     continue;
@@ -549,6 +564,10 @@ fn check_attached_certificate_list(body: &[u8]) -> Result<()> {
 /// carry id-kp-OCSPSigning explicitly (anyExtendedKeyUsage does not count).
 /// REQ-OCSP-017: when KeyUsage is present, it permits digitalSignature.
 /// REQ-OCSP-031: unknown critical certificate extensions cannot authorize a delegate.
+/// The most certificates attached to an OCSP response that are tried as its
+/// delegated responder. `REQ-OCSP-034`.
+const MAX_RESPONDER_CANDIDATES: usize = 4;
+
 fn responder_authorized(
     responder: &Certificate<'_>,
     issuer_subject: &[u8],
@@ -576,21 +595,27 @@ fn responder_authorized(
     if !allowed.contains(&scheme) {
         return Err(bad("responder certificate scheme not allowed"));
     }
-    sign::verify(scheme, issuer_key, responder.tbs, responder.signature)
-        .map_err(|_| bad("responder certificate not signed by the issuer"))?;
     let eku = responder
         .ext
         .eku
         .ok_or(bad("responder lacks id-kp-OCSPSigning"))?;
     let mut r = Der::new(eku);
+    let mut authorised = false;
     while !r.is_empty() {
         let oid = r.expect(T_OID)?;
         // anyExtendedKeyUsage does not authorise OCSP signing (RFC 6960 §4.2.2.2).
         if oid == OID_KP_OCSP_SIGNING {
-            return Ok(());
+            authorised = true;
         }
     }
-    Err(bad("responder lacks id-kp-OCSPSigning"))
+    if !authorised {
+        return Err(bad("responder lacks id-kp-OCSPSigning"));
+    }
+    // The signature last: it is the costly check, and a candidate without
+    // the OCSP-signing purpose never needs it.
+    sign::verify(scheme, issuer_key, responder.tbs, responder.signature)
+        .map_err(|_| bad("responder certificate not signed by the issuer"))?;
+    Ok(())
 }
 
 /// REQ-OCSP-024: issuance refuses times that exceed the four-digit year range.
@@ -3142,6 +3167,59 @@ mod tests {
             assert!(verified.delegated && verified.cert_id_hashes_checked);
             assert_eq!(verified.status, CertStatus::Good);
         }
+    }
+
+    /// REQ-OCSP-034: only the first few attached certificates are tried as
+    /// the delegated responder, since each one tried can cost a signature
+    /// verification. The real responder behind four decoys is not reached;
+    /// the same responder third in line still verifies.
+    #[test]
+    fn only_the_first_few_responder_candidates_are_tried() {
+        let f = fixture();
+        let ca = Certificate::parse(&f.ca).unwrap();
+        let leaf = Certificate::parse(&f.leaf).unwrap();
+        let (signer_cert, signer_key) = responder(&f, Some(OID_KP_OCSP_SIGNING));
+        let signer_name = Certificate::parse(&signer_cert).unwrap().subject;
+        let (decoy, _) = responder(&f, Some(OID_KP_OCSP_SIGNING));
+        let name_hash = digest(OID_SHA256, ca.subject).unwrap();
+        let key_hash = digest(OID_SHA256, spki_key_bits(ca.spki).unwrap()).unwrap();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let build = |certs: &[u8], rng: &mut ic_drbg::Rng| {
+            build_signed_with_cert_id(
+                OID_SHA256,
+                &name_hash,
+                &key_hash,
+                leaf.serial,
+                signer_name,
+                &signer_key,
+                Some(certs),
+                CertStatus::Good,
+                f.now,
+                Some(f.now + 60),
+                rng,
+            )
+            .unwrap()
+        };
+        let mut late = Vec::new();
+        for _ in 0..MAX_RESPONDER_CANDIDATES {
+            late.extend_from_slice(&decoy);
+        }
+        late.extend_from_slice(&signer_cert);
+        assert_eq!(
+            check(&f, &build(&late, &mut rng), f.now)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::BadCertificateStatus
+        );
+        let mut early = Vec::new();
+        early.extend_from_slice(&decoy);
+        early.extend_from_slice(&decoy);
+        early.extend_from_slice(&signer_cert);
+        assert!(
+            check(&f, &build(&early, &mut rng), f.now)
+                .unwrap()
+                .delegated
+        );
     }
 
     /// REQ-OCSP-001: a valid response signature cannot compensate for an

@@ -169,6 +169,9 @@ pub struct Connection<'a> {
     group: NamedGroup,
     key_slots: [Option<KeySlot>; 10],
     read: Option<Protector>,
+    /// Incremented whenever the read key changes, so a record can be checked
+    /// not to carry messages past a key change (RFC 8446 §5.1).
+    read_epoch: u32,
     write: Option<Protector>,
     peer_hs_secret: Option<Output>,
     local_hs_secret: Option<Output>,
@@ -371,6 +374,7 @@ impl<'a> Connection<'a> {
             group,
             key_slots: [None; 10],
             read: None,
+            read_epoch: 0,
             write: None,
             peer_hs_secret: None,
             local_hs_secret: None,
@@ -707,12 +711,15 @@ impl<'a> Connection<'a> {
                 continue;
             }
             let storage = core::mem::take(&mut self.storage.handshake);
-            let was_connected = self.is_connected();
+            let epoch = self.read_epoch;
             let result = self.on_message(&storage[..need]);
             self.storage.handshake = storage;
             self.hs_len = 0;
             result?;
-            if !was_connected && self.is_connected() && !bytes.is_empty() {
+            // REQ-REC-008: a message that changes the read key (ServerHello,
+            // Finished, KeyUpdate) must end its record; anything after it in
+            // the same record was protected, or not, under the old key.
+            if self.read_epoch != epoch && !bytes.is_empty() {
                 return Err(unexpected());
             }
         }
@@ -1001,6 +1008,7 @@ impl<'a> Connection<'a> {
                 if body.len() != 1 || body[0] > 1 {
                     return Err(invalid("KeyUpdate request"));
                 }
+                self.read_epoch = self.read_epoch.wrapping_add(1);
                 self.read = Some(
                     self.read
                         .as_ref()
@@ -1437,6 +1445,7 @@ impl<'a> Connection<'a> {
         } else {
             (client, server)
         };
+        self.read_epoch = self.read_epoch.wrapping_add(1);
         self.read = Some(Protector::new(suite, &read)?);
         self.write = Some(Protector::new(suite, &write)?);
         self.peer_hs_secret = Some(read);
@@ -1489,7 +1498,10 @@ impl<'a> Connection<'a> {
                 }
             }
         }
-        if self.common().require_alpn {
+        // RFC 7301 §3.2: when both sides use ALPN and share no protocol, the
+        // server refuses, whether or not it requires ALPN of every client
+        // (ALPACA). A server with no protocols configured ignores the offer.
+        if self.common().require_alpn || !self.common().alpn.is_empty() {
             return Err(Error::new(
                 ErrorKind::NoApplicationProtocol,
                 "no shared ALPN",
@@ -1866,6 +1878,7 @@ impl<'a> Connection<'a> {
         self.client_app = Some(client);
         let protector = Protector::new(self.suite.ok_or(unexpected())?, &server)?;
         if self.is_client() {
+            self.read_epoch = self.read_epoch.wrapping_add(1);
             self.read = Some(protector);
         } else {
             self.write = Some(protector);
@@ -1920,6 +1933,7 @@ impl<'a> Connection<'a> {
                 self.client_app.as_ref().ok_or(unexpected())?,
             )?);
         } else {
+            self.read_epoch = self.read_epoch.wrapping_add(1);
             self.read = Some(Protector::new(
                 self.suite.ok_or(unexpected())?,
                 self.client_app.as_ref().ok_or(unexpected())?,

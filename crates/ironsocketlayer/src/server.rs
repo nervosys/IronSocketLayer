@@ -447,7 +447,16 @@ impl ServerHs {
                 )
             }
             PeerVerification::PinnedSpki { sha256, .. } => {
-                crate::client::check_pinned(leaf, sha256, now)?;
+                let opts = x509::VerifyOptions {
+                    now,
+                    usage: Usage::ClientAuth,
+                    allowed_schemes: &self.config.common.schemes,
+                    max_depth: 8,
+                    min_rsa_bits: self.config.common.profile.min_rsa_bits(),
+                    crls: None,
+                    require_crl: false,
+                };
+                crate::client::check_pinned(leaf, sha256, &opts)?;
                 Ok(true)
             }
         }
@@ -716,7 +725,7 @@ impl ServerHs {
                 .as_ref()
                 .map(|p| p.max_early_data as usize)
                 .unwrap_or(0);
-            core.skip_early_budget = bound.max(16_384) + 16 * 1024;
+            core.skip_early_budget = bound.max(16_384).saturating_add(16 * 1024);
         }
         core.report.ech = match (self.ech_offered, self.ech_accepted) {
             (false, _) => "ech:not-offered",
@@ -1169,7 +1178,16 @@ impl ServerHs {
                 core.report.peer_chain_min_bits = Some(report.min_classical_bits);
             }
             PeerVerification::PinnedSpki { sha256, .. } => {
-                crate::client::check_pinned(leaf, sha256, now)?;
+                let opts = x509::VerifyOptions {
+                    now,
+                    usage: Usage::ClientAuth,
+                    allowed_schemes: &self.config.common.schemes,
+                    max_depth: 8,
+                    min_rsa_bits: self.config.common.profile.min_rsa_bits(),
+                    crls: None,
+                    require_crl: false,
+                };
+                crate::client::check_pinned(leaf, sha256, &opts)?;
                 self.client_pq_chain = true;
             }
         }

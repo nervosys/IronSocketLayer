@@ -432,6 +432,14 @@ fn verify_rsa(
     message: &[u8],
     signature: &[u8],
 ) -> Result<()> {
+    // REQ-SIG-006: a large public exponent makes each verification costly at the peer's
+    // choice (2^64 - 1 costs six times 65537); certificates use 65537.
+    if exponent > u64::from(u32::MAX) {
+        return Err(Error::new(
+            ErrorKind::UnsupportedCertificate,
+            "rsa public exponent above 2^32",
+        ));
+    }
     let key = ic_rsa::RsaPublicKey::from_components(modulus, exponent).map_err(|_| {
         Error::new(
             ErrorKind::UnsupportedCertificate,
@@ -1292,6 +1300,23 @@ mod tests {
             let mut key = Vec::new();
             push_tlv(&mut key, der::OCTET_STRING, &alloc::vec![0u8; len]);
             refused(&pkcs8(&alg, &key), "expanded-only form");
+        }
+    }
+
+    /// `REQ-SIG-006`: an RSA public exponent above 2^32 is refused before
+    /// any arithmetic, so a peer cannot make each verification expensive.
+    #[test]
+    fn a_huge_rsa_public_exponent_is_refused() {
+        let mut modulus = alloc::vec![0xffu8; 256];
+        modulus[255] = 0xf1;
+        for exponent in [u64::from(u32::MAX) + 2, u64::MAX] {
+            let key = PublicKey::Rsa {
+                modulus: &modulus,
+                exponent,
+            };
+            let e = verify(SignatureScheme::RsaPssRsaeSha256, &key, b"m", &[0u8; 256]).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::UnsupportedCertificate, "{e}");
+            assert!(e.to_string().contains("exponent"), "{e}");
         }
     }
 

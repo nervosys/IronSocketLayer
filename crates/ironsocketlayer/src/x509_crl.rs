@@ -194,6 +194,9 @@ fn scan_extensions(body: &[u8], entry: bool) -> Result<Option<&'static str>> {
         if seen.contains(&oid) {
             return Err(bad("duplicate CRL extension"));
         }
+        if seen.len() >= crate::x509::MAX_EXTENSIONS {
+            return Err(bad("too many CRL extensions"));
+        }
         seen.push(oid);
         let critical = match e.optional(T_BOOLEAN)? {
             None | Some([0]) => false,

@@ -719,7 +719,15 @@ fn alpn_is_negotiated_from_the_offer() {
         assert_eq!(c.report().alpn, Some(&b"http/1.1"[..]));
         assert_eq!(s.report().alpn, Some(&b"http/1.1"[..]));
     });
+    // RFC 7301 §3.2: both sides use ALPN and share nothing, so the server
+    // refuses even without require_alpn (ALPACA). It ignores the offer only
+    // when it has no protocols configured.
     sc2.common.alpn = vec![b"spdy/3".to_vec()];
+    handshake(&cc, &sc2, NAME, default_limits(), |r, _, s| {
+        assert!(r.is_err());
+        assert_eq!(latched(s).kind(), ErrorKind::NoApplicationProtocol);
+    });
+    sc2.common.alpn = Vec::new();
     handshake(&cc, &sc2, NAME, default_limits(), |r, c, s| {
         r.unwrap();
         assert_eq!(c.report().alpn, None);

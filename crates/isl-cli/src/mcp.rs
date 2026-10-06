@@ -158,7 +158,7 @@ pub fn tools() -> Vec<Tool> {
 pub fn extra_tools() -> Vec<Tool> {
     vec![Tool {
         name: "tls_probe",
-        description: "Open a real TLS 1.3 connection to host[:port] with IronSocketLayer, verify the server against the system trust store, and return the session report: version, suite, key-exchange group, signature scheme, peer certificate facts, the security properties that hold (post-quantum key exchange, forward secrecy, ...), FIPS indicators and an event trail. On failure the report carries the error id with its meaning and recovery steps. Makes a network connection.",
+        description: "Open a real TLS 1.3 connection to host[:port] with IronSocketLayer, verify the server against the system trust store, and return the session report: version, suite, key-exchange group, signature scheme, peer certificate facts, the security properties that hold (post-quantum key exchange, forward secrecy, ...), FIPS indicators and an event trail. On failure the report carries the error id with its meaning and recovery steps. Makes a network connection; loopback, private and link-local addresses are refused unless the operator sets ISL_MCP_ALLOW_PRIVATE=1.",
         schema: || {
             schema(
                 vec![
@@ -170,7 +170,12 @@ pub fn extra_tools() -> Vec<Tool> {
                 &["target"],
             )
         },
-        call: |a| crate::net::tls_probe(required(a, "target")?, arg(a, "profile"), arg(a, "alpn"), flag(a, "ech")),
+        // Internal addresses only with the operator's explicit opt-in: a
+        // prompt-injected agent must not map or reach the local network.
+        call: |a| {
+            let allow = std::env::var("ISL_MCP_ALLOW_PRIVATE").is_ok_and(|v| v == "1");
+            crate::net::tls_probe(required(a, "target")?, arg(a, "profile"), arg(a, "alpn"), flag(a, "ech"), allow)
+        },
     }]
 }
 

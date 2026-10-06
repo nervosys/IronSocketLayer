@@ -27,7 +27,7 @@ USAGE:
     isl capabilities [--json]
     isl selftest [--json]
     isl probe <host[:port]> [--profile <p>] [--alpn h2,http/1.1] [--ech] [--json]
-    isl serve --cert <chain.pem> --key <pkcs8.pem> [--port 8443] [--profile <p>] [--alpn ..] [--once]
+    isl serve --cert <chain.pem> --key <pkcs8.pem> [--bind 127.0.0.1] [--port 8443] [--profile <p>] [--alpn ..] [--once]
     isl mcp
 
 Kinds: protocol-version, content-type, handshake-message, cipher-suite,
@@ -404,11 +404,13 @@ fn run(args: Args) -> ExitCode {
             }
         },
         (Some("probe"), Some(target)) => {
+            // The command line is the operator's own: any target is allowed.
             let r = net::tls_probe(
                 target,
                 args.option("profile"),
                 args.option("alpn"),
                 args.flag("ech"),
+                true,
             );
             let failed = matches!(&r, Ok(v) if v.get("error").map(|e| !matches!(e, Json::Null)).unwrap_or(false));
             let code = emit(r, json, |v| {
@@ -428,6 +430,12 @@ fn run(args: Args) -> ExitCode {
                     "alertReceivedMeaning",
                 ] {
                     if let Some(Json::String(x)) = v.get(k) {
+                        // Peer-supplied text (a certificate's common name)
+                        // must not reach the terminal as control sequences.
+                        let x: String = x
+                            .chars()
+                            .map(|c| if c.is_control() { '?' } else { c })
+                            .collect();
                         println!("  {k:<22} {x}");
                     }
                 }
@@ -466,6 +474,7 @@ failed: {e} ({})",
             match net::serve(
                 cert,
                 key,
+                args.option("bind").unwrap_or("127.0.0.1"),
                 port,
                 args.option("profile"),
                 args.option("alpn"),

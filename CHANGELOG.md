@@ -3,9 +3,45 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## Unreleased
+## Unreleased (to be 0.1.1)
 
-Nothing yet.
+Security fixes from the 2026-10-06 audit
+([docs/SECURITY-AUDIT-2026-10-06.md](docs/SECURITY-AUDIT-2026-10-06.md)).
+Upgrade from 0.1.0.
+
+### Fixed (security)
+- Name constraints: a dNSName with a trailing dot no longer escapes an
+  excluded subtree, and iPAddress constraints apply across address families
+  (including IPv4-mapped IPv6).
+- Denial of service:
+  - extensions in certificates, CRLs and OCSP responses are capped before
+    the duplicate check, which was quadratic;
+  - certificate path search spends at most 24 signature verifications;
+  - ClientHello extensions and key shares are capped;
+  - KeyUpdate requests are answered once while silent;
+  - ChangeCipherSpec records are bounded;
+  - RSA exponents above 2^32 are refused;
+  - OCSP responder candidates are limited.
+- `TlsStream` reports truncation (no close_notify) as `UnexpectedEof`.
+- Fixed engine: messages after a key change in the same record are
+  refused, and ALPN with no overlap is refused.
+- Owned engine: no records are accepted between the fragments of a
+  handshake message.
+- ECH retry configurations are returned only after `ech_rejected`.
+- A non-CA trust anchor no longer issues certificates.
+- A leaf cannot staple OCSP for itself.
+- Pinned peers get the full leaf checks.
+- Peer-driven counters saturate instead of overflowing.
+- `isl` MCP `tls_probe` refuses loopback, private and link-local targets
+  unless `ISL_MCP_ALLOW_PRIVATE=1`. Probes have an absolute deadline.
+  `isl serve` binds 127.0.0.1 by default (`--bind`). Peer text is
+  sanitized in terminal output.
+
+### Changed
+- `Connection::ech_retry_configs()` returns `None` unless the handshake
+  failed with `ech_rejected`.
+- `TlsStream::read` returns `UnexpectedEof` where it used to return `Ok(0)`
+  without close_notify.
 
 ## 0.1.0 (2026-10-05)
 

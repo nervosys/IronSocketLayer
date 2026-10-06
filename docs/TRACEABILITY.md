@@ -81,7 +81,7 @@ feed the life-cycle data.
 | REQ-CONN-001 | A connection failure latches. | src/conn.rs | Test | tests/handshake.rs::a_tampered_record_is_fatal_and_latches; src/conn.rs::peer_record_misbehaviour_is_refused; tests/coverage_client.rs::close_notify_is_sent_once_and_never_after_a_failure |
 | REQ-CONN-002 | A handshake message may not span a key change. | src/conn.rs | Test | tests/handshake.rs::a_handshake_message_may_not_span_a_key_change |
 | REQ-CONN-003 | Application data flows only after the handshake completes. | src/conn.rs | Test | src/conn.rs::application_data_waits_for_the_handshake; src/conn.rs::application_data_under_handshake_keys_is_refused |
-| REQ-CONN-004 | A protected, misplaced or malformed ChangeCipherSpec is fatal. | src/conn.rs | Test | src/conn.rs::change_cipher_spec_is_only_tolerated_in_the_handshake; tests/handshake.rs::a_malformed_change_cipher_spec_is_fatal |
+| REQ-CONN-004 | A protected, misplaced or malformed ChangeCipherSpec is fatal. | src/conn.rs | Test | src/conn.rs::change_cipher_spec_is_only_tolerated_in_the_handshake; tests/handshake.rs::a_malformed_change_cipher_spec_is_fatal; tests/protocol_hardening.rs::change_cipher_spec_records_are_bounded |
 | REQ-CONN-005 | Every local failure that maps to an alert sends it. | src/conn.rs | Test | tests/handshake.rs::a_tampered_record_is_fatal_and_latches; tests/handshake.rs::the_wrong_name_is_refused_by_the_client; tests/coverage_client.rs::close_notify_during_the_handshake_is_a_failure |
 | REQ-CONN-006 | Keys are updated before they reach their usage limit. | src/conn.rs | Test | src/conn.rs::a_key_near_its_limit_is_updated_before_use; tests/coverage_client.rs::key_update_waits_for_the_handshake |
 | REQ-CONN-007 | Records after close_notify are ignored, even ones that would otherwise be fatal, and data received before it stays readable. | src/conn.rs | Test | src/conn.rs::records_after_close_notify_are_ignored |
@@ -295,3 +295,33 @@ feed the life-cycle data.
 | REQ-RPT-001 | An error's text leads with its stable error id and names the peer's alert when one was received. | src/error.rs | Test | src/error.rs::a_peer_alert_is_named_in_the_error_text |
 
 | REQ-RPT-002 | The audit event trail keeps the first 256 events of a session, and an event without detail serializes without a detail member. | src/report.rs | Test | src/report.rs::the_event_trail_keeps_the_first_256_events; src/report.rs::an_event_without_detail_has_no_detail_member |
+
+| REQ-X509-071 | A dNSName with one trailing dot is the same name for name constraints as for matching, so it cannot escape an excluded subtree, as a name or as a wildcard. | src/x509.rs | Test | tests/pki_hardening.rs::a_trailing_dot_does_not_escape_an_excluded_subtree |
+
+| REQ-X509-072 | iPAddress is one name type for name constraints: a permitted list of one address family leaves an address of the other outside it, and an IPv4-mapped IPv6 address is judged by excluded IPv4 subtrees. | src/x509.rs | Test | src/x509.rs::ip_name_constraints_are_enforced |
+
+| REQ-X509-073 | A certificate, CRL, CRL entry or OCSP response carries at most 64 extensions, checked before the duplicate-extension scan. | src/x509.rs | Test | tests/pki_hardening.rs::a_certificate_with_thousands_of_extensions_is_refused_quickly |
+
+| REQ-X509-074 | A trust anchor whose basicConstraints says it is not a CA, or whose keyUsage lacks keyCertSign, is trusted as itself only and issues nothing. | src/x509.rs | Test | tests/pki_hardening.rs::a_non_ca_anchor_issues_nothing |
+
+| REQ-X509-075 | A pinned peer's leaf passes the same leaf checks as one on a validated path (validity, CA flag, key usage, extended key usage, critical extensions, key policy), in both engines. | src/client.rs | Test | tests/pki_hardening.rs::a_pinned_server_leaf_still_gets_the_leaf_checks; src/conn.rs::a_pinned_certificate_must_be_current; tests/coverage_client.rs::a_pinned_certificate_not_yet_valid_is_refused |
+
+| REQ-X509-076 | Path search spends at most 24 signature verifications, bounding what a crafted chain costs. | src/x509.rs | Test | src/x509.rs::an_adversarial_graph_exhausts_the_search_budget; src/x509.rs::a_seven_slot_adversarial_graph_exhausts_both_budgets; src/x509.rs::anchor_attempts_draw_on_the_search_budget |
+
+| REQ-OCSP-033 | A certificate cannot attest its own revocation status: a staple whose issuer key is the certificate's own key is refused. | src/x509_ocsp.rs | Test | tests/pki_hardening.rs::a_self_anchored_leaf_cannot_staple_for_itself |
+
+| REQ-OCSP-034 | At most four certificates attached to an OCSP response are tried as its delegated responder, and the OCSP-signing purpose is checked before any signature. | src/x509_ocsp.rs | Test | src/x509_ocsp.rs::only_the_first_few_responder_candidates_are_tried |
+
+| REQ-ECH-010 | ECH retry configurations are handed to the caller only after the handshake failed with ech_rejected, when the public name was authenticated. | src/conn.rs | Test | tests/protocol_hardening.rs::ech_retry_configs_are_withheld_after_an_authentication_failure |
+
+| REQ-CONN-009 | No alert or application data is accepted between the fragments of a handshake message. | src/conn.rs | Test | tests/protocol_hardening.rs::application_data_inside_a_fragmented_handshake_message_is_refused |
+
+| REQ-CONN-010 | A receiver that has not written since answering a KeyUpdate request answers further requests with no further update (RFC 8446 §4.6.3). | src/conn.rs | Test | tests/protocol_hardening.rs::key_update_requests_are_answered_once_while_silent |
+
+| REQ-CONN-011 | TlsStream reports a transport that ends without close_notify as UnexpectedEof, never as a clean end of stream. | src/stream.rs | Test | tests/protocol_hardening.rs::tls_stream_reports_truncation |
+
+| REQ-MSG-020 | A handshake message carries at most 128 extensions and a ClientHello at most 16 key shares, checked before the duplicate checks. | src/msgs.rs | Test | tests/protocol_hardening.rs::client_hello_extensions_and_key_shares_are_bounded |
+
+| REQ-REC-008 | A handshake message that changes the read key ends its record; anything after it in the same record is refused, in both engines. | src/fixed.rs | Test | tests/protocol_hardening.rs::both_engines_refuse_messages_after_a_key_change_in_the_same_record; tests/protocol_hardening.rs::the_fixed_client_refuses_plaintext_after_the_server_hello |
+
+| REQ-SIG-006 | An RSA public exponent above 2^32 is refused before any arithmetic. | src/crypto/sign.rs | Test | src/crypto/sign.rs::a_huge_rsa_public_exponent_is_refused |

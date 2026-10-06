@@ -118,7 +118,11 @@ const KU_KEY_CERT_SIGN: u16 = 1 << 5;
 const KU_CRL_SIGN: u16 = 1 << 6;
 
 /// Work bound on path search: signature verifications and candidate visits.
-const SEARCH_BUDGET: usize = 100;
+// Every unit of the budget is spent on one signature verification, the
+// dominant cost: 24 is three times the deepest path allowed (max_depth 8),
+// and bounds what a peer's crafted chain can cost. At 100, a 5 KB chain of
+// same-key P-521 intermediates cost a server about 73 ms. `REQ-X509-076`.
+const SEARCH_BUDGET: usize = 24;
 
 fn bad(context: &'static str) -> Error {
     Error::new(ErrorKind::BadCertificate, context)
@@ -1138,6 +1142,12 @@ fn parse_extensions(body: &[u8]) -> Result<Extensions<'_>> {
         let consumed = encoded_list.len() - list.rest().len();
         // Each entry consumes bytes from a finite slice, bounding this count.
         ext.count += 1;
+        // Bounded before the duplicate scan below, which compares each
+        // extension with every earlier one: unbounded, a 128 KiB certificate
+        // of empty extensions cost about 350 ms per parse.
+        if ext.count > MAX_EXTENSIONS {
+            return Err(bad("too many extensions"));
+        }
         let mut e = list.nested(T_SEQUENCE)?;
         let oid = e.expect(T_OID)?;
         check_oid_encoding(oid)?;
@@ -1486,6 +1496,10 @@ fn alg_id(scheme: SignatureScheme) -> Result<Vec<u8>> {
 struct Anchor {
     subject: Vec<u8>,
     spki: Vec<u8>,
+    /// `REQ-X509-074`: whether this anchor may issue other certificates. A certificate whose
+    /// basicConstraints says it is not a CA, or whose keyUsage lacks
+    /// keyCertSign, may be trusted directly as itself but issues nothing.
+    can_issue: bool,
     ski: Option<Vec<u8>>,
     name_constraints: Option<Vec<u8>>,
 }
@@ -1515,9 +1529,15 @@ impl RootStore {
         {
             return Ok(());
         }
+        let can_issue = !matches!(cert.ext.basic, Some((false, _)))
+            && cert
+                .ext
+                .key_usage
+                .is_none_or(|ku| ku & KU_KEY_CERT_SIGN != 0);
         self.anchors.push(Anchor {
             subject: cert.subject.to_vec(),
             spki: cert.spki.to_vec(),
+            can_issue,
             ski: cert.ext.ski.map(<[u8]>::to_vec),
             name_constraints: cert.ext.name_constraints.map(<[u8]>::to_vec),
         });
@@ -1761,6 +1781,26 @@ fn check_issuer(cert: &Certificate<'_>, below: usize, opts: &VerifyOptions<'_>) 
     check_key_policy(&key, opts)
 }
 
+/// The most extensions accepted in one certificate, CRL, CRL entry or OCSP
+/// response. Real certificates carry a dozen or so; the bound keeps the
+/// quadratic duplicate check cheap on peer input. `REQ-X509-073`.
+pub(crate) const MAX_EXTENSIONS: usize = 64;
+
+/// A DNS name without one trailing dot: `example.com.` and `example.com` are
+/// the same name, for name constraints as for matching (`dns_matches`).
+/// `REQ-X509-071`.
+fn dns_canonical(name: &str) -> &str {
+    name.strip_suffix('.').unwrap_or(name)
+}
+
+/// The IPv4 address an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) carries.
+fn ipv4_mapped(ip: &[u8]) -> Option<&[u8]> {
+    match ip {
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, v4 @ ..] => Some(v4),
+        _ => None,
+    }
+}
+
 fn dns_eq(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
@@ -1946,21 +1986,28 @@ fn apply_name_constraints(nc: &[u8], subjects: &[&Certificate<'_>]) -> Result<()
                 while !subtrees.is_empty() {
                     let mut st = subtrees.nested(T_SEQUENCE)?;
                     let (ctag, base, _) = st.tlv()?;
-                    if ctag != tag || (tag == T_GN_IP && base.len() != 2 * value.len()) {
+                    // REQ-X509-072: iPAddress is one name type (RFC 5280 §4.2.1.10): a
+                    // subtree of the other address family still applies, and
+                    // an address outside its family is not within it.
+                    if ctag != tag {
                         continue;
                     }
                     let mut within = if tag == T_GN_DNS {
                         let name = core::str::from_utf8(value).map_err(|_| unsupported())?;
                         let constraint = core::str::from_utf8(base).map_err(|_| unsupported())?;
-                        dns_within(name, constraint)
+                        dns_within(dns_canonical(name), dns_canonical(constraint))
                     } else {
                         ip_within(value, base)
+                            || (is_excluded
+                                && ipv4_mapped(value).is_some_and(|v4| ip_within(v4, base)))
                     };
                     if is_excluded {
                         if tag == T_GN_DNS {
                             let name = core::str::from_utf8(value).map_err(|_| unsupported())?;
-                            let constraint =
-                                core::str::from_utf8(base).map_err(|_| unsupported())?;
+                            let name = dns_canonical(name);
+                            let constraint = dns_canonical(
+                                core::str::from_utf8(base).map_err(|_| unsupported())?,
+                            );
                             if let Some(suffix) = name.strip_prefix("*.") {
                                 within |= dns_within(constraint.trim_start_matches('.'), suffix);
                             }
@@ -2052,7 +2099,10 @@ impl<'c> Search<'c, '_, '_> {
         let mut best: Option<Error> = None;
 
         for (ai, a) in self.roots.anchors.iter().enumerate() {
-            if a.subject != current.issuer || key_ids_disagree(current, a.ski.as_deref()) {
+            if !a.can_issue
+                || a.subject != current.issuer
+                || key_ids_disagree(current, a.ski.as_deref())
+            {
                 continue;
             }
             if *budget == 0 {
@@ -2361,7 +2411,8 @@ pub fn verify_chain_fixed<'a>(
             };
             let mut best = None;
             for (ai, anchor) in self.roots.anchors.iter().enumerate() {
-                if anchor.subject != current.issuer
+                if !anchor.can_issue
+                    || anchor.subject != current.issuer
                     || key_ids_disagree(current, anchor.ski.as_deref())
                 {
                     continue;
@@ -7512,8 +7563,18 @@ mod chain_tests {
         assert_eq!(under(&p, &ca, &["a.example.com"], &["10.1.2.3"]), Ok(()));
         assert_eq!(under(&p, &ca, &["a.example.com"], &["192.0.2.1"]), v);
         assert_eq!(under(&p, &ca, &["a.example.com"], &["10.9.1.1"]), v);
-        // IPv4 constraints say nothing about an IPv6 address.
-        assert_eq!(under(&p, &ca, &["a.example.com"], &["2001:db8::1"]), Ok(()));
+        // REQ-X509-072: iPAddress is one name type. A permitted list of IPv4
+        // subtrees leaves an IPv6 address outside it, not unconstrained.
+        assert_eq!(under(&p, &ca, &["a.example.com"], &["2001:db8::1"]), v);
+        // And an IPv4-mapped IPv6 address is the IPv4 address it carries, for
+        // an excluded IPv4 subtree.
+        let ex = constrained(&p, &[], &[(T_GN_IP, &[10, 0, 0, 0, 255, 0, 0, 0])]);
+        assert_eq!(under(&p, &ex, &["a.example.com"], &["::ffff:10.0.0.1"]), v);
+        assert_eq!(
+            under(&p, &ex, &["a.example.com"], &["::ffff:192.0.2.1"]),
+            Ok(())
+        );
+        assert_eq!(under(&p, &ex, &["a.example.com"], &["2001:db8::1"]), Ok(()));
         // An IPv6 permitted subtree: 2001:db8::/32.
         let mut v6 = [0u8; 32];
         v6[..4].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8]);
@@ -7524,6 +7585,8 @@ mod chain_tests {
             Ok(())
         );
         assert_eq!(under(&p, &ca6, &["a.example.com"], &["2001:db9::5"]), v);
+        // An IPv4 address under an IPv6-only permitted list is outside it.
+        assert_eq!(under(&p, &ca6, &["a.example.com"], &["10.1.2.3"]), v);
         // A malformed IP subtree (neither 8 nor 32 bytes) fails closed.
         let bad = constrained(&p, &[(T_GN_IP, &[10, 0, 0, 0])], &[]);
         assert_eq!(

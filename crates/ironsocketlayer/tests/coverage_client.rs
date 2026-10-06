@@ -590,10 +590,8 @@ fn a_pinned_certificate_not_yet_valid_is_refused() {
     )
     .unwrap_err();
     let e = err.client.expect("the client refused");
+    // The same leaf check as on a validated path (REQ-X509-075).
     assert_eq!(e.kind(), ErrorKind::CertificateExpired, "{e}");
-    assert!(e
-        .to_string()
-        .contains("pinned certificate outside its validity period"));
 }
 
 /// REQ-X509-007: a pin with name checking on also requires the certificate

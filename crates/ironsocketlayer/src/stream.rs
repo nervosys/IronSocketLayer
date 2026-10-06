@@ -119,8 +119,17 @@ impl<S: Read + Write> Read for TlsStream<S> {
             if self.conn.available() > 0 {
                 return Ok(self.conn.recv(buf));
             }
-            if self.conn.peer_closed() || self.eof {
+            if self.conn.peer_closed() {
                 return Ok(0);
+            }
+            // REQ-CONN-011: the transport ended without close_notify. That
+            // may be truncation by an attacker, so it is not reported as a
+            // clean end of stream (RFC 8446 §6.1).
+            if self.eof {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "the peer closed the transport without close_notify (possible truncation)",
+                ));
             }
             self.read_some()?;
             // A KeyUpdate response may be waiting.

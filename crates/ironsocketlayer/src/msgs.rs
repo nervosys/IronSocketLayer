@@ -116,6 +116,11 @@ pub(crate) fn extension_allowed(ty: ExtensionType, context: ExtensionContext) ->
     }
 }
 
+/// The most extensions accepted in one handshake message.
+pub const MAX_EXTENSIONS: usize = 128;
+/// The most key shares accepted in one ClientHello.
+pub const MAX_KEY_SHARES: usize = 16;
+
 /// Parse an extension block into `(type, body)` pairs. `REQ-MSG-001`.
 fn parse_extensions<'a>(
     r: &mut Reader<'a>,
@@ -126,6 +131,11 @@ fn parse_extensions<'a>(
     while !block.is_empty() {
         let ty = ExtensionType::from_wire(block.u16()?);
         let body = block.vec16()?;
+        // REQ-MSG-020: bounded before the quadratic duplicate check. Real
+        // messages carry a few dozen extensions at most.
+        if out.len() >= MAX_EXTENSIONS {
+            return Err(decode_err("too many extensions"));
+        }
         if out.iter().any(|(t, _)| *t == ty) {
             return Err(illegal("duplicate extension"));
         }
@@ -552,6 +562,10 @@ impl ClientHello {
                         }
                         if ch.key_shares.iter().any(|(x, _)| *x == g) {
                             return Err(illegal("two key shares for one group"));
+                        }
+                        // REQ-MSG-020: bounded before it can grow quadratic.
+                        if ch.key_shares.len() >= MAX_KEY_SHARES {
+                            return Err(illegal("too many key shares"));
                         }
                         ch.key_shares.push((g, share.to_vec()));
                     }
