@@ -51,6 +51,16 @@ versions may change the API.
   OpenSSL's `-keymatexport`. `conn::CHANNEL_BINDING_LABEL`.
 
 ### Fixed
+- Found with tlsfuzzer:
+  - a TLS 1.3 ClientHello with `supported_groups` but no `key_share` drew a
+    HelloRetryRequest; it is refused with `missing_extension` (RFC 8446 §9.2);
+  - a ClientHello `legacy_version` below SSL 3.0 was answered; it is
+    refused with `protocol_version`;
+  - an empty alert record is `unexpected_message`, not `decode_error`;
+  - handshake messages may carry as many extensions, and ClientHellos as
+    many key shares, as fit (tlsfuzzer sends over a thousand). The 0.2.0
+    caps of 128 and 16 are gone: duplicates are found by sorting, in
+    O(n log n), which keeps the audit's denial-of-service fix (A-15).
 - A `TlsStream` over TCP whose handshake failed could lose its own alert:
   closing the socket with the peer's bytes unread made the kernel send a
   reset, which on Linux discarded the alert before the peer read it. The TCP

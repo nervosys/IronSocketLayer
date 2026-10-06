@@ -573,6 +573,14 @@ impl Core {
     }
 
     fn on_alert(&mut self, body: &[u8]) -> Result<()> {
+        // REQ-REC-011: an alert record with no alert in it is a record of
+        // the wrong kind, as the fixed engine and OpenSSL treat it.
+        if body.is_empty() {
+            return Err(Error::new(
+                ErrorKind::UnexpectedMessage,
+                "empty alert record",
+            ));
+        }
         if body.len() != 2 {
             return Err(Error::new(ErrorKind::Decode, "alert must be two bytes"));
         }

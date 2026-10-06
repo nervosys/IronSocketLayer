@@ -320,7 +320,7 @@ feed the life-cycle data.
 
 | REQ-CONN-011 | TlsStream reports a transport that ends without close_notify as UnexpectedEof, never as a clean end of stream. | src/stream.rs | Test | tests/protocol_hardening.rs::tls_stream_reports_truncation |
 
-| REQ-MSG-020 | A handshake message carries at most 128 extensions and a ClientHello at most 16 key shares, checked before the duplicate checks. | src/msgs.rs | Test | tests/protocol_hardening.rs::client_hello_extensions_and_key_shares_are_bounded |
+| REQ-MSG-020 | A handshake message may carry as many extensions, and a ClientHello as many key shares, as fit in it; duplicates are refused, found by sorting in O(n log n), so the largest message decodes in well under a second. | src/msgs.rs | Test | tests/protocol_hardening.rs::client_hello_extensions_and_key_shares_scale |
 
 | REQ-REC-008 | A handshake message that changes the read key ends its record; anything after it in the same record is refused, in both engines. | src/fixed.rs | Test | tests/protocol_hardening.rs::both_engines_refuse_messages_after_a_key_change_in_the_same_record; tests/protocol_hardening.rs::the_fixed_client_refuses_plaintext_after_the_server_hello |
 
@@ -371,3 +371,9 @@ feed the life-cycle data.
 | REQ-REC-010 | A record's legacy_record_version is ignored apart from its major byte, which must be 3 (RFC 8446 §5.1), in both engines; bytes that are not TLS are refused at the first record. | src/record.rs | Test | tests/protocol_hardening.rs::the_legacy_record_version_is_ignored |
 
 | REQ-CONN-016 | A `TlsStream` over TCP whose handshake fails closes gracefully (FIN after its alert, then a bounded drain of at most 250 ms and 64 KiB), so the peer reads the alert instead of a connection reset. | src/stream.rs | Test | tests/stream.rs::a_failed_handshake_delivers_its_alert_despite_unread_bytes |
+
+| REQ-MSG-021 | A Hello whose legacy_version is below SSL 3.0 is refused with protocol_version. | src/msgs.rs | Test | tests/protocol_hardening.rs::tlsfuzzer_refusals; tests/conformance.rs::tls13_server_hellos_require_the_tls12_legacy_version |
+
+| REQ-MSG-022 | A TLS 1.3 ClientHello carrying supported_groups without key_share, or key_share without supported_groups, is refused with missing_extension (RFC 8446 §9.2); an empty key_share list still draws a HelloRetryRequest. | src/msgs.rs | Test | tests/conformance.rs::the_server_refuses_non_conforming_client_hellos; tests/protocol_hardening.rs::tlsfuzzer_refusals |
+
+| REQ-REC-011 | An alert record with no content is refused with unexpected_message, in both engines. | src/conn.rs | Test | tests/protocol_hardening.rs::tlsfuzzer_refusals |

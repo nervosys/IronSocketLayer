@@ -304,7 +304,10 @@ fn the_server_refuses_non_conforming_client_hellos() {
     }
     for (ty, want) in [
         (13, "ClientHello without signature_algorithms"),
-        (10, "ClientHello without supported_groups"),
+        // RFC 8446 §9.2: key_share without supported_groups (REQ-MSG-022).
+        (10, "supported_groups and key_share must come together"),
+        // And supported_groups without key_share: once a HelloRetryRequest.
+        (51, "supported_groups and key_share must come together"),
     ] {
         let body = with_client_hello_extension(&base.encode().unwrap(), ty, None, false);
         let mut server = Connection::server(sc.clone()).unwrap();
@@ -784,6 +787,10 @@ fn tls13_server_hellos_require_the_tls12_legacy_version() {
             if version == 0x0300 {
                 assert_eq!(error.kind(), ErrorKind::ProtocolVersion);
                 assert_eq!(error.context(), "SSL 3.0 legacy_version is forbidden");
+            } else if version < 0x0300 {
+                // REQ-MSG-021: not TLS at all.
+                assert_eq!(error.kind(), ErrorKind::ProtocolVersion);
+                assert_eq!(error.context(), "legacy_version below SSL 3.0");
             } else {
                 assert_eq!(error.kind(), ErrorKind::IllegalParameter);
                 assert_eq!(
@@ -803,6 +810,10 @@ fn tls13_server_hellos_require_the_tls12_legacy_version() {
                 assert_eq!(error.context(), "SSL 3.0 legacy_version is forbidden");
                 let alert = client.take_tls();
                 assert_eq!(alert, [21, 3, 3, 0, 2, 2, 70]);
+            } else if version < 0x0300 {
+                assert_eq!(error.kind(), ErrorKind::ProtocolVersion);
+                assert_eq!(error.context(), "legacy_version below SSL 3.0");
+                assert_eq!(client.take_tls(), [21, 3, 3, 0, 2, 2, 70]);
             } else {
                 assert_eq!(error.kind(), ErrorKind::IllegalParameter);
                 assert_eq!(

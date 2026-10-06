@@ -46,12 +46,19 @@ fn illegal(ctx: &'static str) -> Error {
 }
 
 /// REQ-MSG-017: SSL 3.0 legacy versions require a protocol_version alert (RFC 8446 D.5).
+/// REQ-MSG-021: so do versions below it, which are not TLS at all.
 fn read_hello_legacy_version(reader: &mut Reader<'_>) -> Result<u16> {
     let version = reader.u16()?;
     if version == 0x0300 {
         return Err(Error::new(
             ErrorKind::ProtocolVersion,
             "SSL 3.0 legacy_version is forbidden",
+        ));
+    }
+    if version < 0x0300 {
+        return Err(Error::new(
+            ErrorKind::ProtocolVersion,
+            "legacy_version below SSL 3.0",
         ));
     }
     Ok(version)
@@ -116,10 +123,21 @@ pub(crate) fn extension_allowed(ty: ExtensionType, context: ExtensionContext) ->
     }
 }
 
-/// The most extensions accepted in one handshake message.
-pub const MAX_EXTENSIONS: usize = 128;
-/// The most key shares accepted in one ClientHello.
-pub const MAX_KEY_SHARES: usize = 16;
+/// The most extensions one handshake message can carry: a 65,535-byte
+/// extension block of empty extensions. No lower limit is imposed (RFC 8446
+/// sets none, and tlsfuzzer checks that servers accept over a thousand);
+/// duplicates are found by sorting, so the cost stays O(n log n).
+/// REQ-MSG-020.
+pub const MAX_EXTENSIONS: usize = 65_535 / 4;
+/// The most key shares one ClientHello can carry (a 65,535-byte list of
+/// one-byte shares), found unique by sorting. REQ-MSG-020.
+pub const MAX_KEY_SHARES: usize = 65_535 / 5;
+
+/// REQ-MSG-020: whether `items` repeats a value, in O(n log n).
+fn has_duplicate(mut items: Vec<u16>) -> bool {
+    items.sort_unstable();
+    items.windows(2).any(|w| w[0] == w[1])
+}
 
 /// Parse an extension block into `(type, body)` pairs. `REQ-MSG-001`.
 fn parse_extensions<'a>(
@@ -131,18 +149,14 @@ fn parse_extensions<'a>(
     while !block.is_empty() {
         let ty = ExtensionType::from_wire(block.u16()?);
         let body = block.vec16()?;
-        // REQ-MSG-020: bounded before the quadratic duplicate check. Real
-        // messages carry a few dozen extensions at most.
-        if out.len() >= MAX_EXTENSIONS {
-            return Err(decode_err("too many extensions"));
-        }
-        if out.iter().any(|(t, _)| *t == ty) {
-            return Err(illegal("duplicate extension"));
-        }
         if !extension_allowed(ty, context) {
             return Err(illegal("extension forbidden in this handshake message"));
         }
         out.push((ty, body));
+    }
+    // REQ-MSG-020: one sort, not a scan per extension.
+    if has_duplicate(out.iter().map(|(t, _)| t.to_wire()).collect()) {
+        return Err(illegal("duplicate extension"));
     }
     Ok(out)
 }
@@ -498,6 +512,7 @@ impl ClientHello {
         }
         let exts = parse_extensions(&mut r, ExtensionContext::ClientHello)?;
         r.finish()?;
+        let (mut saw_groups, mut saw_key_share) = (false, false);
         let last = exts.len().saturating_sub(1);
         for (i, (ty, body)) in exts.iter().enumerate() {
             match ty {
@@ -529,6 +544,7 @@ impl ClientHello {
                         .into_iter()
                         .map(NamedGroup::from_wire)
                         .collect();
+                    saw_groups = true;
                 }
                 ExtensionType::SignatureAlgorithms => {
                     ch.sig_algs = read_u16_list(body, Prefix::U16)?
@@ -560,15 +576,13 @@ impl ClientHello {
                         if share.is_empty() {
                             return Err(decode_err("empty key_exchange"));
                         }
-                        if ch.key_shares.iter().any(|(x, _)| *x == g) {
-                            return Err(illegal("two key shares for one group"));
-                        }
-                        // REQ-MSG-020: bounded before it can grow quadratic.
-                        if ch.key_shares.len() >= MAX_KEY_SHARES {
-                            return Err(illegal("too many key shares"));
-                        }
                         ch.key_shares.push((g, share.to_vec()));
                     }
+                    // REQ-MSG-020: one sort, not a scan per share.
+                    if has_duplicate(ch.key_shares.iter().map(|(g, _)| g.to_wire()).collect()) {
+                        return Err(illegal("two key shares for one group"));
+                    }
+                    saw_key_share = true;
                 }
                 ExtensionType::ApplicationLayerProtocolNegotiation => {
                     ch.alpn = read_alpn_list(body)?
@@ -637,6 +651,14 @@ impl ClientHello {
                 }
                 other => ch.other_extensions.push(*other),
             }
+        }
+        // REQ-MSG-022: RFC 8446 §9.2: a TLS 1.3 ClientHello with
+        // supported_groups also carries key_share, and the reverse.
+        if saw_groups != saw_key_share && ch.versions.contains(&ProtocolVersion::Tls13) {
+            return Err(Error::new(
+                ErrorKind::MissingExtension,
+                "supported_groups and key_share must come together",
+            ));
         }
         Ok(ch)
     }

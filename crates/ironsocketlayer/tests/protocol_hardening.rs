@@ -324,58 +324,69 @@ fn tls_stream_reports_truncation() {
     assert!(!c.connection().peer_closed());
 }
 
-/// REQ-MSG-020: a ClientHello's extensions and key shares are bounded
-/// before the duplicate checks that grow with their square.
+/// REQ-MSG-020: a ClientHello may carry as many extensions and key shares
+/// as fit in it (RFC 8446 sets no lower limit, and tlsfuzzer checks that
+/// servers accept over a thousand unknown extensions); duplicates are still
+/// refused, and finding them costs O(n log n), so even the largest hello
+/// decodes quickly.
 #[test]
-fn client_hello_extensions_and_key_shares_are_bounded() {
-    let hello = |exts: &[u8]| {
+fn client_hello_extensions_and_key_shares_scale() {
+    let body = |exts: &[u8]| {
         let mut body = vec![3, 3];
         body.extend_from_slice(&[7u8; 32]);
         body.push(0);
         body.extend_from_slice(&[0, 2, 0x13, 0x01, 1, 0]);
         body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
         body.extend_from_slice(exts);
-        let mut hs = vec![1u8];
-        hs.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
-        hs.extend_from_slice(&body);
+        body
+    };
+    let empty_unknown = |n: u16| {
         let mut out = Vec::new();
-        for chunk in hs.chunks(16384) {
-            out.extend_from_slice(&[22, 3, 1]);
-            out.extend_from_slice(&(chunk.len() as u16).to_be_bytes());
-            out.extend_from_slice(chunk);
+        for i in 0..n {
+            out.extend_from_slice(&(0x4000 + i).to_be_bytes());
+            out.extend_from_slice(&[0, 0]);
         }
         out
     };
-    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
-    let sc = Arc::new(pki.server_config(Profile::Default));
-    let mut many = Vec::new();
-    for i in 0..200u16 {
-        many.extend_from_slice(&(0x4000 + i).to_be_bytes());
-        many.extend_from_slice(&[0, 0]);
-    }
-    let e = Connection::server(sc.clone())
-        .unwrap()
-        .read_tls(&hello(&many))
-        .unwrap_err();
-    assert_eq!(e.kind(), ErrorKind::Decode, "{e}");
-    assert!(e.to_string().contains("too many extensions"), "{e}");
-    // Twenty key shares for distinct (unknown) groups.
-    let mut shares = Vec::new();
-    for g in 0..20u16 {
-        shares.extend_from_slice(&(0x7000 + g).to_be_bytes());
-        shares.extend_from_slice(&[0, 1, 0xaa]);
-    }
-    let mut ks = (shares.len() as u16).to_be_bytes().to_vec();
-    ks.extend(shares);
-    let mut ext = vec![0x00, 0x33];
-    ext.extend_from_slice(&(ks.len() as u16).to_be_bytes());
-    ext.extend(ks);
-    let e = Connection::server(sc)
-        .unwrap()
-        .read_tls(&hello(&ext))
-        .unwrap_err();
+    // As many empty unknown extensions as an extension block holds.
+    let most = (65_535 / 4) as u16 - 1;
+    let exts = empty_unknown(most);
+    let started = std::time::Instant::now();
+    let ch = ClientHello::decode(&body(&exts)).unwrap();
+    assert_eq!(ch.other_extensions.len(), usize::from(most));
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    // One repeat anywhere is refused.
+    let mut dup = empty_unknown(1500);
+    dup.extend_from_slice(&0x4000u16.to_be_bytes());
+    dup.extend_from_slice(&[0, 0]);
+    let e = ClientHello::decode(&body(&dup)).unwrap_err();
     assert_eq!(e.kind(), ErrorKind::IllegalParameter, "{e}");
-    assert!(e.to_string().contains("too many key shares"), "{e}");
+    assert_eq!(e.context(), "duplicate extension");
+
+    // As many one-byte key shares for distinct groups as fit.
+    let key_shares = |groups: &[u16]| {
+        let mut shares = Vec::new();
+        for g in groups {
+            shares.extend_from_slice(&g.to_be_bytes());
+            shares.extend_from_slice(&[0, 1, 0xaa]);
+        }
+        let mut ks = (shares.len() as u16).to_be_bytes().to_vec();
+        ks.extend(shares);
+        let mut ext = vec![0x00, 0x33];
+        ext.extend_from_slice(&(ks.len() as u16).to_be_bytes());
+        ext.extend(ks);
+        ext
+    };
+    let groups: Vec<u16> = (0..12_000u16).map(|g| 0x1000 + g).collect();
+    let started = std::time::Instant::now();
+    let ch = ClientHello::decode(&body(&key_shares(&groups))).unwrap();
+    assert_eq!(ch.key_shares.len(), groups.len());
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    let mut repeated = groups[..2000].to_vec();
+    repeated.push(groups[0]);
+    let e = ClientHello::decode(&body(&key_shares(&repeated))).unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::IllegalParameter, "{e}");
+    assert_eq!(e.context(), "two key shares for one group");
 }
 
 fn external_psk(id: &[u8], key: u8) -> ironsocketlayer::config::ExternalPsk {
@@ -845,5 +856,66 @@ fn application_data_before_the_client_finished_gets_a_readable_alert() {
         let (ty, n) = r.open(&alert.header, &mut body).expect("readable");
         assert_eq!(ty, ContentType::Alert);
         assert_eq!(&body[..n], &[2, 10]);
+    }
+}
+
+/// REQ-MSG-021, REQ-MSG-022, REQ-REC-011: three refusals tlsfuzzer checks.
+/// A ClientHello legacy_version below SSL 3.0 is protocol_version; a TLS 1.3
+/// ClientHello with supported_groups but no key_share (or the reverse) is
+/// missing_extension (RFC 8446 §9.2; tests/conformance.rs), where it used to
+/// draw a HelloRetryRequest; and an empty alert record is unexpected_message.
+#[test]
+fn tlsfuzzer_refusals() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = Arc::new(server_config(&pki));
+    let hello = |edit: &dyn Fn(&mut ClientHello)| {
+        let mut ch = ClientHello {
+            random: [7; 32],
+            session_id: vec![1; 32],
+            suites: vec![SUITE],
+            server_name: Some("server.test".into()),
+            groups: vec![NamedGroup::X25519],
+            sig_algs: vec![SignatureScheme::EcdsaSecp256r1Sha256],
+            versions: vec![ProtocolVersion::Tls13],
+            key_shares: vec![(NamedGroup::X25519, vec![9; 32])],
+            ..Default::default()
+        };
+        edit(&mut ch);
+        let m = msgs::frame(HandshakeType::ClientHello, &ch.encode().unwrap()).unwrap();
+        let mut rec = vec![22, 3, 1];
+        rec.extend((m.len() as u16).to_be_bytes());
+        rec.extend(m);
+        rec
+    };
+    let refused = |rec: &[u8]| {
+        let mut s = Connection::server(sc.clone()).unwrap();
+        s.read_tls(rec).unwrap_err()
+    };
+    for v in [0x0000u16, 0x0002, 0x0200, 0x02ff] {
+        let mut rec = hello(&|_| {});
+        rec[9..11].copy_from_slice(&v.to_be_bytes());
+        assert_eq!(refused(&rec).kind(), ErrorKind::ProtocolVersion, "{v:#06x}");
+    }
+    // An omitted key_share is tests/conformance.rs's; an empty one, which
+    // RFC 8446 §4.2.8 allows, still draws a HelloRetryRequest.
+    let mut s = Connection::server(sc.clone()).unwrap();
+    s.read_tls(&hello(&|ch| ch.key_shares.clear())).unwrap();
+    let flight = s.take_tls();
+    let r = record::take_record(&mut flight.clone()).unwrap().unwrap();
+    let sh = ServerHello::decode(&r.body[4..]).unwrap();
+    assert!(sh.is_retry());
+    // An empty alert record, encrypted (with and without padding), as
+    // tlsfuzzer sends it.
+    for pad in [0usize, 5] {
+        let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+        let mut s = Connection::server(Arc::new(server_config(&pki))).unwrap();
+        let mut raw = raw_handshake(&mut s);
+        let mut rec = Vec::new();
+        raw.write
+            .seal(ContentType::Alert, b"", pad, &mut rec)
+            .unwrap();
+        let e = s.read_tls(&rec).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::UnexpectedMessage, "{e}");
+        assert_eq!(e.context(), "empty alert record");
     }
 }
