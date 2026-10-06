@@ -291,3 +291,78 @@ fn an_intent_configuration_connects_and_refuses_what_it_lacks() {
         assert_eq!(r.alpn.as_deref(), Some(&b"a2a/1"[..]));
     }
 }
+
+/// REQ-CFG-006: default configurations give up nothing; each relaxation is
+/// listed when made, and only then.
+#[test]
+fn relaxations_are_listed_exactly() {
+    use ironsocketlayer::config::{ClientConfig, ExternalPsk, Relaxation, Revocation};
+    use ironsocketlayer::crypto::HashAlg;
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    assert!(pki.client_config(Profile::Default).relaxations().is_empty());
+    assert!(pki.server_config(Profile::Default).relaxations().is_empty());
+
+    let client = |edit: fn(&mut ClientConfig)| {
+        let mut cc = pki.client_config(Profile::Default);
+        edit(&mut cc);
+        cc.relaxations()
+    };
+    assert_eq!(
+        client(|c| c.revocation = Revocation::Off),
+        [Relaxation::RevocationOff]
+    );
+    assert_eq!(client(|c| c.early_data = true), [Relaxation::EarlyData]);
+    assert_eq!(client(|c| c.ech_grease = false), [Relaxation::NoEchGrease]);
+    // GREASE is moot when real ECH is configured.
+    assert!(client(|c| {
+        c.ech_grease = false;
+        c.ech_configs = Some(vec![0]);
+    })
+    .is_empty());
+    // A pin is the peer's identity; it gives up nothing.
+    let pinned = ClientConfig::pinned(Profile::Default, &pki.server_spki()).unwrap();
+    assert!(pinned.relaxations().is_empty());
+
+    let mut sc = pki.server_config(Profile::Default);
+    sc.sni_fallback = true;
+    assert_eq!(sc.relaxations(), [Relaxation::SniFallback]);
+    let mut sc = pki.server_config(Profile::Default);
+    sc.early_data = Some(EarlyDataPolicy::new(1024));
+    assert_eq!(sc.relaxations(), [Relaxation::EarlyData]);
+    // The Selfie guard matters only with external PSKs to guard.
+    let mut sc = pki.server_config(Profile::Default);
+    sc.selfie_guard = false;
+    assert!(sc.relaxations().is_empty());
+    sc.external_psks = vec![ExternalPsk::new(b"k", &[1; 32], HashAlg::Sha256).unwrap()];
+    assert_eq!(sc.relaxations(), [Relaxation::SelfieGuardOff]);
+}
+
+/// REQ-CFG-006: every session reports its configuration's relaxations, in
+/// the struct and in the JSON, on both sides.
+#[test]
+fn sessions_report_their_relaxations() {
+    use ironsocketlayer::config::{Relaxation, Revocation};
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    let mut cc = pki.client_config(Profile::Default);
+    cc.revocation = Revocation::Off;
+    let mut sc = pki.server_config(Profile::Default);
+    sc.sni_fallback = true;
+    let (c, s) = connect(Arc::new(cc), Arc::new(sc), NAME).unwrap();
+    assert_eq!(c.report().relaxations, [Relaxation::RevocationOff]);
+    assert!(c
+        .report()
+        .to_json()
+        .contains(r#""relaxations":["relaxation:revocation-off"]"#));
+    assert_eq!(s.report().relaxations, [Relaxation::SniFallback]);
+    assert!(s
+        .report()
+        .to_json()
+        .contains(r#""relaxations":["relaxation:sni-fallback"]"#));
+    let (c, _) = connect(
+        Arc::new(pki.client_config(Profile::Default)),
+        Arc::new(pki.server_config(Profile::Default)),
+        NAME,
+    )
+    .unwrap();
+    assert!(c.report().to_json().contains(r#""relaxations":[]"#));
+}

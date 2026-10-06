@@ -743,7 +743,9 @@ impl Connection {
     ) -> Result<Self> {
         config.validate()?;
         let quic_early = quic.is_some() && early.is_some();
-        let core = Core::new(Side::Client, config.common.clone(), quic)?;
+        let mut core = Core::new(Side::Client, config.common.clone(), quic)?;
+        // REQ-CFG-006.
+        core.report.relaxations = config.relaxations();
         let mut hs = ClientHs::new(config, server_name)?;
         if quic_early {
             hs.set_quic_early();
@@ -770,6 +772,8 @@ impl Connection {
     pub(crate) fn server_inner(config: Arc<ServerConfig>, quic: Option<Vec<u8>>) -> Result<Self> {
         config.validate()?;
         let mut core = Core::new(Side::Server, config.common.clone(), quic)?;
+        // REQ-CFG-006.
+        core.report.relaxations = config.relaxations();
         core.set_state(HandshakeState::WaitClientHello);
         Ok(Self {
             core,

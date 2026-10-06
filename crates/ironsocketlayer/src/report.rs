@@ -217,6 +217,9 @@ pub struct SessionReport {
     /// the names a validated path vouches for; authorize on these, not on
     /// the common name. Empty for external-PSK sessions. REQ-RPT-003.
     pub peer_names: Vec<String>,
+    /// The safe defaults the configuration gave up for this session, by
+    /// id; empty when it gave up none. REQ-CFG-006.
+    pub relaxations: Vec<crate::config::Relaxation>,
     /// Peer end-entity `notAfter`, Unix seconds.
     pub peer_not_after: Option<u64>,
     /// Certificates the peer sent.
@@ -331,6 +334,10 @@ impl SessionReport {
         o.raw(
             "peerNames",
             &json_str_array(self.peer_names.iter().map(String::as_str)),
+        );
+        o.raw(
+            "relaxations",
+            &json_str_array(self.relaxations.iter().map(|r| r.id())),
         );
         o.num_opt("peerNotAfter", self.peer_not_after);
         o.num("peerChainLength", self.peer_chain_len as u64);

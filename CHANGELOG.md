@@ -17,6 +17,10 @@ versions may change the API.
   `isl recommend`): its profile, its ALPN, and its needs as required
   properties. An unknown intent or an unavailable profile is an error, never
   a fallback. `config::IntentPolicy` re-exports the selector's policy flags.
+- `config::Relaxation`, `ClientConfig::relaxations` and
+  `ServerConfig::relaxations`: the safe defaults a configuration gives up
+  (revocation off, 0-RTT, no ECH GREASE, SNI fallback, Selfie guard off).
+  Every session report lists them as `relaxations`.
 
 ### Changed
 - Requires IronCrypto 0.2.15 or later, below 0.3. Its HPKE now also offers

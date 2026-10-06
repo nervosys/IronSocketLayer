@@ -60,6 +60,14 @@ requirement together with 0-RTT, and mutual authentication without the means
 to get it. Mutual authentication obtained later, with `request_client_auth`,
 is checked on the report.
 
+## Know what you gave up
+
+`config.relaxations()`, and `relaxations` in every session report, list the
+safe defaults a configuration gives up: `relaxation:revocation-off`,
+`relaxation:early-data`, `relaxation:no-ech-grease`,
+`relaxation:sni-fallback`, `relaxation:selfie-guard-off`. Do not set one
+unless the task needs it, and say so to the user when you do.
+
 ## After connecting, check what you got
 
 ```rust

@@ -35,6 +35,42 @@ use crate::report::Property;
 /// mutual authentication. The ontology's selector type, re-exported.
 pub use isl_ontology::select::Policy as IntentPolicy;
 
+/// A safe default this configuration deliberately gives up. Each is
+/// legitimate somewhere; listing them lets a supervising agent or a reviewer
+/// see at once what a configuration, and every session made with it, has
+/// weakened. REQ-CFG-006.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Relaxation {
+    /// The client neither asks for nor checks revocation status.
+    RevocationOff,
+    /// 0-RTT early data: replayable by an attacker, and sent or accepted
+    /// before the handshake has authenticated anything.
+    EarlyData,
+    /// A client without ECH configurations sends no GREASE, so its use of
+    /// ECH elsewhere stands out.
+    NoEchGrease,
+    /// The server presents its default certificate for a server name it
+    /// does not hold.
+    SniFallback,
+    /// The server accepts an external-PSK ClientHello its own process sent
+    /// (the Selfie reflection).
+    SelfieGuardOff,
+}
+
+impl Relaxation {
+    /// Stable identifier.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::RevocationOff => "relaxation:revocation-off",
+            Self::EarlyData => "relaxation:early-data",
+            Self::NoEchGrease => "relaxation:no-ech-grease",
+            Self::SniFallback => "relaxation:sni-fallback",
+            Self::SelfieGuardOff => "relaxation:selfie-guard-off",
+        }
+    }
+}
+
 /// What an intent asks of a configuration. REQ-CFG-005.
 struct IntentPlan {
     profile: Profile,
@@ -751,6 +787,22 @@ impl ClientConfig {
         Ok(config)
     }
 
+    /// The safe defaults this configuration gives up, in a fixed order.
+    /// REQ-CFG-006.
+    pub fn relaxations(&self) -> Vec<Relaxation> {
+        let mut out = Vec::new();
+        if self.revocation == Revocation::Off {
+            out.push(Relaxation::RevocationOff);
+        }
+        if self.early_data {
+            out.push(Relaxation::EarlyData);
+        }
+        if self.ech_configs.is_none() && !self.ech_grease {
+            out.push(Relaxation::NoEchGrease);
+        }
+        out
+    }
+
     /// Whether there is nothing but an external PSK to authenticate the server.
     pub(crate) fn verification_is_empty(&self) -> bool {
         matches!(&self.verification, PeerVerification::Roots(r) if r.is_empty())
@@ -983,6 +1035,23 @@ impl ServerConfig {
     pub fn require(mut self, properties: &[crate::report::Property]) -> Self {
         self.common.required_properties = properties.to_vec();
         self
+    }
+
+    /// The safe defaults this configuration gives up, in a fixed order.
+    /// The Selfie guard counts only when there are external PSKs for it to
+    /// guard. REQ-CFG-006.
+    pub fn relaxations(&self) -> Vec<Relaxation> {
+        let mut out = Vec::new();
+        if self.early_data.is_some() {
+            out.push(Relaxation::EarlyData);
+        }
+        if self.sni_fallback {
+            out.push(Relaxation::SniFallback);
+        }
+        if !self.selfie_guard && !self.external_psks.is_empty() {
+            out.push(Relaxation::SelfieGuardOff);
+        }
+        out
     }
 
     /// Check the configuration.
