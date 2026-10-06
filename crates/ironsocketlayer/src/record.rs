@@ -390,8 +390,10 @@ pub(crate) fn peek_record(buf: &[u8]) -> Result<Option<([u8; HEADER_LEN], usize)
             "unknown record content type",
         ));
     }
-    // legacy_record_version: 0x0303, or 0x0301 on an initial ClientHello.
-    if buf[1] != 0x03 || !(0x01..=0x03).contains(&buf[2]) {
+    // REQ-REC-010: legacy_record_version "MUST be ignored for all purposes"
+    // (RFC 8446 §5.1); senders vary (0x0300 to 0x0303). Only the major
+    // byte is checked, so bytes that are not TLS at all are refused at once.
+    if buf[1] != 0x03 {
         return Err(Error::new(ErrorKind::Decode, "record version is not TLS"));
     }
     let len = u16::from_be_bytes([buf[3], buf[4]]) as usize;

@@ -205,6 +205,25 @@ pub struct Connection<'a> {
     retry_cookie_len: usize,
 }
 
+/// REQ-REC-010: a record header is TLS if its content type is one TLS 1.3
+/// defines and its legacy version's major byte is 3; the rest of the legacy
+/// version is ignored (RFC 8446 §5.1).
+fn check_record_header(header: &[u8]) -> Result<()> {
+    if matches!(
+        ContentType::from_wire(header[0]),
+        ContentType::Unknown(_) | ContentType::Invalid
+    ) {
+        return Err(unexpected());
+    }
+    if header[1] != 3 {
+        return Err(Error::new(
+            ErrorKind::ProtocolVersion,
+            "record legacy version",
+        ));
+    }
+    Ok(())
+}
+
 /// Largest GREASE ECH payload: a 288-byte padded inner hello and its tag.
 const GREASE_PAYLOAD_MAX: usize = 288 + 16;
 
@@ -606,6 +625,9 @@ impl<'a> Connection<'a> {
             // exactly five bytes, and must then be processed (and refused),
             // not skipped forever without consuming input.
             if reading_header && self.record_len == 5 {
+                // REQ-REC-010: refuse bytes that are not TLS on the header,
+                // not after waiting for a body they announce.
+                check_record_header(&self.storage.record[..5])?;
                 continue;
             }
             if self.record_len != need {
@@ -621,12 +643,7 @@ impl<'a> Connection<'a> {
     }
     fn process_record(&mut self, bytes: &mut [u8]) -> Result<()> {
         let header: [u8; 5] = bytes[..5].try_into().map_err(|_| unexpected())?;
-        if header[1] != 3 || !matches!(header[2], 1 | 3) {
-            return Err(Error::new(
-                ErrorKind::ProtocolVersion,
-                "record legacy version",
-            ));
-        }
+        check_record_header(&header)?;
         let body = &mut bytes[5..];
         let outer = ContentType::from_wire(header[0]);
         if outer == ContentType::ChangeCipherSpec {

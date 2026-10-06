@@ -701,3 +701,62 @@ fn the_fixed_client_greases_ech() {
     .unwrap();
     assert_eq!(client_hello_in(&c.take()).ech, None);
 }
+
+/// REQ-REC-010: the record layer's legacy version is ignored apart from its
+/// major byte (RFC 8446 §5.1: "MUST be ignored for all purposes"), in both
+/// engines; tlsfuzzer, for one, sends 0x0300. A record that is not TLS at
+/// all (here the start of an HTTP request) is refused.
+#[test]
+fn the_legacy_record_version_is_ignored() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.groups = vec![NamedGroup::X25519];
+    cc.ech_grease = false;
+    let cc = Arc::new(cc);
+    let sc = server_config(&pki);
+    for minor in [0x00, 0x01, 0x02, 0x03, 0x04, 0xff] {
+        let mut hello = Connection::client(cc.clone(), "server.test")
+            .unwrap()
+            .take_tls();
+        hello[2] = minor;
+        let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+        owned
+            .read_tls(&hello)
+            .unwrap_or_else(|e| panic!("owned, 0x03{minor:02x}: {e}"));
+        assert!(
+            !owned.take_tls().is_empty(),
+            "owned answered 0x03{minor:02x}"
+        );
+        let mut b = Buffers::new();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut fixed =
+            fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default())
+                .unwrap();
+        fixed
+            .receive(&hello)
+            .unwrap_or_else(|e| panic!("fixed, 0x03{minor:02x}: {e}"));
+    }
+    // Not TLS: an HTTP request, and a handshake record of major version 2.
+    let http = b"GET / HTTP/1.1
+Host: x
+
+"
+    .to_vec();
+    let mut hello = Connection::client(cc.clone(), "server.test")
+        .unwrap()
+        .take_tls();
+    hello[1] = 0x02;
+    for (bytes, owned_kind) in [
+        (http, ErrorKind::UnexpectedMessage),
+        (hello, ErrorKind::Decode),
+    ] {
+        let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+        assert_eq!(owned.read_tls(&bytes).unwrap_err().kind(), owned_kind);
+        let mut b = Buffers::new();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut fixed =
+            fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default())
+                .unwrap();
+        assert!(fixed.receive(&bytes).is_err());
+    }
+}

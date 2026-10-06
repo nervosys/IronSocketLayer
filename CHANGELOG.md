@@ -51,6 +51,11 @@ versions may change the API.
   OpenSSL's `-keymatexport`. `conn::CHANNEL_BINDING_LABEL`.
 
 ### Fixed
+- The record layer's legacy version is ignored apart from its major byte,
+  as RFC 8446 §5.1 requires; servers refused a ClientHello in a 0x0300
+  record (tlsfuzzer's default), and the fixed engine also 0x0302. The fixed
+  engine now refuses a record that is not TLS on its header, not after
+  waiting for the body it announces.
 - `isl serve --bind <addr>` was parsed as a flag and its address ignored,
   so the server always bound 127.0.0.1.
 
