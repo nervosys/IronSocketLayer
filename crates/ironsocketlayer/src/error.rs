@@ -15,6 +15,51 @@ use crate::enums::AlertDescription;
 /// Result type used throughout the crate.
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// What an agent should do about an error: a closed set, so a planner can
+/// branch on it. [`ErrorKind::recovery`] gives it for each kind, and the
+/// ontology's error catalog carries the same id. REQ-ERR-001.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Recovery {
+    /// A fresh attempt, unchanged, may succeed (a transient local failure).
+    Retry,
+    /// This connection cannot continue; open a new one with the same
+    /// configuration.
+    Reconnect,
+    /// Reconnect with `Connection::ech_retry_configs()` as the ECH
+    /// configuration. Never retry without ECH unless the user agrees to
+    /// expose the server name.
+    RetryWithEchConfigs,
+    /// The configuration or the use of the API is wrong; fix it. This never
+    /// means weakening security: changes that would are `AskUser`.
+    FixCaller,
+    /// A trust or security decision the agent must not make alone (an
+    /// unknown CA, a name mismatch, a requirement not met): report it.
+    AskUser,
+    /// The peer is broken or hostile; retrying will not help. Report it.
+    Stop,
+    /// The local environment needs attention (the FIPS module's state).
+    FixEnvironment,
+    /// A defect in this library or IronCrypto; report it with the session
+    /// report.
+    ReportBug,
+}
+
+impl Recovery {
+    /// Stable identifier.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Retry => "recovery:retry",
+            Self::Reconnect => "recovery:reconnect",
+            Self::RetryWithEchConfigs => "recovery:retry-with-ech-configs",
+            Self::FixCaller => "recovery:fix-caller",
+            Self::AskUser => "recovery:ask-user",
+            Self::Stop => "recovery:stop",
+            Self::FixEnvironment => "recovery:fix-environment",
+            Self::ReportBug => "recovery:report-bug",
+        }
+    }
+}
+
 /// What went wrong, as a closed vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -209,6 +254,43 @@ impl ErrorKind {
         })
     }
 
+    /// What to do about it, as data. REQ-ERR-001.
+    pub const fn recovery(self) -> Recovery {
+        match self {
+            Self::Decode
+            | Self::UnexpectedMessage
+            | Self::IllegalParameter
+            | Self::ProtocolVersion
+            | Self::MissingExtension
+            | Self::UnsupportedExtension
+            | Self::BadRecordMac
+            | Self::RecordOverflow
+            | Self::DecryptError
+            | Self::BadCertificate
+            | Self::UnsupportedCertificate
+            | Self::CertificateExpired
+            | Self::CertificateRevoked
+            | Self::BadCertificateStatus
+            | Self::CertificateUsage
+            | Self::PeerAlert => Recovery::Stop,
+            Self::HandshakeFailure
+            | Self::UnknownCa
+            | Self::CertificateNameMismatch
+            | Self::PolicyViolation => Recovery::AskUser,
+            Self::CapacityExceeded
+            | Self::CertificateRequired
+            | Self::NoApplicationProtocol
+            | Self::UnrecognizedName
+            | Self::InvalidState
+            | Self::InvalidConfig => Recovery::FixCaller,
+            Self::EchRejected => Recovery::RetryWithEchConfigs,
+            Self::FipsModule => Recovery::FixEnvironment,
+            Self::Closed | Self::KeyExhausted => Recovery::Reconnect,
+            Self::Entropy => Recovery::Retry,
+            Self::Crypto | Self::Internal => Recovery::ReportBug,
+        }
+    }
+
     /// Whether a fresh attempt could plausibly succeed without changes.
     pub const fn retryable(self) -> bool {
         matches!(self, Self::Entropy | Self::KeyExhausted)
@@ -286,6 +368,13 @@ impl Error {
     /// What went wrong.
     pub const fn kind(&self) -> ErrorKind {
         self.kind
+    }
+
+    /// What to do about it; see [`Recovery`]. For an ECH rejection,
+    /// [`Connection::recovery`](crate::Connection::recovery) also knows
+    /// whether retry configurations arrived. REQ-ERR-001.
+    pub const fn recovery(&self) -> Recovery {
+        self.kind.recovery()
     }
 
     /// Where it went wrong, as fixed text.

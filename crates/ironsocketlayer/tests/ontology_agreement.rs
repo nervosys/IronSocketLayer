@@ -190,6 +190,8 @@ fn every_error_kind_has_a_matching_catalog_entry() {
         );
         assert_eq!(d.peer_fault, k.peer_fault(), "{}: peer_fault", d.id);
         assert_eq!(d.alert, k.alert().map(|a| a.id()), "{}: alert", d.id);
+        // REQ-ERR-001.
+        assert_eq!(d.action, k.recovery().id(), "{}: action", d.id);
     }
     assert_eq!(isl_ontology::errors::CATALOG.len(), ErrorKind::ALL.len());
 }

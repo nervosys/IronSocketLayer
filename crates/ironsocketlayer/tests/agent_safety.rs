@@ -366,3 +366,102 @@ fn sessions_report_their_relaxations() {
     .unwrap();
     assert!(c.report().to_json().contains(r#""relaxations":[]"#));
 }
+
+/// REQ-ERR-001: the recovery actions keep the error flags' meaning: a
+/// peer's fault is never retried, only retryable kinds are retried or
+/// reconnected, and only caller-correctable kinds ask the caller to fix
+/// something.
+#[test]
+fn recovery_actions_agree_with_the_error_flags() {
+    use ironsocketlayer::Recovery;
+    let mut seen = std::collections::HashSet::new();
+    for &k in ErrorKind::ALL {
+        let r = k.recovery();
+        seen.insert(r);
+        if k.peer_fault() {
+            assert_eq!(r, Recovery::Stop, "{}", k.id());
+        }
+        assert_eq!(
+            k.retryable(),
+            matches!(r, Recovery::Retry | Recovery::Reconnect) && k != ErrorKind::Closed,
+            "{}",
+            k.id()
+        );
+        if r == Recovery::FixCaller {
+            assert!(k.caller_correctable(), "{}", k.id());
+        }
+        assert!(r.id().starts_with("recovery:"));
+    }
+    // Trust decisions are never the agent's alone.
+    for k in [
+        ErrorKind::UnknownCa,
+        ErrorKind::CertificateNameMismatch,
+        ErrorKind::PolicyViolation,
+        ErrorKind::HandshakeFailure,
+    ] {
+        assert_eq!(k.recovery(), Recovery::AskUser, "{}", k.id());
+    }
+    assert_eq!(seen.len(), 8, "every action is used");
+}
+
+/// REQ-ERR-001: a failed connection says what to do, refined by its state:
+/// an ECH rejection is a retry only when authenticated retry configurations
+/// arrived, and otherwise a question for the user.
+#[test]
+fn a_failed_connection_says_what_to_do() {
+    use ironsocketlayer::ech::EchServer;
+    use ironsocketlayer::Recovery;
+    // An untrusted server: ask the user, never trust it silently.
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    let other = Pki::new(KeyKind::EcdsaP256, NAME);
+    let failure = connect(
+        Arc::new(other.client_config(Profile::Default)),
+        Arc::new(pki.server_config(Profile::Default)),
+        NAME,
+    )
+    .unwrap_err();
+    assert_eq!(
+        failure.client.unwrap().recovery(),
+        Recovery::AskUser,
+        "unknown CA"
+    );
+    // ECH: with and without retry configurations.
+    const PUBLIC: &str = "public.test";
+    let keys = |id| {
+        Arc::new(
+            EchServer::generate(id, PUBLIC, 64, &mut ic_drbg::Rng::from_os().unwrap()).unwrap(),
+        )
+    };
+    let (stale, fresh) = (keys(1), keys(2));
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    for (server_keys, want) in [
+        (Some(fresh), Recovery::RetryWithEchConfigs),
+        (None, Recovery::AskUser),
+    ] {
+        let mut cc = pki.client_config(Profile::Default);
+        cc.ech_configs = Some(stale.config_list().to_vec());
+        let mut sc = ironsocketlayer::config::ServerConfig::new(
+            Profile::Default,
+            pki.identity_for(&[NAME, PUBLIC]),
+        )
+        .unwrap();
+        sc.ech = server_keys;
+        let mut c = Connection::client(Arc::new(cc), NAME).unwrap();
+        let mut s = Connection::server(Arc::new(sc)).unwrap();
+        for _ in 0..4 {
+            let _ = s.read_tls(&c.take_tls());
+            let _ = c.read_tls(&s.take_tls());
+        }
+        let e = c.error().expect("the client failed");
+        assert_eq!(e.kind(), ErrorKind::EchRejected, "{e}");
+        assert_eq!(c.recovery(), Some(want));
+    }
+    // A healthy connection has nothing to recover from.
+    let (c, _) = connect(
+        Arc::new(pki.client_config(Profile::Default)),
+        Arc::new(pki.server_config(Profile::Default)),
+        NAME,
+    )
+    .unwrap();
+    assert_eq!(c.recovery(), None);
+}

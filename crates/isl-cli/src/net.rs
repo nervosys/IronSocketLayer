@@ -260,6 +260,10 @@ pub fn tls_probe(
                 );
                 map.insert("retryable".into(), Json::Bool(doc.retryable));
             }
+            // REQ-ERR-001: refined by this connection's state.
+            if let Some(action) = conn.recovery() {
+                map.insert("action".into(), Json::str(action.id()));
+            }
         }
     }
     Ok(report)

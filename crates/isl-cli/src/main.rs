@@ -123,6 +123,7 @@ fn render_entry(j: &Json) {
     if j.get("meaning").is_some() {
         // An error.
         println!("{}\n{}\n", s(j, "id"), s(j, "meaning"));
+        println!("  action:             {}", s(j, "action"));
         println!("  retryable:          {}", b(j, "retryable"));
         println!("  caller correctable: {}", b(j, "callerCorrectable"));
         println!("  peer fault:         {}", b(j, "peerFault"));
@@ -454,6 +455,7 @@ failed: {e} ({})",
                         s(v, "errorContext")
                     );
                     println!("meaning: {}", s(v, "meaning"));
+                    println!("action:  {}", s(v, "action"));
                     if let Some(Json::String(h)) = v.get("hint") {
                         println!("note:    {h}");
                     }

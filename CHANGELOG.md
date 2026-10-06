@@ -26,6 +26,13 @@ versions may change the API.
   byte at a time cannot stretch it) and an idle limit for each later read or
   write. Both fail with `io::ErrorKind::TimedOut`; after an idle timeout the
   stream remains usable.
+- `Recovery`, `ErrorKind::recovery`, `Error::recovery` and
+  `Connection::recovery`: what to do about an error as one of eight actions
+  (`recovery:retry`, `reconnect`, `retry-with-ech-configs`, `fix-caller`,
+  `ask-user`, `stop`, `fix-environment`, `report-bug`). The connection's
+  version turns an ECH rejection without retry configurations into
+  `ask-user`. The ontology's error catalog carries the same `action`, and
+  `isl explain` and `isl probe` print it.
 
 ### Changed
 - Requires IronCrypto 0.2.15 or later, below 0.3. Its HPKE now also offers

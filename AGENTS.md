@@ -116,6 +116,13 @@ Every `ironsocketlayer::Error` has an `id()` such as `error:unknown-ca`.
 meaning and recovery steps. Errors with `retryable: false` do not get better by
 retrying; `peer_fault: true` means the remote end is broken or hostile.
 
+Branch on the action, not on prose: `conn.recovery()` (or `err.recovery()`)
+is one of `recovery:retry`, `recovery:reconnect`,
+`recovery:retry-with-ech-configs`, `recovery:fix-caller`, `recovery:ask-user`,
+`recovery:stop`, `recovery:fix-environment`, `recovery:report-bug`. The same
+id is `action` in `isl explain` and `isl probe` output. `ask-user` means a
+trust or security decision: report it, do not resolve it yourself.
+
 ## Rules for changing this repository
 
 - **No primitive is implemented here.** Every cipher, hash, MAC, KDF, curve,

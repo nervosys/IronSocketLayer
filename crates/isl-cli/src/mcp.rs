@@ -421,6 +421,17 @@ mod tests {
         }
     }
 
+    /// REQ-ERR-001: explain_error answers with the action as data.
+    #[test]
+    fn explain_error_carries_the_action() {
+        let r = call(
+            "explain_error",
+            Json::object([("id", Json::str("error:unknown-ca"))]),
+        );
+        let text = format!("{r:?}");
+        assert!(text.contains("recovery:ask-user"), "{text}");
+    }
+
     #[test]
     fn the_protocol_layer_returns_on_anything() {
         for v in hostile() {

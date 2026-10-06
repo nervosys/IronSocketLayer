@@ -131,10 +131,11 @@ pub fn entry_to_json(e: &Entry) -> String {
 /// One error as JSON.
 pub fn error_to_json(e: &ErrorDoc) -> String {
     format!(
-        "{{\"id\":{},\"meaning\":{},\"recovery\":{},\"retryable\":{},\"callerCorrectable\":{},\"peerFault\":{},\"alert\":{}}}",
+        "{{\"id\":{},\"meaning\":{},\"recovery\":{},\"action\":{},\"retryable\":{},\"callerCorrectable\":{},\"peerFault\":{},\"alert\":{}}}",
         quote(e.id),
         quote(e.meaning),
         str_array(e.recovery),
+        quote(e.action),
         e.retryable,
         e.caller_correctable,
         e.peer_fault,

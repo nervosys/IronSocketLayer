@@ -29,4 +29,4 @@ pub mod stream;
 pub mod x509;
 
 pub use conn::{Connection, Level};
-pub use error::{Error, ErrorKind, Result};
+pub use error::{Error, ErrorKind, Recovery, Result};

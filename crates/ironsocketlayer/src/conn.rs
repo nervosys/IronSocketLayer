@@ -1239,6 +1239,20 @@ impl Connection {
         self.core.error
     }
 
+    /// What to do about the latched error, if any: its
+    /// [`ErrorKind::recovery`], except that an ECH rejection without
+    /// authenticated retry configurations is `AskUser`, since the only way on
+    /// would expose the server name. REQ-ERR-001.
+    pub fn recovery(&self) -> Option<crate::error::Recovery> {
+        let e = self.core.error?;
+        Some(match e.recovery() {
+            crate::error::Recovery::RetryWithEchConfigs if self.ech_retry_configs().is_none() => {
+                crate::error::Recovery::AskUser
+            }
+            r => r,
+        })
+    }
+
     /// Which side this is.
     pub fn side(&self) -> Side {
         self.core.side
