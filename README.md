@@ -45,9 +45,9 @@ IronSocketLayer answers each one in the library itself:
 | Problem | IronSocketLayer |
 |---|---|
 | Choosing a configuration | Named **profiles** and **intents**: `isl recommend intent:agent-to-agent-mtls --post-quantum` returns the profile, the rationale, the rejected alternatives with reasons, and the constraints to honour. When nothing meets the requirements it says *unavailable* and never substitutes a weaker profile. |
-| Knowing what you got | Every connection yields a **`SessionReport`**: version, suite, group, schemes, peer chain facts, the **security properties that hold** (`property:post-quantum-key-exchange`, `property:mutual-authentication`, `property:fips-approved-algorithms`, ...), FIPS service indicators, and a typed event trail. Stable camelCase JSON. |
+| Knowing what you got | Every connection yields a **`SessionReport`**: version, suite, group, schemes, peer chain facts, the names the peer's certificate was issued for (`peerNames`, the ones to authorize on), the **security properties that hold** (`property:post-quantum-key-exchange`, `property:mutual-authentication`, `property:fips-approved-algorithms`, ...), FIPS service indicators, and a typed event trail. Stable camelCase JSON. |
 | Understanding failure | Every error is a closed **`ErrorKind`** with a stable id (`error:unknown-ca`), the TLS alert it maps to, and `retryable` / `caller_correctable` / `peer_fault` flags. The ontology holds its meaning and recovery steps under the same id. |
-| Discovering the library | A **ontology** of 102 protocol entries, 28 errors, 6 profiles and 10 intents, exported as JSON, JSON-LD, OWL/Turtle, JSON Schema and Markdown, linked into IronCrypto's ontology by `builtOn` edges. |
+| Discovering the library | An **ontology** of 104 protocol entries, 33 errors, 6 profiles and 11 intents, exported as JSON, JSON-LD, OWL/Turtle, JSON Schema and Markdown, linked into IronCrypto's ontology by `builtOn` edges. |
 | Tool use | An **MCP server** (`isl mcp`) exposing the ontology, the recommender, the error catalog, self-tests and a live `tls_probe`. |
 
 And it removes one foot-gun entirely: **there is no option to disable
@@ -63,16 +63,16 @@ pins the peer's public key instead, which is stricter and easier to provision.
 | Cipher suites | TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256 |
 | Key exchange | **X25519MLKEM768**, **SecP256r1MLKEM768**, **ML-KEM-512**, **ML-KEM-768**, X25519, P-256, P-384, P-521; **SecP384r1MLKEM1024** and **ML-KEM-1024** on request (not offered by default: their shares exceed 1.5 KB) |
 | Signatures | **ML-DSA-44**, **ML-DSA-65**, **ML-DSA-87**, ECDSA P-256/P-384/P-521, Ed25519, RSA-PSS (2048–4096), RSA PKCS#1 v1.5 in certificates only |
-| PKI | RFC 5280 path building and validation, name constraints (dNSName, iPAddress), EKU, RFC 6125 name matching with no CN fallback, SPKI pinning, a certificate builder for ephemeral agent identities, PKCS#8 and PEM loading (including OpenSSL's ML-DSA key format) |
+| PKI | RFC 5280 path building and validation, name constraints (dNSName, iPAddress), EKU, RFC 6125 name matching with no CN fallback, wildcards refused directly over registry suffixes such as `co.uk`, SPKI pinning, a certificate builder for ephemeral agent identities, PKCS#8 and PEM loading (including OpenSSL's ML-DSA key format) |
 | Revocation | **CRLs** (RFC 5280 §5), checked along the whole path on both sides from a caller-filled `CrlStore`, with `require_crl` to demand coverage, and `x509::crl::build` so a private CA can revoke an agent. OCSP stapling (RFC 6066, RFC 6960): client policy `Off`, `IfStapled` (default) or `RequireStaple`; staples must be signed by the issuer or its certified delegate and be current; a revoked certificate is always fatal. Servers staple a supplied response, and `x509::ocsp::build_response` mints one for a private CA. |
 | Constrained links | `record_size_limit` (RFC 8449) in both directions |
-| Privacy | **Encrypted Client Hello** (RFC 9849, HPKE per RFC 9180), client and server, over TCP and QUIC, including HelloRetryRequest and `retry_configs`. Configured ECH is used or the connection fails; the real name is never sent in the clear as a fallback. `isl probe --ech` fetches the host's configuration over DNS-over-HTTPS. |
+| Privacy | **Encrypted Client Hello** (RFC 9849, HPKE per RFC 9180), client and server, over TCP and QUIC, including HelloRetryRequest and `retry_configs`. Configured ECH is used or the connection fails; the real name is never sent in the clear as a fallback. `isl probe --ech` fetches the host's configuration over DNS-over-HTTPS. Without a configuration, clients (both engines) send ECH GREASE by default, so the connections that do use ECH do not stand out. |
 | Profiles | `default`, `post-quantum`, `fips-140-3`, `cnsa-1`, `cnsa-2` (ML-KEM-1024, ML-DSA-87, AES-256), `dal-a` |
 | Targets | `std`; `no_std + alloc` (builds for `thumbv7em-none-eabihf`); a separate fixed-capacity TLS 1.3 engine, `fixed::Connection`, over caller-owned storage with no allocation after initialization (host-tested; see [READINESS.md](docs/READINESS.md)) |
 
 Named in the ontology but not implemented: X448, Ed448 and the
 other groups and schemes marked so there. TLS 1.2 is excluded by design.
-ML-KEM-1024 and ML-DSA-87 need IronCrypto 0.2.3 or later.
+IronSocketLayer 0.2 needs IronCrypto 0.2.13 or later, below 0.3.
 
 ## Evidence that it interoperates
 
@@ -196,6 +196,34 @@ $ isl capabilities
 $ isl mcp        # { "mcpServers": { "ironsocketlayer": { "command": "isl", "args": ["mcp"] } } }
 ```
 
+## Security
+
+The 0.1.0 release was audited on 2026-10-06 against historical TLS and X.509
+CVE classes, MITRE ATT&CK, NIST FIPS publications and CMMC 2.0
+([report](docs/SECURITY-AUDIT-2026-10-06.md)). The audit is the author's
+own, with AI-assisted review, and has not been independently reviewed. Its 21 findings and 12
+documented weaknesses are fixed in 0.2.0 and 0.2.1, each with a test that
+fails without the fix. **Upgrade from 0.1.0**:
+
+- [GHSA-2hmg-p9h5-jccc](https://github.com/nervosys/IronSocketLayer/security/advisories/GHSA-2hmg-p9h5-jccc):
+  `ironsocketlayer` 0.1.0, name-constraint bypass, path-building and parsing
+  denial of service, and truncation.
+- [GHSA-c4hv-5693-vxvx](https://github.com/nervosys/IronSocketLayer/security/advisories/GHSA-c4hv-5693-vxvx):
+  `isl-cli` 0.1.0, the MCP `tls_probe` tool reaching internal networks.
+
+0.2 is a minor version because its fixes change behaviour and add public
+fields to the configuration and report structs:
+
+- A server refuses an SNI none of its certificates covers, with
+  `unrecognized_name`; set `ServerConfig::sni_fallback` for the old behaviour.
+- A server refuses an external-PSK ClientHello its own process sent (the
+  "Selfie" reflection). A client and server in one process that share a PSK
+  turn off `ServerConfig::selfie_guard`.
+- A server that requires client certificates never accepts an external PSK
+  in their place.
+
+Report vulnerabilities as [SECURITY.md](SECURITY.md) describes.
+
 ## FIPS 140-3 and DO-178C
 
 **Neither IronSocketLayer nor IronCrypto is CMVP-validated, and neither holds a
@@ -207,7 +235,7 @@ DO-178C certification.** What they provide:
   through `ic_fips::check`, and record the service indicators in the session
   report. See [docs/FIPS.md](docs/FIPS.md).
 * **DO-178C DAL-A**: the `dal-a` profile narrows the protocol to one suite, one
-  group, one scheme and mandatory mutual authentication. The code carries 231
+  group, one scheme and mandatory mutual authentication. The code carries 260
   tagged low-level requirements traced to high-level requirements and to their
   verifying tests in [docs/TRACEABILITY.md](docs/TRACEABILITY.md). A test fails
   if that matrix drifts from the code. [docs/DO-178C.md](docs/DO-178C.md) lists
@@ -220,8 +248,9 @@ sells DO-178C DAL-A packages. IronSocketLayer holds neither, and says so. What i
 does differently for agentic workloads is set out, with its gaps, in
 [docs/COMPARISON.md](docs/COMPARISON.md).
 
-Current verification results and open engineering/external evidence are in
-[the verification report](docs/VERIFICATION-2026-10-05.md) and
+Current verification results (including whole-suite branch coverage of
+97.70%, with every remaining gap reviewed) and open engineering and external
+evidence are in [the verification report](docs/VERIFICATION-2026-10-05.md) and
 [readiness status](docs/READINESS.md).
 
 ## Repository
