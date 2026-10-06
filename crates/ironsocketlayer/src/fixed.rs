@@ -2375,6 +2375,13 @@ mod finished_tests {
                 let error = s.on_finished(&message[4..], &message).unwrap_err();
                 assert_eq!(error.kind(), ErrorKind::DecryptError);
                 assert!(!s.is_connected());
+                // REQ-KS-004: a Finished of the wrong length is malformed.
+                for bad in [len - 4, len + 8] {
+                    let mut message = vec![20, 0, 0, bad as u8];
+                    message.resize(4 + bad, 0x5a);
+                    let error = s.on_finished(&message[4..], &message).unwrap_err();
+                    assert_eq!(error.kind(), ErrorKind::Decode, "{bad}");
+                }
             } else {
                 flush(&mut c, &mut s);
                 assert!(s.is_connected());

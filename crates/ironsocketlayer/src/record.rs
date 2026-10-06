@@ -234,6 +234,15 @@ impl Protector {
                 "protected record shorter than its tag",
             ));
         }
+        // REQ-REC-012: RFC 8446 §5.4: the whole TLSInnerPlaintext (content,
+        // type and padding) is at most 2^14 + 1 bytes, however it is split.
+        // Its length is public, so this is checked before decrypting.
+        if body.len() - TAG_LEN > MAX_PLAINTEXT + 1 {
+            return Err(Error::new(
+                ErrorKind::RecordOverflow,
+                "inner plaintext exceeds 2^14 + 1",
+            ));
+        }
         // The sequence number advances only on success, so a record skipped
         // as undecryptable (rejected 0-RTT) does not desynchronise the next.
         if self.exhausted() || self.seq == u64::MAX {
@@ -256,14 +265,7 @@ impl Protector {
             ));
         }
         let ty = ContentType::from_wire(ct[end - 1]);
-        let len = end - 1;
-        if len > MAX_PLAINTEXT {
-            return Err(Error::new(
-                ErrorKind::RecordOverflow,
-                "inner plaintext exceeds 2^14",
-            ));
-        }
-        Ok((ty, len))
+        Ok((ty, end - 1))
     }
 }
 
@@ -809,6 +811,42 @@ mod tests {
                 Some(kind) => {
                     assert_eq!(r.open(&header, &mut body).unwrap_err().kind(), kind)
                 }
+            }
+        }
+    }
+
+    /// REQ-REC-012: the whole TLSInnerPlaintext (content, type, padding) is
+    /// at most 2^14 + 1 bytes however it is split (RFC 8446 §5.4); found by
+    /// tlsfuzzer, which pads 2^14 - 8 bytes of content with 9 zeros, and a
+    /// Finished with enough padding to fill a 2^14 + 256 byte record.
+    #[test]
+    fn inner_plaintext_over_2_14_plus_1_is_record_overflow() {
+        for (content_len, pad, ok) in [
+            (MAX_PLAINTEXT - 8, 8, true),
+            (MAX_PLAINTEXT - 8, 9, false),
+            (36, MAX_PLAINTEXT + 256 - 16 - 36 - 1, false),
+            (0, MAX_PLAINTEXT, true),
+            (0, MAX_PLAINTEXT + 1, false),
+        ] {
+            let (w, mut r) = pair(CipherSuite::TlsAes128GcmSha256);
+            let mut body = alloc::vec![0x41u8; content_len];
+            body.push(ContentType::ApplicationData.to_wire());
+            body.resize(body.len() + pad, 0);
+            let body_len = (body.len() + TAG_LEN) as u16;
+            let [hi, lo] = body_len.to_be_bytes();
+            let header = [23, 3, 3, hi, lo];
+            let mut tag = [0u8; TAG_LEN];
+            w.key
+                .seal(&crypto::nonce_for(&w.iv, 0), &header, &mut body, &mut tag)
+                .unwrap();
+            body.extend_from_slice(&tag);
+            let got = r.open(&header, &mut body);
+            if ok {
+                assert_eq!(got.unwrap(), (ContentType::ApplicationData, content_len));
+            } else {
+                let e = got.unwrap_err();
+                assert_eq!(e.kind(), ErrorKind::RecordOverflow, "{content_len}+{pad}");
+                assert_eq!(e.context(), "inner plaintext exceeds 2^14 + 1");
             }
         }
     }

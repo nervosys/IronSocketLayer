@@ -208,12 +208,20 @@ pub fn finished_mac(alg: HashAlg, base_key: &[u8], transcript_hash: &[u8]) -> Re
 }
 
 /// Check a peer's Finished in constant time. `REQ-KS-003`.
+/// REQ-KS-004: a Finished whose length is not the hash length is malformed:
+/// decode_error, not decrypt_error (the length is public).
 pub fn verify_finished(
     alg: HashAlg,
     base_key: &[u8],
     transcript_hash: &[u8],
     received: &[u8],
 ) -> Result<()> {
+    if received.len() != alg.len() {
+        return Err(Error::new(
+            ErrorKind::Decode,
+            "Finished has the wrong length",
+        ));
+    }
     let expected = finished_mac(alg, base_key, transcript_hash)?;
     if ic_core::ct::verify(expected.as_bytes(), received) {
         Ok(())

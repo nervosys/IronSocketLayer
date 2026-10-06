@@ -919,3 +919,22 @@ fn tlsfuzzer_refusals() {
         assert_eq!(e.context(), "empty alert record");
     }
 }
+
+/// REQ-KS-004: a client Finished padded or truncated (tlsfuzzer's
+/// test-tls13-finished) is decode_error; one of the right length that does
+/// not verify stays decrypt_error.
+#[test]
+fn a_finished_of_the_wrong_length_is_decode_error() {
+    for (len, kind) in [
+        (28usize, ErrorKind::Decode),
+        (40, ErrorKind::Decode),
+        (32, ErrorKind::DecryptError),
+    ] {
+        let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+        let mut s = Connection::server(Arc::new(server_config(&pki))).unwrap();
+        let (mut w, _) = raw_before_client_finished(&mut s);
+        let fin = msgs::frame(HandshakeType::Finished, &vec![0x5a; len]).unwrap();
+        let rec = seal(&mut w, ContentType::Handshake, &fin);
+        assert_eq!(s.read_tls(&rec).unwrap_err().kind(), kind, "{len}");
+    }
+}

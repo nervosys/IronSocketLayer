@@ -60,7 +60,11 @@ versions may change the API.
   - handshake messages may carry as many extensions, and ClientHellos as
     many key shares, as fit (tlsfuzzer sends over a thousand). The 0.2.0
     caps of 128 and 16 are gone: duplicates are found by sorting, in
-    O(n log n), which keeps the audit's denial-of-service fix (A-15).
+    O(n log n), which keeps the audit's denial-of-service fix (A-15);
+  - a record's inner plaintext (content, type and padding) may not exceed
+    2^14 + 1 bytes (RFC 8446 §5.4); only the content was limited, so up to
+    2^14 + 239 bytes were accepted;
+  - a Finished of the wrong length is `decode_error`, not `decrypt_error`.
 - A `TlsStream` over TCP whose handshake failed could lose its own alert:
   closing the socket with the peer's bytes unread made the kernel send a
   reset, which on Linux discarded the alert before the peer read it. The TCP

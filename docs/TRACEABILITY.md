@@ -377,3 +377,7 @@ feed the life-cycle data.
 | REQ-MSG-022 | A TLS 1.3 ClientHello carrying supported_groups without key_share, or key_share without supported_groups, is refused with missing_extension (RFC 8446 §9.2); an empty key_share list still draws a HelloRetryRequest. | src/msgs.rs | Test | tests/conformance.rs::the_server_refuses_non_conforming_client_hellos; tests/protocol_hardening.rs::tlsfuzzer_refusals |
 
 | REQ-REC-011 | An alert record with no content is refused with unexpected_message, in both engines. | src/conn.rs | Test | tests/protocol_hardening.rs::tlsfuzzer_refusals |
+
+| REQ-KS-004 | A Finished whose length is not the transcript hash length is refused with decode_error, in both engines; one of the right length that does not verify is decrypt_error. | src/key_schedule.rs | Test | tests/protocol_hardening.rs::a_finished_of_the_wrong_length_is_decode_error; src/fixed.rs::a_wrong_client_finished_is_refused |
+
+| REQ-REC-012 | A protected record whose TLSInnerPlaintext (content, type and padding) exceeds 2^14 + 1 bytes is refused with record_overflow before decryption, however it is split between content and padding, in both engines. | src/record.rs | Test | src/record.rs::inner_plaintext_over_2_14_plus_1_is_record_overflow; src/record.rs::authentic_content_over_2_14_is_record_overflow |
