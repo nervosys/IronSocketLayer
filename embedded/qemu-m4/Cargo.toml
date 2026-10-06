@@ -6,7 +6,7 @@ publish = false
 description = "Runs the fixed-capacity engine on an emulated Cortex-M4 (QEMU MPS2-AN386) and measures it. Not part of the library."
 
 [dependencies]
-iron-socket-layer = { path = "../../crates/iron-socket-layer", default-features = false }
+ironsocketlayer = { path = "../../crates/ironsocketlayer", default-features = false }
 ic-core = { path = "../../../IronCrypto/crates/ic-core", default-features = false }
 ic-drbg = { path = "../../../IronCrypto/crates/ic-drbg", default-features = false }
 # Board support, only here: this crate is excluded from the library's

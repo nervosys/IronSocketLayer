@@ -1,7 +1,7 @@
 //! The record framer: headers, lengths and the limits on them.
 #![no_main]
 
-use iron_socket_layer::record;
+use ironsocketlayer::record;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

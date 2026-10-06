@@ -2,12 +2,12 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 Set-Location $repo
 $output = Join-Path $repo 'target/footprint-object'
-& cargo rustc -p iron-socket-layer --release --no-default-features --target thumbv7em-none-eabihf --target-dir $output -- -C lto=off -C linker-plugin-lto=no -C embed-bitcode=no --emit=obj,asm
+& cargo rustc -p ironsocketlayer --release --no-default-features --target thumbv7em-none-eabihf --target-dir $output -- -C lto=off -C linker-plugin-lto=no -C embed-bitcode=no --emit=obj,asm
 if ($LASTEXITCODE -ne 0) { throw 'Cortex-M4 build failed' }
 $deps = Join-Path $output 'thumbv7em-none-eabihf/release/deps'
 # Earlier invocations can leave LLVM bitcode objects in this directory.
 # Select a native ELF object explicitly rather than measuring bitcode.
-$objects = @(Get-ChildItem $deps -Filter 'iron_socket_layer-*.o' | Where-Object {
+$objects = @(Get-ChildItem $deps -Filter 'ironsocketlayer-*.o' | Where-Object {
     $header = [System.IO.File]::ReadAllBytes($_.FullName)
     $header.Length -ge 4 -and $header[0] -eq 0x7f -and $header[1] -eq 0x45 -and $header[2] -eq 0x4c -and $header[3] -eq 0x46
 } | Sort-Object LastWriteTime -Descending)
@@ -21,7 +21,7 @@ $start = ($asm | Select-String '^_.*record11content_end:$' | Select-Object -Firs
 $end = ($asm | Select-String '^\s*\.size\s+_.*record11content_end' | Select-Object -First 1).LineNumber
 if (-not $start -or -not $end) { throw 'Padding-scan assembly not found' }
 $asm[($start - 1)..($end - 1)] | Set-Content (Join-Path $output 'padding-scan.s')
-& cargo run -p iron-socket-layer --example footprint --target-dir target/regression-check |
+& cargo run -p ironsocketlayer --example footprint --target-dir target/regression-check |
     Tee-Object -FilePath (Join-Path $output 'inline-storage.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Host inline-storage measurement failed' }
 # Per-function stack frames of the same code for Cortex-M4 (static, from the
@@ -29,10 +29,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Host inline-storage measurement failed' }
 # included except for generics instantiated here).
 $stackDir = Join-Path $repo 'target/stack-sizes'
 $env:RUSTC_BOOTSTRAP = '1'
-& cargo rustc -p iron-socket-layer --release --no-default-features --target thumbv7em-none-eabihf --target-dir $stackDir -- -C lto=off -C linker-plugin-lto=no -C embed-bitcode=no -Z emit-stack-sizes --emit=obj
+& cargo rustc -p ironsocketlayer --release --no-default-features --target thumbv7em-none-eabihf --target-dir $stackDir -- -C lto=off -C linker-plugin-lto=no -C embed-bitcode=no -Z emit-stack-sizes --emit=obj
 Remove-Item Env:RUSTC_BOOTSTRAP
 if ($LASTEXITCODE -ne 0) { throw 'Cortex-M4 stack-size build failed' }
-$stackObject = Get-ChildItem (Join-Path $stackDir 'thumbv7em-none-eabihf/release/deps') -Filter 'iron_socket_layer-*.o' | Where-Object {
+$stackObject = Get-ChildItem (Join-Path $stackDir 'thumbv7em-none-eabihf/release/deps') -Filter 'ironsocketlayer-*.o' | Where-Object {
     $header = [System.IO.File]::ReadAllBytes($_.FullName)
     $header.Length -ge 4 -and $header[0] -eq 0x7f -and $header[1] -eq 0x45
 } | Sort-Object LastWriteTime -Descending | Select-Object -First 1

@@ -14,7 +14,7 @@ name = "isl"
 path = "src/main.rs"
 
 [dependencies]
-iron-socket-layer = { workspace = true, features = ["std"] }
+ironsocketlayer = { workspace = true, features = ["std"] }
 isl-ontology = { workspace = true, features = ["std"] }
 ic-json = { workspace = true }
 ic-ontology = { workspace = true, features = ["std"] }

@@ -366,7 +366,7 @@ fn run(args: Args) -> ExitCode {
         }),
         (Some("capabilities"), _) => emit(ops::capabilities(), json, |v| {
             println!(
-                "iron-socket-layer {} (ontology {})",
+                "ironsocketlayer {} (ontology {})",
                 s(v, "version"),
                 s(v, "ontologyVersion")
             );

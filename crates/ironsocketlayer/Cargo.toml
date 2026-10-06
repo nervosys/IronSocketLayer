@@ -1,0 +1,40 @@
+[package]
+name = "ironsocketlayer"
+description = "Agentic-first TLS 1.3 and QUIC-TLS in pure Rust over IronCrypto, with a machine-readable ontology"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[features]
+default = ["std"]
+# `std` adds the OS entropy source, the system clock, blocking stream I/O and
+# PEM file loading. Without it the crate is `no_std + alloc`: the caller
+# supplies randomness and time.
+std = [
+    "ic-core/std", "ic-hash/std", "ic-mac/std", "ic-kdf/std", "ic-cipher/std",
+    "ic-drbg/std", "ic-ec/std", "ic-rsa/std", "ic-pkix/std", "ic-hpke/std", "ic-mlkem/std",
+    "ic-mldsa/std", "ic-fips/std", "ic-ontology/std", "isl-ontology/std",
+]
+
+[dependencies]
+isl-ontology = { workspace = true }
+ic-core = { workspace = true }
+ic-hash = { workspace = true }
+ic-mac = { workspace = true }
+ic-kdf = { workspace = true }
+ic-cipher = { workspace = true }
+ic-drbg = { workspace = true }
+ic-ec = { workspace = true }
+ic-rsa = { workspace = true }
+ic-pkix = { workspace = true }
+ic-hpke = { workspace = true }
+ic-mlkem = { workspace = true }
+ic-mldsa = { workspace = true }
+ic-fips = { workspace = true }
+ic-ontology = { workspace = true }

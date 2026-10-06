@@ -10,7 +10,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-iron-socket-layer = { path = "../crates/iron-socket-layer" }
+ironsocketlayer = { path = "../crates/ironsocketlayer" }
 ic-drbg = { path = "../../IronCrypto/crates/ic-drbg" }
 ic-core = { path = "../../IronCrypto/crates/ic-core" }
 

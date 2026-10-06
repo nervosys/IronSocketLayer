@@ -3,7 +3,7 @@
 //! this reaches the parsers the TLS targets can only reach in plaintext.
 #![no_main]
 
-use iron_socket_layer::msgs::{self, *};
+use ironsocketlayer::msgs::{self, *};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -15,7 +15,7 @@ fuzz_target!(|data: &[u8]| {
             // Exercise encoded inner hellos without an HPKE authentication gate.
             // Reusing the bytes as the outer also permits resolving references
             // to extension types carried alongside the compression marker.
-            let _ = iron_socket_layer::ech::reconstruct_inner(body, body, &[]);
+            let _ = ironsocketlayer::ech::reconstruct_inner(body, body, &[]);
             ClientHello::decode(body).map(drop)
         }
         1 => ServerHello::decode(body).map(drop),

@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/isl-ontology",
-    "crates/iron-socket-layer",
+    "crates/ironsocketlayer",
     "crates/isl-cli",
 ]
 
@@ -28,7 +28,7 @@ publish = false   # see docs/RELEASING.md: export notification first
 
 [workspace.dependencies]
 isl-ontology = { path = "crates/isl-ontology", version = "0.1.0", default-features = false }
-iron-socket-layer = { path = "crates/iron-socket-layer", version = "0.1.0", default-features = false }
+ironsocketlayer = { path = "crates/ironsocketlayer", version = "0.1.0", default-features = false }
 
 # IronCrypto supplies every cryptographic primitive. Nothing in this workspace
 # implements a cipher, hash, MAC, KDF, key agreement, KEM or signature itself.

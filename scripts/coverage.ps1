@@ -7,7 +7,7 @@ $output = Join-Path $repo "target/coverage-$label"
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $env:CARGO_TARGET_DIR = $output
 $env:CARGO_BUILD_BUILD_DIR = Join-Path $output 'llvm-cov-target'
-$coverageArgs = @('+nightly', 'llvm-cov', '-p', 'iron-socket-layer', '--branch', '--no-report')
+$coverageArgs = @('+nightly', 'llvm-cov', '-p', 'ironsocketlayer', '--branch', '--no-report')
 if ($RequirementsOnly) {
     $traced = @{}
     foreach ($line in Get-Content docs/TRACEABILITY.md) {
@@ -17,7 +17,7 @@ if ($RequirementsOnly) {
             }
         }
     }
-    $listed = & cargo test -p iron-socket-layer --lib --tests -- --list
+    $listed = & cargo test -p ironsocketlayer --lib --tests -- --list
     if ($LASTEXITCODE -ne 0) { throw 'Cannot list tests' }
     $skip = @()
     foreach ($line in $listed) {
@@ -46,10 +46,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Profile merge failed' }
 # Locate them directly, restricting objects to this library's tests.
 # Test binaries are named after tests/*.rs, so new ones are included without
 # editing this script.
-$binaries = @('iron_socket_layer') + @(Get-ChildItem crates/iron-socket-layer/tests -Filter '*.rs' | ForEach-Object BaseName)
+$binaries = @('ironsocketlayer') + @(Get-ChildItem crates/ironsocketlayer/tests -Filter '*.rs' | ForEach-Object BaseName)
 $binaryPattern = '^(' + (($binaries | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')-'
 $objects = @(Get-ChildItem $output -Filter '*.exe' -Recurse | Where-Object {
-    $_.FullName -match '[\\/]build[\\/]iron-socket-layer[\\/]' -or
+    $_.FullName -match '[\\/]build[\\/]ironsocketlayer[\\/]' -or
     ($_.DirectoryName -match '[\\/]deps$' -and $_.Name -match $binaryPattern)
 } | ForEach-Object { '--object=' + $_.FullName })
 if ($objects.Count -eq 0) { throw 'No instrumented test executables found' }

@@ -8,10 +8,10 @@
 //!   schemes, extensions, alerts — with its wire code, implementation status,
 //!   FIPS standing, strength, usage constraints, and typed edges, including
 //!   `built-on` edges into IronCrypto's ontology (`ic:` prefix).
-//! - [`errors::CATALOG`]: what every `iron_socket_layer` error means and how to
+//! - [`errors::CATALOG`]: what every `ironsocketlayer` error means and how to
 //!   recover from it.
 //! - [`profiles::PROFILES`]: complete parameter sets, whose lists
-//!   `iron_socket_layer` configures itself from.
+//!   `ironsocketlayer` configures itself from.
 //! - [`select::INTENTS`]: deployment situations, and [`recommend`], which maps
 //!   an intent and a policy to a profile — or says plainly that none fits.
 //!

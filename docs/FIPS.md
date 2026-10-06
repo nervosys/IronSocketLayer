@@ -29,7 +29,7 @@ For those profiles:
 
 1. **Module state.** `Common::validate` refuses to build a connection unless
    `ic_fips::mode()` is `Approved`. Bring the module up with
-   `iron_socket_layer::policy::enable_fips()`, which runs IronCrypto's
+   `ironsocketlayer::policy::enable_fips()`, which runs IronCrypto's
    pre-operational self-tests and selects approved mode. If a self-test fails
    the module latches into its error state and every FIPS connection fails
    with `error:fips-module`.

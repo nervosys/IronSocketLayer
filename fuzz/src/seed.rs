@@ -9,11 +9,11 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use iron_socket_layer::codec::{nested, put_u16, put_vec, Prefix};
-use iron_socket_layer::config::ClientConfig;
-use iron_socket_layer::quic::{QuicConnection, Version};
-use iron_socket_layer::x509::{crl, ocsp};
-use iron_socket_layer::{Connection, Level};
+use ironsocketlayer::codec::{nested, put_u16, put_vec, Prefix};
+use ironsocketlayer::config::ClientConfig;
+use ironsocketlayer::quic::{QuicConnection, Version};
+use ironsocketlayer::x509::{crl, ocsp};
+use ironsocketlayer::{Connection, Level};
 use isl_fuzz::*;
 
 fn write(target: &str, name: &str, bytes: &[u8]) {
@@ -76,11 +76,11 @@ fn ech_reconstruction_seed(duplicate: bool) -> Vec<u8> {
         Ok(())
     })
     .unwrap();
-    let result = iron_socket_layer::ech::reconstruct_inner(&body, &body, &[]);
+    let result = ironsocketlayer::ech::reconstruct_inner(&body, &body, &[]);
     if duplicate {
         assert_eq!(
             result.unwrap_err().kind(),
-            iron_socket_layer::ErrorKind::IllegalParameter
+            ironsocketlayer::ErrorKind::IllegalParameter
         );
     } else {
         result.unwrap();
@@ -127,12 +127,12 @@ fn main() {
         let cc = fixed_client_config();
         let mut rng = fixed_rng().unwrap();
         let mut buffers = FixedBuffers::default();
-        let mut c = iron_socket_layer::fixed::Connection::client(
+        let mut c = ironsocketlayer::fixed::Connection::client(
             &cc,
             NAME,
             &mut *rng,
             buffers.storage(),
-            iron_socket_layer::fixed::Limits::default(),
+            ironsocketlayer::fixed::Limits::default(),
         )
         .unwrap();
         let mut s = Connection::server(fixed_server_config()).unwrap();
@@ -149,10 +149,10 @@ fn main() {
     for (name, group) in [
         (
             "secp384r1mlkem1024",
-            iron_socket_layer::enums::NamedGroup::SecP384r1MlKem1024,
+            ironsocketlayer::enums::NamedGroup::SecP384r1MlKem1024,
         ),
-        ("mlkem1024", iron_socket_layer::enums::NamedGroup::MlKem1024),
-        ("mlkem512", iron_socket_layer::enums::NamedGroup::MlKem512),
+        ("mlkem1024", ironsocketlayer::enums::NamedGroup::MlKem1024),
+        ("mlkem512", ironsocketlayer::enums::NamedGroup::MlKem512),
     ] {
         let mut kc = (*client_config()).clone();
         kc.common.groups = vec![group];
@@ -234,20 +234,20 @@ fn main() {
     for (name, kind) in [
         (
             "mldsa44-cert",
-            iron_socket_layer::crypto::sign::KeyKind::MlDsa44,
+            ironsocketlayer::crypto::sign::KeyKind::MlDsa44,
         ),
         (
             "mldsa65-cert",
-            iron_socket_layer::crypto::sign::KeyKind::MlDsa65,
+            ironsocketlayer::crypto::sign::KeyKind::MlDsa65,
         ),
         (
             "mldsa87-cert",
-            iron_socket_layer::crypto::sign::KeyKind::MlDsa87,
+            ironsocketlayer::crypto::sign::KeyKind::MlDsa87,
         ),
     ] {
-        let key = iron_socket_layer::crypto::sign::SigningKey::generate(kind, &mut *r).unwrap();
-        let cert = iron_socket_layer::x509::self_signed(
-            &iron_socket_layer::x509::CertificateParams {
+        let key = ironsocketlayer::crypto::sign::SigningKey::generate(kind, &mut *r).unwrap();
+        let cert = ironsocketlayer::x509::self_signed(
+            &ironsocketlayer::x509::CertificateParams {
                 subject_cn: NAME,
                 dns_names: &[NAME],
                 ip_addresses: &[],
@@ -255,7 +255,7 @@ fn main() {
                 not_after: NOW + 86_400,
                 is_ca: false,
                 path_len: None,
-                usage: &[iron_socket_layer::x509::Usage::ServerAuth],
+                usage: &[ironsocketlayer::x509::Usage::ServerAuth],
                 serial: [3; 16],
             },
             &key,

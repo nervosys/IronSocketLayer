@@ -61,7 +61,7 @@ required post-quantum confidentiality.
 
 ## When a connection fails, read the error id
 
-Every `iron_socket_layer::Error` has an `id()` such as `error:unknown-ca`.
+Every `ironsocketlayer::Error` has an `id()` such as `error:unknown-ca`.
 `isl explain <id> --json` (or the `explain_error` MCP tool) returns its
 meaning and recovery steps. Errors with `retryable: false` do not get better by
 retrying; `peer_fault: true` means the remote end is broken or hostile.
@@ -74,7 +74,7 @@ retrying; `peer_fault: true` means the remote end is broken or hostile.
   self-test, not here.
 - **Zero third-party dependencies**, as in IronCrypto.
 - **`no_std + alloc` first.** Anything needing `std` goes behind the `std`
-  feature. Check: `cargo build -p iron-socket-layer --no-default-features --target thumbv7em-none-eabihf`.
+  feature. Check: `cargo build -p ironsocketlayer --no-default-features --target thumbv7em-none-eabihf`.
 - **Nothing panics on peer input.** Return `Error`. No `unwrap`, indexing or
   arithmetic that a peer controls without a bound. `tests/robustness.rs`
   mutates real flights; keep it passing.
@@ -97,9 +97,9 @@ retrying; `peer_fault: true` means the remote end is broken or hostile.
 ```console
 $ cargo test --workspace
 $ cargo clippy --workspace --all-targets
-$ cargo build -p iron-socket-layer --no-default-features --target thumbv7em-none-eabihf
-$ cargo test -p iron-socket-layer --test openssl_interop -- --ignored --test-threads=1   # if openssl >= 3.5 is present
-$ cargo test -p iron-socket-layer --test openssl_cnsa2 -- --ignored                       # likewise
+$ cargo build -p ironsocketlayer --no-default-features --target thumbv7em-none-eabihf
+$ cargo test -p ironsocketlayer --test openssl_interop -- --ignored --test-threads=1   # if openssl >= 3.5 is present
+$ cargo test -p ironsocketlayer --test openssl_cnsa2 -- --ignored                       # likewise
 ```
 
 If you changed a parser or the state machine, fuzz it too (see

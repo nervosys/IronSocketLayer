@@ -19,9 +19,9 @@ summaries = []
 for unit in report["data"]:
     for file in unit["files"]:
         name = file["filename"].replace("\\", "/")
-        if "/crates/iron-socket-layer/src/" not in name:
+        if "/crates/ironsocketlayer/src/" not in name:
             continue
-        short = name.split("/crates/iron-socket-layer/", 1)[1]
+        short = name.split("/crates/ironsocketlayer/", 1)[1]
         summaries.append((short, file["summary"]))
         # Unit-test modules are appended after production code in these files.
         # Exclude their branches rather than crediting test assertions as

@@ -1,8 +1,8 @@
 //! The registry: one entry per protocol element this build can name.
 //!
-//! Identifiers equal what `iron_socket_layer`' enums return from `id()`, and the
+//! Identifiers equal what `ironsocketlayer`' enums return from `id()`, and the
 //! `implemented` set equals what it negotiates; the cross-layer test
-//! `crates/iron-socket-layer/tests/ontology_agreement.rs` fails if either drifts.
+//! `crates/ironsocketlayer/tests/ontology_agreement.rs` fails if either drifts.
 
 use crate::types::{
     Constraint, Edge, Entry, FipsStatus, ImplStatus, Kind, Relation, Severity, Strength,
@@ -243,7 +243,7 @@ pub static REGISTRY: &[Entry] = &[
     // --- handshake messages ---------------------------------------------------
     Entry { id: "message:client-hello", name: "ClientHello", kind: Kind::HandshakeMessage, code: 1, summary: "Opens the handshake: offered suites, groups, key shares and signature schemes.", ..Entry::BASE },
     Entry { id: "message:server-hello", name: "ServerHello", kind: Kind::HandshakeMessage, code: 2, summary: "Selects the suite and key share; with the special random it is a HelloRetryRequest.", notes: "HelloRetryRequest random is SHA-256(\"HelloRetryRequest\").", ..Entry::BASE },
-    Entry { id: "message:new-session-ticket", name: "NewSessionTicket", kind: Kind::HandshakeMessage, code: 4, summary: "Post-handshake resumption ticket.", status: ImplStatus::Implemented, fips: FipsStatus::Approved, constraints: &[critical("single-use-tickets", "Use each ticket for at most one connection.", "A reused ticket links the two connections for any observer (RFC 8446 §C.4)."), serious("rotate-ticket-keys", "Rotate the server's ticket key before it seals 2^32 tickets.", "Tickets are sealed with AES-256-GCM under random 96-bit nonces, which collide with meaningful probability beyond that.")], edges: &[requires("ext:pre-shared-key"), built("ic:aes-256-gcm")], notes: "Servers issue stateless tickets sealed with AES-256-GCM (iron_socket_layer::resumption::TicketKeys); clients keep them in a TicketStore and hand each out once.", ..Entry::BASE },
+    Entry { id: "message:new-session-ticket", name: "NewSessionTicket", kind: Kind::HandshakeMessage, code: 4, summary: "Post-handshake resumption ticket.", status: ImplStatus::Implemented, fips: FipsStatus::Approved, constraints: &[critical("single-use-tickets", "Use each ticket for at most one connection.", "A reused ticket links the two connections for any observer (RFC 8446 §C.4)."), serious("rotate-ticket-keys", "Rotate the server's ticket key before it seals 2^32 tickets.", "Tickets are sealed with AES-256-GCM under random 96-bit nonces, which collide with meaningful probability beyond that.")], edges: &[requires("ext:pre-shared-key"), built("ic:aes-256-gcm")], notes: "Servers issue stateless tickets sealed with AES-256-GCM (ironsocketlayer::resumption::TicketKeys); clients keep them in a TicketStore and hand each out once.", ..Entry::BASE },
     Entry { id: "message:end-of-early-data", name: "EndOfEarlyData", kind: Kind::HandshakeMessage, code: 5, summary: "Ends 0-RTT data.", status: ImplStatus::Implemented, edges: &[requires("ext:early-data")], ..Entry::BASE },
     Entry { id: "message:encrypted-extensions", name: "EncryptedExtensions", kind: Kind::HandshakeMessage, code: 8, summary: "Server extensions that need not be in the clear: ALPN, QUIC transport parameters.", ..Entry::BASE },
     Entry { id: "message:certificate", name: "Certificate", kind: Kind::HandshakeMessage, code: 11, summary: "The sender's certificate chain, leaf first.", ..Entry::BASE },

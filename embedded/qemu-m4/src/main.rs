@@ -31,14 +31,14 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use cortex_m_rt::entry;
 use cortex_m_semihosting::{debug, hprintln};
 use ic_core::traits::{Drbg as _, RandomSource};
-use iron_socket_layer::config::{
+use ironsocketlayer::config::{
     ClientAuth, ClientConfig, Identity, PeerVerification, Profile, ServerConfig,
 };
-use iron_socket_layer::crypto::sign::{KeyKind, SigningKey};
-use iron_socket_layer::enums::{NamedGroup, SignatureScheme};
-use iron_socket_layer::fixed::{Connection, Limits, Storage};
-use iron_socket_layer::x509::{self, CertificateParams, RootStore, Usage};
-use iron_socket_layer::ErrorKind;
+use ironsocketlayer::crypto::sign::{KeyKind, SigningKey};
+use ironsocketlayer::enums::{NamedGroup, SignatureScheme};
+use ironsocketlayer::fixed::{Connection, Limits, Storage};
+use ironsocketlayer::x509::{self, CertificateParams, RootStore, Usage};
+use ironsocketlayer::ErrorKind;
 
 /// A fixed "now": 2026-10-05.
 const NOW: u64 = 1_791_158_400;
@@ -143,7 +143,7 @@ fn rng() -> FixedRng {
     FixedRng(ic_drbg::HmacDrbgSha256::instantiate(&entropy, b"nonce", b"isl-qemu-m4").unwrap())
 }
 
-fn rng_factory() -> iron_socket_layer::Result<Box<dyn RandomSource + Send>> {
+fn rng_factory() -> ironsocketlayer::Result<Box<dyn RandomSource + Send>> {
     Ok(Box::new(rng()))
 }
 
@@ -238,7 +238,7 @@ impl Buffers {
     }
 }
 
-fn flush(from: &mut Connection<'_>, to: &mut Connection<'_>) -> iron_socket_layer::Result<()> {
+fn flush(from: &mut Connection<'_>, to: &mut Connection<'_>) -> ironsocketlayer::Result<()> {
     let n = from.outgoing().len();
     to.receive(from.outgoing())?;
     from.consume_outgoing(n)
@@ -259,7 +259,7 @@ fn session(cc: &ClientConfig, sc: &ServerConfig, cb: &mut Buffers, sb: &mut Buff
     assert!(c.is_connected() && s.is_connected());
     assert!(c
         .report()
-        .has(iron_socket_layer::report::Property::MutualAuthentication));
+        .has(ironsocketlayer::report::Property::MutualAuthentication));
     let mut out = [0u8; 16];
     c.write_application(b"to server").unwrap();
     flush(&mut c, &mut s).unwrap();

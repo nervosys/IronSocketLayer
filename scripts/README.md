@@ -11,10 +11,10 @@ python scripts/coverage_gaps.py target/coverage-whole-suite/coverage.json target
 python scripts/coverage_gaps.py target/coverage-requirements/coverage.json target/coverage-requirements/gaps.csv
 python scripts/coverage_review.py target/coverage-whole-suite/gaps.csv docs/evidence/coverage-review.csv
 ./scripts/footprint.ps1
-cargo run --release -p iron-socket-layer --example fixed_stack   # on Linux
+cargo run --release -p ironsocketlayer --example fixed_stack   # on Linux
 sh scripts/qemu-m4.sh   # emulated Cortex-M4; needs qemu-system-arm
 ./scripts/fuzz.ps1 -Seconds 600
-cargo test -p iron-socket-layer --release --lib padding_scan_timing_experiment -- --ignored --nocapture
+cargo test -p ironsocketlayer --release --lib padding_scan_timing_experiment -- --ignored --nocapture
 ```
 
 Coverage requires nightly, cargo-llvm-cov and that toolchain's LLVM tools.

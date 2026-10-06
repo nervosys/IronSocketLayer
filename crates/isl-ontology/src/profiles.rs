@@ -1,8 +1,8 @@
-//! Profiles: named, complete parameter sets, and the lists `iron_socket_layer`
+//! Profiles: named, complete parameter sets, and the lists `ironsocketlayer`
 //! configures itself from.
 //!
 //! The `pub const` slices below are the single source of truth: the
-//! configuration builder in `iron_socket_layer` reads them rather than repeating
+//! configuration builder in `ironsocketlayer` reads them rather than repeating
 //! them, so a profile cannot say one thing here and do another there.
 
 /// Whether a profile can be used in this build.

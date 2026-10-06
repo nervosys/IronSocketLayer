@@ -120,18 +120,18 @@ checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
 
 [[package]]
 name = "ic-cipher"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-core"
-version = "0.2.8"
+version = "0.2.11"
 
 [[package]]
 name = "ic-drbg"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "ic-ec"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -150,13 +150,14 @@ dependencies = [
 
 [[package]]
 name = "ic-fips"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-cipher",
  "ic-core",
  "ic-drbg",
  "ic-ec",
  "ic-hash",
+ "ic-hpke",
  "ic-kdf",
  "ic-mac",
  "ic-mldsa",
@@ -167,14 +168,25 @@ dependencies = [
 
 [[package]]
 name = "ic-hash"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
+name = "ic-hpke"
+version = "0.2.11"
+dependencies = [
+ "ic-cipher",
+ "ic-core",
+ "ic-ec",
+ "ic-hash",
+ "ic-mac",
+]
+
+[[package]]
 name = "ic-kdf"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -183,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mac"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -192,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mldsa"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -200,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mlkem"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -208,28 +220,28 @@ dependencies = [
 
 [[package]]
 name = "ic-ontology"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-pkix"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-rsa"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "ic-core",
  "ic-hash",
 ]
 
 [[package]]
-name = "iron-socket-layer"
+name = "ironsocketlayer"
 version = "0.1.0"
 dependencies = [
  "ic-cipher",
@@ -238,6 +250,7 @@ dependencies = [
  "ic-ec",
  "ic-fips",
  "ic-hash",
+ "ic-hpke",
  "ic-kdf",
  "ic-mac",
  "ic-mldsa",
@@ -262,7 +275,7 @@ dependencies = [
  "embedded-alloc",
  "ic-core",
  "ic-drbg",
- "iron-socket-layer",
+ "ironsocketlayer",
 ]
 
 [[package]]

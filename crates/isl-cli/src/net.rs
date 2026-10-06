@@ -12,11 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ic_json::{parse, Json};
-use iron_socket_layer::config::{ClientConfig, Identity, Profile, ServerConfig};
-use iron_socket_layer::crypto::sign::SigningKey;
-use iron_socket_layer::stream::TlsStream;
-use iron_socket_layer::x509::{RootStore, ServerName};
-use iron_socket_layer::Connection;
+use ironsocketlayer::config::{ClientConfig, Identity, Profile, ServerConfig};
+use ironsocketlayer::crypto::sign::SigningKey;
+use ironsocketlayer::stream::TlsStream;
+use ironsocketlayer::x509::{RootStore, ServerName};
+use ironsocketlayer::Connection;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -62,7 +62,7 @@ fn alpn_list(alpn: Option<&str>) -> Vec<Vec<u8>> {
 
 fn prepare(profile: Profile) -> Result<(), String> {
     if profile.requires_fips() {
-        iron_socket_layer::policy::enable_fips().map_err(|e| e.to_string())?;
+        ironsocketlayer::policy::enable_fips().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -173,7 +173,7 @@ pub fn tls_probe(
         .ok_or_else(|| format!("{host} did not resolve"))?;
     let (mut conn, mut transport_error) = handshake_once(addr, &host, config.clone())?;
     let mut retried = false;
-    if conn.error().map(|e| e.kind()) == Some(iron_socket_layer::ErrorKind::EchRejected) {
+    if conn.error().map(|e| e.kind()) == Some(ironsocketlayer::ErrorKind::EchRejected) {
         if let Some(retry) = conn.ech_retry_configs().map(|r| r.to_vec()) {
             config.ech_configs = Some(retry);
             (conn, transport_error) = handshake_once(addr, &host, config)?;
@@ -223,10 +223,10 @@ pub fn tls_probe(
 fn downgrade_hint(
     profile: Profile,
     alert_received: Option<&str>,
-    error: Option<iron_socket_layer::ErrorKind>,
+    error: Option<ironsocketlayer::ErrorKind>,
 ) -> Option<String> {
     let no_common = alert_received == Some("alert:handshake-failure")
-        || error == Some(iron_socket_layer::ErrorKind::HandshakeFailure);
+        || error == Some(ironsocketlayer::ErrorKind::HandshakeFailure);
     (no_common && profile != Profile::Default).then(|| {
         format!(
             "The server shares none of {}'s parameters. Report this to the user; do not retry with a weaker profile, which is the downgrade this profile exists to prevent.",
@@ -309,7 +309,7 @@ pub fn serve(
 mod tests {
     #[test]
     fn a_refused_restrictive_profile_warns_against_downgrading() {
-        use iron_socket_layer::ErrorKind;
+        use ironsocketlayer::ErrorKind;
         let h = downgrade_hint(
             Profile::Cnsa2,
             Some("alert:handshake-failure"),

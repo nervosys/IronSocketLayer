@@ -17,6 +17,15 @@ covers later releases at the same location).
 | Acknowledgement | None received as of 2026-10-05 (none is expected) |
 | Counsel | **Not recorded** |
 
+## Change since sending
+
+On 2026-10-05, after the notice was sent and before anything was published,
+the main crate was renamed from `iron-socket-layer` to `ironsocketlayer`. The
+notice names `https://crates.io/crates/iron-socket-layer`, which will never
+exist. The crate will be at `https://crates.io/crates/ironsocketlayer`. The
+GitHub repository URL is unchanged. Whether to send a short corrected notice
+naming the new crate URL is the owner's decision; if sent, record it here.
+
 ## To complete
 
 Replace each **Not recorded** / **Not confirmed** entry from the sent message

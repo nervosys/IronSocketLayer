@@ -32,14 +32,14 @@ jobs:
         run: cargo clippy --workspace --all-targets
       - name: no_std (Cortex-M)
         working-directory: IronSocketLayer
-        run: cargo build -p iron-socket-layer --no-default-features --target thumbv7em-none-eabihf
+        run: cargo build -p ironsocketlayer --no-default-features --target thumbv7em-none-eabihf
       - name: benchmark harness compiles
         working-directory: IronSocketLayer
         run: cargo check --manifest-path bench/Cargo.toml
       - name: interoperability with public servers
         if: matrix.os == 'ubuntu-latest'
         working-directory: IronSocketLayer
-        run: cargo test -p iron-socket-layer --test interop -- --ignored
+        run: cargo test -p ironsocketlayer --test interop -- --ignored
 
   fuzz:
     # A short run of every target: enough to catch a parser change that

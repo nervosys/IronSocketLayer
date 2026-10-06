@@ -82,7 +82,7 @@ SUBMITTER
   Postal address:  <address>
 
 ITEM
-  Name:            IronSocketLayer (crates iron-socket-layer, isl-ontology,
+  Name:            IronSocketLayer (crates ironsocketlayer, isl-ontology,
                    isl-cli)
   Description:     An open-source TLS 1.3 and QUIC-TLS protocol library
                    written in Rust, distributed as source code. It implements
@@ -94,7 +94,7 @@ ITEM
 
 INTERNET LOCATION
   https://github.com/nervosys/IronSocketLayer
-  https://crates.io/crates/iron-socket-layer
+  https://crates.io/crates/ironsocketlayer
   https://crates.io/crates/isl-ontology
   https://crates.io/crates/isl-cli
 

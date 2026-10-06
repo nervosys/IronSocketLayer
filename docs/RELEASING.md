@@ -27,12 +27,12 @@ From the repository root, on the commit to be released:
 $ cargo fmt --all -- --check
 $ cargo clippy --workspace --all-targets          # no warnings
 $ cargo test --workspace                          # on Windows, Linux and macOS
-$ cargo build -p iron-socket-layer --no-default-features --target thumbv7em-none-eabihf
-$ cargo +1.88 build -p iron-socket-layer -p isl-cli   # the declared rust-version
-$ cargo test -p iron-socket-layer --test openssl_interop -- --ignored --test-threads=1
-$ cargo test -p iron-socket-layer --test openssl_fixed -- --ignored --test-threads=1
-$ cargo test -p iron-socket-layer --test openssl_cnsa2 -- --ignored
-$ cargo test -p iron-socket-layer --test interop -- --ignored   # needs the network
+$ cargo build -p ironsocketlayer --no-default-features --target thumbv7em-none-eabihf
+$ cargo +1.88 build -p ironsocketlayer -p isl-cli   # the declared rust-version
+$ cargo test -p ironsocketlayer --test openssl_interop -- --ignored --test-threads=1
+$ cargo test -p ironsocketlayer --test openssl_fixed -- --ignored --test-threads=1
+$ cargo test -p ironsocketlayer --test openssl_cnsa2 -- --ignored
+$ cargo test -p ironsocketlayer --test interop -- --ignored   # needs the network
 $ sh scripts/qemu-m4.sh                           # needs qemu-system-arm
 ```
 
@@ -50,7 +50,7 @@ and date.
 $ cargo package -p isl-ontology
 ```
 
-`iron-socket-layer` and `isl-cli` cannot be packaged until their
+`ironsocketlayer` and `isl-cli` cannot be packaged until their
 dependencies are on crates.io, so they are packaged in step 5, in order.
 
 ## 4. Export notification (first public release only; cannot be undone)
@@ -70,7 +70,7 @@ cryptography (see EXPORT.md) needs a new notice first.
    crates.io:
    ```console
    $ cargo publish -p isl-ontology
-   $ cargo publish -p iron-socket-layer
+   $ cargo publish -p ironsocketlayer
    $ cargo publish -p isl-cli
    ```
 3. Tag the commit `v0.1.0` and push the tag.

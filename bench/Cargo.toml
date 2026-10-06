@@ -6,7 +6,7 @@ publish = false
 description = "Handshake and throughput comparison against rustls. Not part of the library."
 
 [dependencies]
-iron-socket-layer = { path = "../crates/iron-socket-layer" }
+ironsocketlayer = { path = "../crates/ironsocketlayer" }
 # The comparison. Only here: `bench` is excluded from the workspace.
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

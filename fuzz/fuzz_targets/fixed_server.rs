@@ -1,10 +1,10 @@
-//! The fixed-capacity TLS server (`iron_socket_layer::fixed`), fed the input
+//! The fixed-capacity TLS server (`ironsocketlayer::fixed`), fed the input
 //! as a sequence of reads into caller-owned buffers. A refused input must
 //! latch: the next call returns the same error and nothing is queued.
 //! Seeds include a real plain ClientHello (`seed-corpus`).
 #![no_main]
 
-use iron_socket_layer::fixed::{Connection, Limits};
+use ironsocketlayer::fixed::{Connection, Limits};
 use isl_fuzz::{chunks, fixed_rng, fixed_server_config, FixedBuffers};
 use libfuzzer_sys::fuzz_target;
 

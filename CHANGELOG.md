@@ -37,7 +37,7 @@ independently reviewed; see [SECURITY.md](SECURITY.md).
 - The `isl` command line and an MCP server (`isl mcp`).
 
 ### Embedded
-- A separate fixed-capacity engine (`iron_socket_layer::fixed`) over
+- A separate fixed-capacity engine (`ironsocketlayer::fixed`) over
   caller-owned storage. It makes no allocator call after initialization and
   fails closed with `error:capacity-exceeded`. On an emulated Cortex-M4,
   every session needs 26 to 34 KB of stack.

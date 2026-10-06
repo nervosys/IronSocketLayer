@@ -5,7 +5,7 @@
                  │  CLI commands  ·  MCP server (stdio JSON-RPC)  ·  probe / serve      │
                  └───────────────┬──────────────────────────────────┬──────────────────┘
                                  │                                  │
-     ┌───────────── iron-socket-layer ▼──────────────────────┐   ┌───────▼────────────┐
+     ┌───────────── ironsocketlayer ▼──────────────────────┐   ┌───────▼────────────┐
      │ stream (std)   TlsStream<S: Read + Write>         │   │  isl-ontology       │
      │ quic           QuicConnection, packet/header keys │   │  102 entries,      │
      │ conn           Connection: sans-I/O engine        │◄──┤  errors, profiles, │
@@ -158,7 +158,7 @@ Everything a peer can make this endpoint hold is bounded:
 
 ## The ontology as a contract
 
-`isl-ontology` is static data with no dependencies. `iron-socket-layer` depends on
+`isl-ontology` is static data with no dependencies. `ironsocketlayer` depends on
 it and its tests hold the two in agreement: every code point has an entry with
 the right wire value; "implemented" means implemented; every error kind has a
 catalog entry with the same flags and alert; every `ic:` edge resolves in

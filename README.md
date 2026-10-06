@@ -122,9 +122,9 @@ Both interop suites are `#[ignore]`d by default because they need the network or
 `openssl`:
 
 ```console
-$ cargo test -p iron-socket-layer --test interop -- --ignored
-$ cargo test -p iron-socket-layer --test openssl_interop -- --ignored --test-threads=1
-$ cargo test -p iron-socket-layer --test openssl_cnsa2 -- --ignored
+$ cargo test -p ironsocketlayer --test interop -- --ignored
+$ cargo test -p ironsocketlayer --test openssl_interop -- --ignored --test-threads=1
+$ cargo test -p ironsocketlayer --test openssl_cnsa2 -- --ignored
 ```
 
 ## Using it
@@ -133,7 +133,7 @@ $ cargo test -p iron-socket-layer --test openssl_cnsa2 -- --ignored
 
 ```rust
 use std::{io::{Read, Write}, net::TcpStream, sync::Arc};
-use iron_socket_layer::{config::{ClientConfig, Profile}, report::Property, stream::TlsStream, x509::RootStore};
+use ironsocketlayer::{config::{ClientConfig, Profile}, report::Property, stream::TlsStream, x509::RootStore};
 
 let config = Arc::new(ClientConfig::new(Profile::Default, RootStore::from_system()?)?.with_alpn(&[b"http/1.1"]));
 let mut tls = TlsStream::connect(TcpStream::connect("example.com:443")?, config, "example.com")?;
@@ -144,7 +144,7 @@ tls.write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n
 ### Rust, sans-I/O (any runtime, any transport, `no_std`)
 
 ```rust
-let mut conn = iron_socket_layer::Connection::client(config, "example.com")?;
+let mut conn = ironsocketlayer::Connection::client(config, "example.com")?;
 socket.send(&conn.take_tls());          // ClientHello
 conn.read_tls(&socket.recv())?;          // server flight
 socket.send(&conn.take_tls());          // client Finished
@@ -154,7 +154,7 @@ println!("{}", conn.report().to_json());
 ### Agent-to-agent mutual TLS with ephemeral identities
 
 ```rust
-use iron_socket_layer::{config::*, crypto::sign::{KeyKind, SigningKey}, x509};
+use ironsocketlayer::{config::*, crypto::sign::{KeyKind, SigningKey}, x509};
 
 let key = SigningKey::generate(KeyKind::MlDsa65, &mut rng)?;         // post-quantum identity
 let cert = x509::issue(&params, key.spki(), &ca_cert, &ca_key, &mut rng)?;
@@ -172,7 +172,7 @@ signature anywhere in the chain withdraws the claim.
 ### QUIC
 
 ```rust
-use iron_socket_layer::{quic::{QuicConnection, Version}, Level};
+use ironsocketlayer::{quic::{QuicConnection, Version}, Level};
 
 let mut tls = QuicConnection::client(config, "example.com", &transport_params, Version::V1)?;
 while let Some((level, bytes)) = tls.write_handshake() { /* CRYPTO frames at `level` */ }
@@ -190,7 +190,7 @@ $ isl probe example.com:443 --profile post-quantum --json
 $ isl probe crypto.cloudflare.com --ech
 $ isl serve --cert chain.pem --key key.pem --port 8443
 $ isl capabilities
-$ isl mcp        # { "mcpServers": { "iron-socket-layer": { "command": "isl", "args": ["mcp"] } } }
+$ isl mcp        # { "mcpServers": { "ironsocketlayer": { "command": "isl", "args": ["mcp"] } } }
 ```
 
 ## FIPS 140-3 and DO-178C
@@ -200,7 +200,7 @@ DO-178C certification.** What they provide:
 
 * **FIPS 140-3**: the `fips-140-3`, `cnsa-1` and `dal-a` profiles refuse to
   build a connection unless IronCrypto's module is operational in approved mode
-  (`iron_socket_layer::policy::enable_fips()`), check every negotiated algorithm
+  (`ironsocketlayer::policy::enable_fips()`), check every negotiated algorithm
   through `ic_fips::check`, and record the service indicators in the session
   report. See [docs/FIPS.md](docs/FIPS.md).
 * **DO-178C DAL-A**: the `dal-a` profile narrows the protocol to one suite, one
@@ -225,7 +225,7 @@ Current verification results and open engineering/external evidence are in
 
 | Crate | |
 |---|---|
-| `crates/iron-socket-layer` | The protocol engine: TLS 1.3, QUIC-TLS, X.509, profiles, reports |
+| `crates/ironsocketlayer` | The protocol engine: TLS 1.3, QUIC-TLS, X.509, profiles, reports |
 | `crates/isl-ontology` | The ontology: static, `no_std`, zero dependencies; exporters behind `std` |
 | `crates/isl-cli` | `isl`: command line and MCP server |
 | `bench/` | Handshake and throughput comparison with rustls; outside the workspace |
@@ -234,7 +234,7 @@ Current verification results and open engineering/external evidence are in
 ```console
 $ cargo test --workspace
 $ cargo clippy --workspace --all-targets
-$ cargo build -p iron-socket-layer --no-default-features --target thumbv7em-none-eabihf
+$ cargo build -p ironsocketlayer --no-default-features --target thumbv7em-none-eabihf
 ```
 
 IronCrypto is expected at `../IronCrypto` (path dependencies with a version

@@ -4,7 +4,7 @@
 //! them. Seeds are real ClientHellos (`seed-corpus`).
 #![no_main]
 
-use iron_socket_layer::Connection;
+use ironsocketlayer::Connection;
 use isl_fuzz::{chunks, server_config};
 use libfuzzer_sys::fuzz_target;
 

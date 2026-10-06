@@ -54,7 +54,7 @@ and export. [scripts/coverage.ps1](../scripts/coverage.ps1) reproduces the runs;
 These figures merge repeated source locations and exclude trailing unit-test
 modules. Raw LLVM file branch summaries, which include test source and retain
 instantiation distinctions, were 90.09% and 86.70% respectively for
-`crates/iron-socket-layer/src/`. Do not compare these directly to older reports
+`crates/ironsocketlayer/src/`. Do not compare these directly to older reports
 without checking their aggregation method. Ignored OpenSSL/network tests were
 verified separately and are not included in these coverage percentages.
 
@@ -126,7 +126,7 @@ summarizes the fixed-capacity engine's host evidence.
 ## Addendum: fixed-capacity engine
 
 Measured later on 2026-10-05 with the fixed-capacity engine
-(`iron_socket_layer::fixed`) in place, same host and IronCrypto commit.
+(`ironsocketlayer::fixed`) in place, same host and IronCrypto commit.
 
 ### Footprint
 

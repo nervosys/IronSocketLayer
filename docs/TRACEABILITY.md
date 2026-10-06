@@ -2,7 +2,7 @@
 
 This matrix links every low-level requirement to the code that implements
 it and the verification that shows it holds. It is **checked by a test**:
-`crates/iron-socket-layer/tests/traceability.rs` fails if a `REQ-*` tag in the
+`crates/ironsocketlayer/tests/traceability.rs` fails if a `REQ-*` tag in the
 source is missing here, if a row names a requirement the source does not
 carry, or if a cited test function does not exist. The matrix cannot go
 stale without the build noticing.

@@ -5,7 +5,7 @@
 //! tools. Run it with `isl mcp`, or wire it into a client:
 //!
 //! ```jsonc
-//! { "mcpServers": { "iron-socket-layer": { "command": "isl", "args": ["mcp"] } } }
+//! { "mcpServers": { "ironsocketlayer": { "command": "isl", "args": ["mcp"] } } }
 //! ```
 //!
 //! Every tool is a thin wrapper over [`crate::ops`], the same code the CLI's
@@ -163,7 +163,7 @@ pub fn extra_tools() -> Vec<Tool> {
             schema(
                 vec![
                     ("target", string_prop("host or host:port; port defaults to 443.")),
-                    ("profile", enum_prop("Profile to connect with; defaults to profile:default.", iron_socket_layer::config::Profile::ALL.iter().map(|p| p.id()).collect())),
+                    ("profile", enum_prop("Profile to connect with; defaults to profile:default.", ironsocketlayer::config::Profile::ALL.iter().map(|p| p.id()).collect())),
                     ("alpn", string_prop("Comma-separated ALPN protocols to offer, e.g. h2,http/1.1.")),
                     ("ech", bool_prop("Fetch the host's ECH configuration from DNS and send the server name only encrypted (Encrypted Client Hello); retries once with the server's retry configurations.")),
                 ],
@@ -221,7 +221,7 @@ pub fn handle(request: &Json) -> Option<Json> {
             Json::object([
                 ("protocolVersion", Json::str(PROTOCOL_VERSION)),
                 ("capabilities", Json::object([("tools", Json::object([]))])),
-                ("serverInfo", Json::object([("name", Json::str("iron-socket-layer")), ("version", Json::str(isl_ontology::VERSION))])),
+                ("serverInfo", Json::object([("name", Json::str("ironsocketlayer")), ("version", Json::str(isl_ontology::VERSION))])),
                 (
                     "instructions",
                     Json::str(

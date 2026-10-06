@@ -2,8 +2,8 @@
 //! including the transport-parameters extension a ClientHello carries.
 #![no_main]
 
-use iron_socket_layer::quic::{QuicConnection, Version};
-use iron_socket_layer::Level;
+use ironsocketlayer::quic::{QuicConnection, Version};
+use ironsocketlayer::Level;
 use isl_fuzz::{chunks, server_config};
 use libfuzzer_sys::fuzz_target;
 

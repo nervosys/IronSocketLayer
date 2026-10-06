@@ -1,9 +1,9 @@
-//! The error catalog: what each `iron_socket_layer::ErrorKind` means and how an
+//! The error catalog: what each `ironsocketlayer::ErrorKind` means and how an
 //! agent recovers from it.
 //!
 //! An error carries its id; an agent looks the id up here and follows
 //! `recovery`. The flags equal the methods on `ErrorKind`, and
-//! `crates/iron-socket-layer/tests/ontology_agreement.rs` checks that they do.
+//! `crates/ironsocketlayer/tests/ontology_agreement.rs` checks that they do.
 
 /// One error kind, documented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

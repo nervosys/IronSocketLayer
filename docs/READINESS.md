@@ -16,7 +16,7 @@ IronCrypto at the path Cargo actually requires. Reproducible tools for branch
 coverage, trace-cited test selection, gap inventories, footprint measurements,
 timing experiments and longer fuzz campaigns are in [scripts](../scripts/README.md).
 
-A separate fixed-capacity TLS 1.3 engine, `iron_socket_layer::fixed`, runs
+A separate fixed-capacity TLS 1.3 engine, `ironsocketlayer::fixed`, runs
 over caller-owned storage (requirements `REQ-FIX-001` to `REQ-FIX-005`,
 HLR-015). It is described under the scope below.
 
@@ -83,7 +83,7 @@ Use `thumbv7em-none-eabihf` (Cortex-M4) as the reference compile target.
 The `no_std + alloc` build of the owned engine is not a fixed-capacity build:
 its parsers, flights, key wrappers and reports create owned buffers.
 
-`iron_socket_layer::fixed::Connection` is a separate backend. The caller
+`ironsocketlayer::fixed::Connection` is a separate backend. The caller
 declares byte capacities in `fixed::Storage` (record, handshake, outgoing,
 application, certificates, private key, public key, scratch) and slot counts
 in `fixed::Limits` (certificates, extensions, events, name, ALPN protocols).

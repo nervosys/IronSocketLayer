@@ -7,15 +7,15 @@
 use std::sync::{Arc, OnceLock};
 
 use ic_core::traits::RandomSource;
-use iron_socket_layer::config::{
+use ironsocketlayer::config::{
     ClientAuth, ClientConfig, EarlyDataPolicy, ExternalPsk, Identity, PeerVerification, Profile,
     ServerConfig,
 };
-use iron_socket_layer::crypto::sign::{KeyKind, SigningKey};
-use iron_socket_layer::crypto::HashAlg;
-use iron_socket_layer::ech::EchServer;
-use iron_socket_layer::x509::{self, CertificateParams, RootStore, Usage};
-use iron_socket_layer::Result;
+use ironsocketlayer::crypto::sign::{KeyKind, SigningKey};
+use ironsocketlayer::crypto::HashAlg;
+use ironsocketlayer::ech::EchServer;
+use ironsocketlayer::x509::{self, CertificateParams, RootStore, Usage};
+use ironsocketlayer::Result;
 
 /// 2026-09-28T00:00:00Z. Certificates are valid for a day either side.
 pub const NOW: u64 = 1_790_553_600;
@@ -33,9 +33,8 @@ fn clock() -> u64 {
 /// A DRBG from a fixed seed. Each call starts the same stream, so a
 /// connection's randomness depends only on the inputs it has been fed.
 pub fn fixed_rng() -> Result<Box<dyn RandomSource + Send>> {
-    let rng = ic_drbg::Rng::from_entropy(&[0x5a; 48], b"isl-fuzz").map_err(|_| {
-        iron_socket_layer::Error::new(iron_socket_layer::ErrorKind::Entropy, "drbg")
-    })?;
+    let rng = ic_drbg::Rng::from_entropy(&[0x5a; 48], b"isl-fuzz")
+        .map_err(|_| ironsocketlayer::Error::new(ironsocketlayer::ErrorKind::Entropy, "drbg"))?;
     Ok(Box::new(rng))
 }
 
@@ -135,11 +134,11 @@ pub fn server_config() -> Arc<ServerConfig> {
         sc.retry_cookie = true;
         // Every group this build implements, so a ClientHello can reach each
         // key-share parser (ML-KEM-1024 included), not only the defaults.
-        sc.common.groups = iron_socket_layer::crypto::kx::IMPLEMENTED_GROUPS.to_vec();
+        sc.common.groups = ironsocketlayer::crypto::kx::IMPLEMENTED_GROUPS.to_vec();
         // ServerConfig::new drew ticket keys from the OS; redraw them from the
         // fixed DRBG so recorded tickets open in every run.
         sc.tickets = Some(Arc::new(
-            iron_socket_layer::resumption::TicketKeys::generate(&mut *rng()).unwrap(),
+            ironsocketlayer::resumption::TicketKeys::generate(&mut *rng()).unwrap(),
         ));
         Arc::new(sc)
     })
@@ -161,7 +160,7 @@ pub fn fixed_server_config() -> Arc<ServerConfig> {
             )));
         sc.common.clock = clock;
         sc.common.rng = fixed_rng;
-        sc.common.groups = iron_socket_layer::crypto::kx::IMPLEMENTED_GROUPS.to_vec();
+        sc.common.groups = ironsocketlayer::crypto::kx::IMPLEMENTED_GROUPS.to_vec();
         sc.tickets = None;
         Arc::new(sc)
     })
@@ -192,10 +191,10 @@ impl Default for FixedBuffers {
 
 impl FixedBuffers {
     /// Lend the buffers to a connection.
-    pub fn storage(&mut self) -> iron_socket_layer::fixed::Storage<'_> {
+    pub fn storage(&mut self) -> ironsocketlayer::fixed::Storage<'_> {
         let [record, handshake, outgoing, application, certificates, private_key, public_key, scratch] =
             &mut self.0;
-        iron_socket_layer::fixed::Storage {
+        ironsocketlayer::fixed::Storage {
             record,
             handshake,
             outgoing,

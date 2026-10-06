@@ -3,7 +3,7 @@
 //! or TLS-encoded bytes outside the handshake itself.
 #![no_main]
 
-use iron_socket_layer::x509::{self, crl::CrlStore, Certificate, ServerName, Usage, VerifyOptions};
+use ironsocketlayer::x509::{self, crl::CrlStore, Certificate, ServerName, Usage, VerifyOptions};
 use isl_fuzz::{client_config, pki, NAME, NOW};
 use libfuzzer_sys::fuzz_target;
 
@@ -72,12 +72,12 @@ fuzz_target!(|data: &[u8]| {
             );
         }
         _ => {
-            if let Ok(list) = iron_socket_layer::ech::parse_config_list(body) {
+            if let Ok(list) = ironsocketlayer::ech::parse_config_list(body) {
                 for c in &list {
                     let _ = (c.usable_suite(), c.hpke_info());
                 }
             }
-            let _ = iron_socket_layer::ech::select_config(body);
+            let _ = ironsocketlayer::ech::select_config(body);
         }
     }
 });

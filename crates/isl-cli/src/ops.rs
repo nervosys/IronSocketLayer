@@ -168,7 +168,7 @@ pub fn capabilities() -> Result<Json, String> {
         })
         .collect();
     Ok(Json::object([
-        ("library", Json::str("iron-socket-layer")),
+        ("library", Json::str("ironsocketlayer")),
         ("version", Json::str(isl_ontology::VERSION)),
         ("ontologyVersion", Json::str(isl_ontology::ONTOLOGY_VERSION)),
         ("protocolVersions", implemented(Kind::ProtocolVersion)),

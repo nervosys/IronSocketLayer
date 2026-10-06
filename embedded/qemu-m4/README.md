@@ -1,6 +1,6 @@
 # isl-qemu-m4
 
-Runs the fixed-capacity engine (`iron_socket_layer::fixed`) on an emulated
+Runs the fixed-capacity engine (`ironsocketlayer::fixed`) on an emulated
 Cortex-M4. The board is QEMU's MPS2-AN386, and the image is linked with fat
 LTO for `thumbv7em-none-eabihf`. For each signing-key kind and key-exchange
 group listed in `src/main.rs`, it runs a whole mutual-TLS session between a

@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 DISPOSITIONS = {"tested", "defensive", "unreachable", "environment"}
-SRC = Path(__file__).resolve().parent.parent / "crates" / "iron-socket-layer"
+SRC = Path(__file__).resolve().parent.parent / "crates" / "ironsocketlayer"
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("gaps", type=Path)

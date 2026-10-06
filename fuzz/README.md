@@ -13,7 +13,7 @@ dependency graph.
 | `tls_server` | A whole server connection with ECH, 0-RTT, an external PSK, optional client certificates, tickets and HelloRetryRequest cookies enabled |
 | `tls_client` | A client after its ClientHello, fed the server's side |
 | `quic_server` | QUIC-TLS at Initial, Handshake and 1-RTT levels, v1 and v2, including transport parameters |
-| `fixed_server` | The fixed-capacity server (`iron_socket_layer::fixed`) over caller storage, with every group and optional client certificates; a failure must latch and leave nothing queued |
+| `fixed_server` | The fixed-capacity server (`ironsocketlayer::fixed`) over caller storage, with every group and optional client certificates; a failure must latch and leave nothing queued |
 | `fixed_client` | The fixed-capacity client after its ClientHello, fed the server's reply; seeded with a real server flight to its fixed-DRBG ClientHello. A failure must latch and leave nothing queued |
 
 The TCP targets also assert that a failed connection stays failed.
@@ -77,7 +77,7 @@ not hangs. These are still short runs. Longer campaigns on a quiet machine
 are the next step.
 
 When a target does crash, fix the cause and add the input as a regression test
-in `crates/iron-socket-layer/tests/robustness.rs`.
+in `crates/ironsocketlayer/tests/robustness.rs`.
 
 ## Longer campaign, 2026-10-05
 
@@ -94,7 +94,7 @@ The first runs of `fixed_server` found two hangs within seconds: a record, or
 a handshake message, announcing an empty body was never consumed, so the
 engine looped without progress. Both were fixed in `src/fixed.rs`, and the
 inputs are regression cases in
-`crates/iron-socket-layer/tests/fixed_capacity.rs::an_empty_record_does_not_stall_the_engine`.
+`crates/ironsocketlayer/tests/fixed_capacity.rs::an_empty_record_does_not_stall_the_engine`.
 Reverting either fix makes that test fail. After the fixes, a 181-second
 AddressSanitizer run made 869,977 executions and reached 3,415 edges, with
 no crashes, timeouts or sanitizer reports. This is a short run.

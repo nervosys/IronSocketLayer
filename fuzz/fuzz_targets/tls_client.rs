@@ -4,7 +4,7 @@
 //! from a handshake that would otherwise succeed.
 #![no_main]
 
-use iron_socket_layer::Connection;
+use ironsocketlayer::Connection;
 use isl_fuzz::{chunks, client_config, NAME};
 use libfuzzer_sys::fuzz_target;
 

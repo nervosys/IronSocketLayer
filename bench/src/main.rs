@@ -19,11 +19,11 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Instant;
 
-use iron_socket_layer::config::{ClientConfig, Identity, Profile, ServerConfig};
-use iron_socket_layer::crypto::sign::SigningKey;
-use iron_socket_layer::enums::{CipherSuite, NamedGroup};
-use iron_socket_layer::x509::RootStore;
-use iron_socket_layer::Connection;
+use ironsocketlayer::config::{ClientConfig, Identity, Profile, ServerConfig};
+use ironsocketlayer::crypto::sign::SigningKey;
+use ironsocketlayer::enums::{CipherSuite, NamedGroup};
+use ironsocketlayer::x509::RootStore;
+use ironsocketlayer::Connection;
 
 const RUNS: usize = 7;
 const NAME: &str = "bench.test";
@@ -222,7 +222,7 @@ fn rustls_bulk_mib_per_sec(
 /// AES-128-GCM seal of 16 KiB buffers with no TLS around it: the ceiling the
 /// record layer is measured against.
 fn isl_aead_mib_per_sec(total: usize) -> f64 {
-    use iron_socket_layer::crypto::{AeadAlg, AeadKey};
+    use ironsocketlayer::crypto::{AeadAlg, AeadKey};
     let key = AeadKey::new(AeadAlg::Aes128Gcm, &[7u8; 16]).unwrap();
     let mut buf = vec![0x5au8; 16 * 1024];
     let mut tag = [0u8; 16];
@@ -272,9 +272,9 @@ fn ops_per_sec(n: usize, mut f: impl FnMut()) -> f64 {
 }
 
 fn isl_primitives(m: &Material, n: usize) -> (Stats, Stats, Stats) {
-    use iron_socket_layer::crypto::kx::{respond, KeyShare};
-    use iron_socket_layer::crypto::sign::{verify, PublicKey};
-    use iron_socket_layer::enums::SignatureScheme;
+    use ironsocketlayer::crypto::kx::{respond, KeyShare};
+    use ironsocketlayer::crypto::sign::{verify, PublicKey};
+    use ironsocketlayer::enums::SignatureScheme;
     let (cc, _) = isl_configs(m, NamedGroup::X25519);
     let mut rng = cc.common.new_rng().unwrap();
     let key = SigningKey::from_pkcs8_der(&m.key).unwrap();
@@ -341,7 +341,7 @@ fn ring_primitives(m: &Material, n: usize) -> (Stats, Stats, Stats) {
 /// `isl-bench parts`: the per-connection costs outside the big primitives,
 /// microseconds per operation.
 fn parts() {
-    use iron_socket_layer::crypto::{hmac, HashAlg};
+    use ironsocketlayer::crypto::{hmac, HashAlg};
     let us = |n: usize, f: &mut dyn FnMut()| {
         let start = Instant::now();
         for _ in 0..n {
@@ -390,8 +390,8 @@ fn parts() {
         })
     );
     {
-        use iron_socket_layer::crypto::kx::KeyShare;
-        use iron_socket_layer::crypto::{AeadAlg, AeadKey};
+        use ironsocketlayer::crypto::kx::KeyShare;
+        use ironsocketlayer::crypto::{AeadAlg, AeadKey};
         let mut rng = cc.common.new_rng().unwrap();
         for _ in 0..3 {
             let kx = us(n, &mut || {
