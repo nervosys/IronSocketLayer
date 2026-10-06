@@ -28,9 +28,12 @@ or DO-178C certification. None of those exists.
   fail with its fix undone. The tests are in `tests/pki_hardening.rs`,
   `tests/protocol_hardening.rs` and the unit tests named below, and are traced
   in [TRACEABILITY.md](TRACEABILITY.md).
-- **Afterwards.** The full suite passes (614 tests), along with clippy, the
-  Cortex-M4 `no_std` build, and a five-minute AddressSanitizer fuzz campaign
-  of all eight targets.
+- **Afterwards.** With the findings and the W items fixed, the full suite
+  passes (628 tests), along with clippy, the Cortex-M4 `no_std` build, the
+  QEMU Cortex-M4 run of the fixed engine, the OpenSSL 3.5.7 interoperability
+  and CNSA 2.0 suites, live handshakes with Cloudflare, Google and GitHub,
+  and a five-minute AddressSanitizer fuzz campaign of all eight targets
+  (about 30 million runs, no crashes or sanitizer reports).
 
 ## Findings
 
@@ -59,23 +62,30 @@ indicative only. Every Medium and Low finding below is fixed.
 | A-18 | Fixed server continued when ALPN lists did not overlap (RFC 7301 §3.2; ALPACA), unless `require_alpn` | Low | Fixed |
 | A-19 | MCP `tls_probe` could reach loopback, private and link-local addresses, including cloud metadata (SSRF-like network mapping by a prompt-injected agent); no absolute probe deadline; unbounded DNS response; `isl serve` bound 0.0.0.0; peer-supplied text printed raw to terminals | Low–Medium | Fixed: internal targets refused unless `ISL_MCP_ALLOW_PRIVATE=1`, 30 s deadline, 64 KiB cap, `--bind` defaulting to 127.0.0.1, control characters stripped |
 | A-20 | Ticket plaintext buffer could reallocate while holding the resumption PSK, leaving an unzeroized copy | Low | Fixed (exact capacity) |
+| A-21 | A server configured with `ClientAuth::Required` and external PSKs accepted a PSK in place of the required client certificate | Low | Fixed, REQ-EPSK-006 |
 
-### Weaknesses accepted or documented, not changed
+### Weaknesses, hardened after the audit
 
-| ID | Item | Why it stays, and what to do |
+The audit first listed these as accepted. Each has since been changed; what
+remains is noted.
+
+| ID | Item | Now |
 |---|---|---|
-| W-1 | External-PSK "Selfie" reflection (RFC 9257 §4.1): a node using one external PSK as both client and server accepts its own reflected ClientHello | Binding a key to a direction needs protocol-visible identities (RFC 9258 importers). Use a distinct PSK for each direction, or certificates. |
-| W-2 | The owned server presents its default certificate for an SNI that matches no identity | Common server behaviour; clients verify names. The fixed server is strict. |
-| W-3 | No ECH GREASE | Use of ECH is visible on the wire. A feature, not a flaw. |
-| W-4 | Wildcards are not checked against a public-suffix list | No such list ships in a zero-dependency library; CAs do not issue such wildcards. |
-| W-5 | A known external-PSK identity with a wrong binder is fatal, so identities can be enumerated; a ticket holder learns whether the ticket is live | Required by RFC 8446 §4.2.11. Use unguessable identities. |
-| W-6 | A full in-memory 0-RTT replay guard refuses early data for everyone until entries expire | Fails safe (falls back to 1-RTT). Size the guard for the deployment. |
-| W-7 | An authenticated server may request post-handshake client authentication repeatedly | Only when the client opted in, against a server it authenticated. |
-| W-8 | CRLs are re-verified on every handshake | They come from the operator, not the peer. Keep CRL sets small. |
-| W-9 | Indirect-CRL entries are attributed to the CRL issuer | Can only produce a false revocation (fails safe). |
-| W-10 | The sans-I/O owned engine buffers application data until the application reads it | The application must drain `recv` or apply back-pressure; `TlsStream` does. |
-| W-11 | `peer_subject_cn` in the report is informational | Authorize on verified names, not on it. |
-| W-12 | Explicitly encoded DER DEFAULT values (a v1 version, a name-constraint minimum of 0) are accepted | Only the signing CA chooses them; a v1 certificate cannot be an intermediate, and a minimum of 0 fails closed. |
+| W-1 | External-PSK "Selfie" reflection (RFC 9257 §4.1): a node using one external PSK as both client and server accepts its own reflected ClientHello | With `std`, a server refuses an external-PSK ClientHello this process sent (`ServerConfig::selfie_guard`, on by default), REQ-EPSK-005. The guard is process-local and absent without `std`; one key per direction remains the real defence, and the `ExternalPsk` documentation says so. |
+| W-2 | The owned server presented its default certificate for an SNI that matched no identity | Refused with `unrecognized_name` in both engines unless `ServerConfig::sni_fallback` is set; a hello without SNI still gets the first identity. REQ-NEG-002, new `error:unrecognized-name`. |
+| W-3 | No ECH GREASE | The owned client sends a GREASE `encrypted_client_hello` when it has no ECH configuration (`ClientConfig::ech_grease`, on by default) and ignores retry configurations sent in answer, REQ-ECH-011. The fixed-capacity client does not GREASE. |
+| W-4 | Wildcards were not checked against a public-suffix list | A wildcard directly over `<registry label>.<two-letter country code>` (`*.co.uk`, `*.com.au`, ...) matches nothing, REQ-X509-078. A heuristic: no public-suffix list ships in a zero-dependency library, so private suffixes are not caught. |
+| W-5 | External-PSK identities could be enumerated: a known identity with a wrong binder was fatal, an unknown one was not | A PSK-only server now answers an unknown identity with `decrypt_error` after the same binder computation, REQ-EPSK-007. A server that also has certificates still falls back to the certificate handshake for an identity it does not know, and a ticket holder can still tell whether a ticket is live; both follow RFC 8446 §4.2.11. Use unguessable identities. |
+| W-6 | A full in-memory 0-RTT replay guard refused early data for everyone until entries expired | Still fails safe, but `MemoryReplayGuard::with_capacity` sizes it, and the server reports `event:replay-guard-full`, REQ-0RTT-006. |
+| W-7 | An authenticated server could request post-handshake client authentication without limit | A client answers at most 16 requests per connection, REQ-PHA-005. |
+| W-8 | CRLs were re-verified on every handshake | `CrlStore::add_der_for_issuer` verifies a CRL once, at load, bound to its issuer's key, REQ-CRL-028. CRLs added with `add_der` are still verified per handshake. |
+| W-9 | Indirect-CRL entries were attributed to the CRL issuer | Entries are attributed through certificateIssuer (RFC 5280 §5.3.3); one attributed to another issuer no longer revokes, REQ-CRL-027. Indirect CRLs still never show a certificate good. |
+| W-10 | The sans-I/O owned engine buffered application data until the application read it | Bounded by `Common::max_buffered_plaintext` (1 MiB by default), including accepted 0-RTT data; beyond it the connection fails closed, REQ-CONN-012. |
+| W-11 | Only `peer_subject_cn`, which is informational, named the peer in the report | `SessionReport::peer_names` (`peerNames` in JSON) lists the certificate's subject alternative names, and survives resumption, REQ-RPT-003. |
+| W-12 | Explicitly encoded DER DEFAULT values (a v1 version, a name-constraint minimum of 0) were accepted | Refused, REQ-X509-077. |
+
+Also after the audit: a record protector's static IV is zeroized on drop
+(REQ-REC-009), and `isl serve` wipes the private-key PEM text once parsed.
 
 ## CVE classes: historical vulnerabilities, assessed
 
@@ -164,5 +174,5 @@ cannot meet.
 2. Publish the fixed release, then a GitHub security advisory (and RustSec
    entry) for 0.1.0 covering A-1 to A-5.
 3. Re-run this checklist when the handshake, X.509 code or CLI change.
-4. W-1: document per-direction external PSKs prominently, and consider
-   RFC 9258 importers.
+4. W-1: the Selfie guard is a backstop. Provision external PSKs per
+   direction, and consider RFC 9258 importers.

@@ -52,6 +52,15 @@ pub struct Protector {
     secret: Output,
 }
 
+/// REQ-REC-009: the static IV is key material (it fixes every nonce), so it
+/// is wiped with the key when the direction is dropped or rekeyed; the key
+/// and traffic secret wipe themselves.
+impl Drop for Protector {
+    fn drop(&mut self) {
+        ic_core::Zeroize::zeroize(&mut self.iv[..]);
+    }
+}
+
 impl core::fmt::Debug for Protector {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Protector({:?}, seq {})", self.key.alg(), self.seq)

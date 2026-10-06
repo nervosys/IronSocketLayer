@@ -1768,7 +1768,7 @@ mod tests {
                 "record_size_limit answered but not offered",
             ),
             (
-                |_| {},
+                |c| c.ech_grease = false,
                 |e| e.ech_retry_configs = Some(alloc::vec![0, 0]),
                 "encrypted_client_hello in EncryptedExtensions but not offered",
             ),

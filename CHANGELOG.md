@@ -36,8 +36,46 @@ Upgrade from 0.1.0.
   unless `ISL_MCP_ALLOW_PRIVATE=1`. Probes have an absolute deadline.
   `isl serve` binds 127.0.0.1 by default (`--bind`). Peer text is
   sanitized in terminal output.
+- A server that requires client certificates no longer accepts an external
+  PSK in their place.
+
+### Hardened (weaknesses W-1 to W-12 of the audit)
+- Selfie: with `std`, a server refuses an external-PSK ClientHello this
+  process sent (`ServerConfig::selfie_guard`, on by default).
+- A server refuses an SNI none of its certificates covers, with
+  `unrecognized_name`, unless `ServerConfig::sni_fallback` is set.
+- The client sends ECH GREASE when it has no ECH configuration
+  (`ClientConfig::ech_grease`, on by default).
+- A wildcard directly over a registry suffix such as `co.uk` matches
+  nothing.
+- A PSK-only server answers an unknown PSK identity as it answers a wrong
+  binder.
+- `MemoryReplayGuard::with_capacity`, and `event:replay-guard-full` when a
+  full guard refuses early data.
+- A client answers at most 16 post-handshake CertificateRequests per
+  connection.
+- `CrlStore::add_der_for_issuer` verifies a CRL once, at load.
+- Indirect-CRL entries are attributed through certificateIssuer.
+- Unread application data is bounded (`Common::max_buffered_plaintext`,
+  1 MiB by default).
+- An explicit v1 certificate version, or an explicit name-constraint
+  minimum of 0, is refused (not DER).
+- The record IV and `isl serve`'s private-key PEM text are zeroized.
+
+### Added
+- `SessionReport::peer_names` (`peerNames` in JSON): the peer certificate's
+  subject alternative names. `isl probe` prints them.
+- `ErrorKind::UnrecognizedName` (`error:unrecognized-name`).
+- `x509::IpAddr` implements `Display` (RFC 5952 text).
 
 ### Changed
+- An owned server refuses SNI it has no certificate for (see above); set
+  `sni_fallback` for the old behaviour. The fixed server's refusal is now
+  `error:unrecognized-name` instead of `error:handshake-failure`.
+- A client and server in one process that share an external PSK must turn
+  off `selfie_guard` on the server.
+- `ServerConfig` and `ClientConfig` gained public fields; code building them
+  with struct literals must set them.
 - `Connection::ech_retry_configs()` returns `None` unless the handshake
   failed with `ech_rejected`.
 - `TlsStream::read` returns `UnexpectedEof` where it used to return `Ok(0)`

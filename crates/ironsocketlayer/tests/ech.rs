@@ -122,14 +122,42 @@ fn an_unusable_ech_config_never_falls_back_to_plaintext() {
 #[test]
 fn a_server_with_ech_still_serves_clients_without_it() {
     let (pki, _, sc) = setup();
-    let (c, s) = connect(
-        Arc::new(pki.client_config(Profile::Default)),
-        Arc::new(sc),
-        REAL,
-    )
-    .unwrap();
+    let mut cc = pki.client_config(Profile::Default);
+    cc.ech_grease = false;
+    let (c, s) = connect(Arc::new(cc), Arc::new(sc), REAL).unwrap();
     assert_eq!(c.report().ech, "ech:not-offered");
     assert_eq!(s.report().ech, "ech:not-offered");
+}
+
+/// REQ-ECH-011: a client without ECH configurations sends GREASE by
+/// default. A server with ECH keys cannot tell it from a real offer it fails
+/// to decrypt, and answers with retry configurations, which the client
+/// ignores; the connection proceeds on the outer (real) name.
+#[test]
+fn a_greasing_client_ignores_the_retry_configurations() {
+    let (pki, _, sc) = setup();
+    let cc = pki.client_config(Profile::Default);
+    assert!(cc.ech_grease, "GREASE is on by default");
+    let (c, s) = connect(Arc::new(cc), Arc::new(sc), REAL).unwrap();
+    assert!(
+        c.report().events.iter().any(|e| e.id == "event:ech-grease"),
+        "{}",
+        c.report().to_json()
+    );
+    assert_eq!(c.report().ech, "ech:not-offered");
+    assert!(!c.report().has(Property::EncryptedClientHello));
+    assert!(c.ech_retry_configs().is_none());
+    // The server saw an ECH extension it could not open.
+    assert_eq!(s.report().ech, "ech:rejected");
+    // Across a HelloRetryRequest too.
+    let (pki, _, mut sc) = setup();
+    sc.common.groups = vec![NamedGroup::Secp384r1];
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.groups = vec![NamedGroup::X25519, NamedGroup::Secp384r1];
+    cc.initial_key_shares = 1;
+    let (c, _) = connect(Arc::new(cc), Arc::new(sc), REAL).unwrap();
+    assert!(c.report().hello_retry);
+    assert!(c.ech_retry_configs().is_none());
 }
 
 #[test]

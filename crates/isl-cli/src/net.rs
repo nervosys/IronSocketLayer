@@ -322,10 +322,13 @@ pub fn serve(
         &std::fs::read_to_string(cert_path).map_err(|e| format!("{cert_path}: {e}"))?,
         "CERTIFICATE",
     )?;
-    let key = SigningKey::from_pem(
-        &std::fs::read_to_string(key_path).map_err(|e| format!("{key_path}: {e}"))?,
-    )
-    .map_err(|e| e.to_string())?;
+    // The key file's text is the private key: wipe it once parsed.
+    let mut pem = std::fs::read(key_path).map_err(|e| format!("{key_path}: {e}"))?;
+    let key = std::str::from_utf8(&pem)
+        .map_err(|_| format!("{key_path}: not UTF-8 PEM"))
+        .and_then(|text| SigningKey::from_pem(text).map_err(|e| e.to_string()));
+    ic_core::Zeroize::zeroize(pem.as_mut_slice());
+    let key = key?;
     let identity = Identity::new(chain, key).map_err(|e| e.to_string())?;
     let mut config = ServerConfig::new(profile, identity).map_err(|e| e.to_string())?;
     config.common.alpn = alpn_list(alpn);

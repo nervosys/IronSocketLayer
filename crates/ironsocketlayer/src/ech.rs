@@ -163,6 +163,30 @@ pub fn parse_config_list(list: &[u8]) -> Result<Vec<EchConfig>> {
     Ok(out)
 }
 
+/// A GREASE `encrypted_client_hello` for a client with no ECH configuration
+/// (RFC 9849 §6.2): a suite real clients offer, a random configuration id, a
+/// random X25519-sized `enc`, and a random payload the size of a padded
+/// inner ClientHello plus the AEAD tag. REQ-ECH-011.
+pub fn grease(rng: &mut dyn RandomSource) -> Result<crate::msgs::EchHello> {
+    let mut id = [0u8; 1];
+    crypto::fill_random(rng, &mut id)?;
+    let mut enc = alloc::vec![0u8; 32];
+    crypto::fill_random(rng, &mut enc)?;
+    // A padded EncodedClientHelloInner is a multiple of 32 (§6.1.3); vary
+    // it as real inner hellos vary, between 192 and 288 bytes.
+    let mut pick = [0u8; 1];
+    crypto::fill_random(rng, &mut pick)?;
+    let len = 192 + 32 * usize::from(pick[0] % 4) + 16;
+    let mut payload = alloc::vec![0u8; len];
+    crypto::fill_random(rng, &mut payload)?;
+    Ok(crate::msgs::EchHello::Outer {
+        suite: (0x0001, 0x0001),
+        config_id: id[0],
+        enc,
+        payload,
+    })
+}
+
 /// The first configuration in `list` this client can use, with its suite.
 /// `REQ-ECH-004`: none usable is an error.
 pub fn select_config(list: &[u8]) -> Result<(EchConfig, (u16, u16))> {

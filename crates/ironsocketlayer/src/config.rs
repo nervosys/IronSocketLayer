@@ -635,6 +635,10 @@ pub struct ClientConfig {
     /// set, the real server name is sent only encrypted; if no configuration
     /// in the list is usable the connection fails rather than expose it.
     pub ech_configs: Option<Vec<u8>>,
+    /// Without `ech_configs`, send a GREASE `encrypted_client_hello`
+    /// extension (RFC 9849 §6.2), so that connections which do use ECH do not
+    /// stand out. On by default. REQ-ECH-011.
+    pub ech_grease: bool,
     /// Where session tickets are kept, keyed by server name; `None` disables
     /// resumption. Shared by every connection made with this configuration.
     pub tickets: Option<Arc<dyn crate::resumption::TicketStore>>,
@@ -654,6 +658,7 @@ impl ClientConfig {
             external_psk: None,
             early_data: false,
             ech_configs: None,
+            ech_grease: true,
             tickets: default_ticket_store(profile),
         })
     }

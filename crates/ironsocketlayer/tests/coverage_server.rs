@@ -1095,7 +1095,9 @@ fn an_ech_offer_the_server_cannot_open_is_rejected_not_fatal() {
 fn a_client_hello_inner_without_the_inner_marker_is_illegal() {
     let pki = Pki::new(KeyKind::EcdsaP256, REAL);
     let keys = ech_keys(3);
-    let base = hello(&Arc::new(pki.client_config(Profile::Default)), REAL);
+    let mut cc = pki.client_config(Profile::Default);
+    cc.ech_grease = false;
+    let base = hello(&Arc::new(cc), REAL);
     assert_eq!(base.ech, None);
     let outer = seal_outer(&base, &base, keys.config_list(), None, None);
     let mut s = Connection::server(Arc::new(ech_server(&pki, Some(keys)))).unwrap();

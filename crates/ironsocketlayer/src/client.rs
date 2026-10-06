@@ -89,6 +89,8 @@ pub(crate) struct ClientHs {
     resumption_master: Option<Output>,
     peer: PeerSummary,
     ech: Option<EchState>,
+    /// A GREASE ECH extension was sent. REQ-ECH-011.
+    ech_grease: bool,
     /// Whether the server accepted our external PSK.
     external_accepted: bool,
     /// Data to send as 0-RTT, and what became of it.
@@ -146,6 +148,7 @@ impl ClientHs {
             resumption_master: None,
             peer: PeerSummary::default(),
             ech: None,
+            ech_grease: false,
             external_accepted: false,
             early_payload: None,
             early: EarlyStatus::NotOffered,
@@ -249,6 +252,12 @@ impl ClientHs {
             TargetName::Ip(_) => None,
         });
         core.report.verification = self.config.verification.id();
+        if self.config.ech_configs.is_none() && self.config.ech_grease {
+            // REQ-ECH-011; a second hello after HelloRetryRequest repeats it.
+            self.hello.ech = Some(ech::grease(core.rng())?);
+            self.ech_grease = true;
+            core.report.event("event:ech-grease", "");
+        }
         if let Some(list) = self.config.ech_configs.clone() {
             // REQ-ECH-004: configured ECH is used or the connection fails.
             let TargetName::Dns(_) = &self.name else {
@@ -941,6 +950,9 @@ impl ClientHs {
         }
         if let Some(list) = ee.ech_retry_configs {
             match self.ech.as_ref().map(|s| s.status) {
+                // REQ-ECH-011: retry configurations answering GREASE are
+                // ignored (RFC 9849 §6.2).
+                None if self.ech_grease => {}
                 None => {
                     return Err(Error::new(
                         ErrorKind::UnsupportedExtension,

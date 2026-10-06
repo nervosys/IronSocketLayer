@@ -131,6 +131,9 @@ pub fn server_config() -> Arc<ServerConfig> {
         sc.ech = Some(p.ech.clone());
         sc.early_data = Some(EarlyDataPolicy::new(16_384));
         sc.external_psks = vec![psk()];
+        // The seed recorder drives client and server in one process with the
+        // same key, which the Selfie guard (REQ-EPSK-005) would refuse.
+        sc.selfie_guard = false;
         sc.retry_cookie = true;
         // Every group this build implements, so a ClientHello can reach each
         // key-share parser (ML-KEM-1024 included), not only the defaults.
