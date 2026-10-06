@@ -32,6 +32,22 @@ attack, performed by the agent itself.
 There is no API for it, and do not write one. To reach a peer without a PKI,
 pin its key: `ClientConfig::pinned(profile, &spki_der)`.
 
+## Require what the task needs, before connecting
+
+State the properties the task depends on in the configuration. The handshake
+then fails with `error:policy-violation`, naming the missing property, before
+any application data is sent or accepted:
+
+```rust
+let config = ClientConfig::new(Profile::PostQuantum, roots)?
+    .require(&[Property::PostQuantumKeyExchange, Property::ServerAuthenticated]);
+```
+
+`validate()` refuses requirements that cannot be enforced in time: any
+requirement together with 0-RTT, and mutual authentication without the means
+to get it. Mutual authentication obtained later, with `request_client_auth`,
+is checked on the report.
+
 ## After connecting, check what you got
 
 ```rust

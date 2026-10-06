@@ -2039,6 +2039,17 @@ pub(crate) fn finish_report(
         core.report.add(P::FipsApprovedAlgorithms);
     }
     core.report.fips_indicators = ind;
+    // REQ-CONN-013: before the connection may carry application data.
+    if let Some(missing) = core
+        .common
+        .required_properties
+        .iter()
+        .find(|p| !core.report.has(**p))
+    {
+        let id = missing.id();
+        core.report.event("event:required-property-missing", id);
+        return Err(Error::new(ErrorKind::PolicyViolation, id));
+    }
     core.set_state(HandshakeState::Connected);
     core.allow_ccs(false);
     core.report.event("event:handshake-complete", suite.id());

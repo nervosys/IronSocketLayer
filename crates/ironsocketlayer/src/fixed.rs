@@ -2036,6 +2036,14 @@ impl<'a> Connection<'a> {
         if common.fips {
             self.report.properties |= property_bit(Property::FipsApprovedAlgorithms);
         }
+        // REQ-CONN-013: before the connection may carry application data.
+        if let Some(missing) = common
+            .required_properties
+            .iter()
+            .find(|p| self.report.properties & property_bit(**p) == 0)
+        {
+            return Err(Error::new(ErrorKind::PolicyViolation, missing.id()));
+        }
         self.peer_hs_secret = None;
         self.local_hs_secret = None;
         self.master = None;

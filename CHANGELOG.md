@@ -5,6 +5,14 @@ versions may change the API.
 
 ## Unreleased
 
+### Added
+- `Common::required_properties`, set with `ClientConfig::require` and
+  `ServerConfig::require`: the handshake fails with `error:policy-violation`
+  (the missing property's id as context) before any application data is sent
+  or accepted, in both engines. `validate()` refuses requirements that
+  cannot be enforced in time (with 0-RTT) or met (mutual authentication
+  without an identity or required client authentication).
+
 ### Changed
 - Requires IronCrypto 0.2.15 or later, below 0.3. Its HPKE now also offers
   DHKEM(P-384, HKDF-SHA384); ECH here still uses the X25519 suite, whose

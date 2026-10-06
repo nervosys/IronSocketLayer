@@ -457,6 +457,11 @@ pub struct Common {
     pub alpn: Vec<Vec<u8>>,
     /// Fail the handshake if ALPN was offered and nothing matched.
     pub require_alpn: bool,
+    /// Security properties the connection must have. If any does not hold
+    /// when the handshake completes, it fails with `error:policy-violation`
+    /// (the missing property's id is the error context) before any
+    /// application data is sent or accepted. Empty by default. REQ-CONN-013.
+    pub required_properties: Vec<crate::report::Property>,
     /// Largest handshake message accepted, in bytes.
     pub max_handshake_message: usize,
     /// Most received application bytes held for the application to `recv`.
@@ -514,6 +519,7 @@ impl Common {
             schemes: profile.schemes().to_vec(),
             alpn: Vec::new(),
             require_alpn: false,
+            required_properties: Vec::new(),
             max_handshake_message: 128 * 1024,
             max_buffered_plaintext: 1024 * 1024,
             record_padding: 0,
@@ -694,9 +700,34 @@ impl ClientConfig {
         self
     }
 
+    /// Require these security properties of every connection; see
+    /// [`Common::required_properties`].
+    pub fn require(mut self, properties: &[crate::report::Property]) -> Self {
+        self.common.required_properties = properties.to_vec();
+        self
+    }
+
     /// Check the configuration.
     pub fn validate(&self) -> Result<()> {
         self.common.validate()?;
+        // REQ-CONN-013: requirements that cannot be checked in time, or met.
+        if !self.common.required_properties.is_empty() && self.early_data {
+            return Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "required properties cannot be checked before 0-RTT data is sent",
+            ));
+        }
+        if self.identity.is_none()
+            && self
+                .common
+                .required_properties
+                .contains(&crate::report::Property::MutualAuthentication)
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "mutual authentication is required but the client has no identity",
+            ));
+        }
         if self.common.profile.requires_mutual_auth() && self.identity.is_none() {
             return Err(Error::new(
                 ErrorKind::InvalidConfig,
@@ -852,6 +883,13 @@ impl ServerConfig {
         self
     }
 
+    /// Require these security properties of every connection; see
+    /// [`Common::required_properties`].
+    pub fn require(mut self, properties: &[crate::report::Property]) -> Self {
+        self.common.required_properties = properties.to_vec();
+        self
+    }
+
     /// Check the configuration.
     pub fn validate(&self) -> Result<()> {
         self.common.validate()?;
@@ -859,6 +897,26 @@ impl ServerConfig {
             return Err(Error::new(
                 ErrorKind::InvalidConfig,
                 "server has neither a certificate nor an external PSK",
+            ));
+        }
+        // REQ-CONN-013: requirements that cannot be checked in time, or met
+        // during the handshake. On-demand authentication happens after it:
+        // check the report once `request_client_auth` completes instead.
+        if !self.common.required_properties.is_empty() && self.early_data.is_some() {
+            return Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "required properties cannot be checked before 0-RTT data is accepted",
+            ));
+        }
+        if self
+            .common
+            .required_properties
+            .contains(&crate::report::Property::MutualAuthentication)
+            && !matches!(self.client_auth, ClientAuth::Required(_))
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "mutual authentication is required but client authentication is not",
             ));
         }
         for id in &self.identities {

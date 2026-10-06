@@ -167,6 +167,13 @@ let server = ServerConfig::new(Profile::PostQuantum, server_identity)?
     .with_client_auth(ClientAuth::Required(PeerVerification::Roots(private_roots)));
 ```
 
+A configuration can require the properties a task depends on; the handshake
+then fails, before any application data, if one does not hold:
+
+```rust
+let client = client.require(&[Property::PostQuantumKeyExchange, Property::MutualAuthentication]);
+```
+
 With ML-DSA at every link of the chain, the report carries
 `property:post-quantum-authentication` as well as
 `property:post-quantum-key-exchange`. It carries it only then: one ECDSA
