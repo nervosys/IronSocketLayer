@@ -242,5 +242,15 @@ pin, so the workspace also resolves from a registry once published).
 
 ## License
 
-AGPL-3.0-or-later, as IronCrypto. Encryption source code is export-controlled
-(ECCN 5D002); see IronCrypto's `docs/EXPORT.md` before publishing.
+IronSocketLayer is dual-licensed, as IronCrypto is:
+
+- **[AGPL-3.0-or-later](LICENSE)** for open-source use. The network clause has
+  real reach for a TLS library: linking it into a service that terminates or
+  originates TLS makes that service a derivative work.
+- **[Commercial](LICENSE-COMMERCIAL.md)** for proprietary, embedded or hosted
+  use. Proprietary use also needs a commercial IronCrypto licence, because all
+  cryptography is IronCrypto's.
+
+Contributions are accepted under the [CLA](CLA.md); see
+[CONTRIBUTING.md](CONTRIBUTING.md). Encryption source code is export-controlled
+(ECCN 5D002); see [docs/EXPORT.md](docs/EXPORT.md).

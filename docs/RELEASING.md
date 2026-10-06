@@ -8,10 +8,10 @@ step 4 can be repeated freely.
 Decide these in the same change that first makes the code public, because
 publication fixes them:
 
-- **Licence.** Today it is AGPL-3.0-or-later only. A commercial option, as
-  IronCrypto offers, needs a contributor licence agreement in place before
-  outside contributions arrive. It also needs its own export classification
-  (see [EXPORT.md](EXPORT.md)).
+- **Licence.** Decided 2026-10-05: AGPL-3.0-or-later plus a commercial
+  option ([LICENSE-COMMERCIAL.md](../LICENSE-COMMERCIAL.md)), with the
+  [CLA](../CLA.md) for contributions. Commercial distribution needs its own
+  export classification before the first sale (see [EXPORT.md](EXPORT.md)).
 - **What is claimed.** No FIPS 140-3 validation, no DO-178C certification and
   no independent review. Reports carry `"validated": false`. Check that the
   README, [READINESS.md](READINESS.md) and the crate descriptions say so and
@@ -74,7 +74,8 @@ cryptography (see EXPORT.md) needs a new notice first.
    $ cargo publish -p isl-cli
    ```
 3. Tag the commit `v0.1.0` and push the tag.
-4. If the repository is to be public, change its visibility. Review
+4. Make the repository public (decided 2026-10-05: at the same time as the
+   first publish). Review
    `.github/workflows/` first: GitHub advises against self-hosted runners on
    public repositories, because a fork's pull request would run on your
    hardware. The workflows here use GitHub-hosted runners only.
