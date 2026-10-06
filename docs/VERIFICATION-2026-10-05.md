@@ -415,3 +415,15 @@ largest session stack (34,428 bytes). The fuzz, bench and qemu-m4 lockfiles
 were moved to 0.2.15 as well. On Linux (WSL Debian, rustc 1.95.0) the 634
 tests passed. A one-minute AddressSanitizer run of all eight fuzz targets
 (about 5.4 million runs) found nothing.
+
+### Release 0.3.0
+
+The agent-safety features and the tlsfuzzer conformance fixes, over
+IronCrypto 0.2.15 (published). On Windows: 666 tests passed; fmt, clippy,
+the Cortex-M4 `no_std` build and the Rust 1.88 build passed;
+`openssl_interop` (14), `openssl_fixed` (5), `openssl_cnsa2` (1) and live
+interop (6) passed; the QEMU Cortex-M4 run passed (largest session stack
+34,428 bytes). On Linux (WSL Debian, rustc 1.95.0): 666 passed. tlsfuzzer:
+[VERIFICATION-2026-10-06-tlsfuzzer.md](VERIFICATION-2026-10-06-tlsfuzzer.md).
+Fuzzing ran after each parser change (one to two minutes per target, no
+findings).

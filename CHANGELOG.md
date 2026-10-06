@@ -3,7 +3,13 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## Unreleased
+## 0.3.0 (2026-10-06)
+
+Features that make the safe path the default for agents, and conformance
+fixes found with tlsfuzzer. A minor version: new public fields and
+functions, and stricter refusals (a second ChangeCipherSpec, an omitted
+`key_share`, an oversized padded record) that a non-conforming peer may
+notice. Requires IronCrypto 0.2.15 or later, below 0.3.
 
 ### Added
 - `Common::required_properties`, set with `ClientConfig::require` and
@@ -76,10 +82,6 @@ versions may change the API.
     stalled; it is `unexpected_message`;
   - a Finished announced longer than any hash is refused on its header.
 
-### Verification
-- tlsfuzzer's 57 TLS 1.3 scripts, run with `scripts/tlsfuzzer.sh`; the
-  results and the classification of every remaining failure are in
-  `docs/VERIFICATION-2026-10-06-tlsfuzzer.md`.
 - A `TlsStream` over TCP whose handshake failed could lose its own alert:
   closing the socket with the peer's bytes unread made the kernel send a
   reset, which on Linux discarded the alert before the peer read it. The TCP
@@ -96,6 +98,11 @@ versions may change the API.
   waiting for the body it announces.
 - `isl serve --bind <addr>` was parsed as a flag and its address ignored,
   so the server always bound 127.0.0.1.
+
+### Verification
+- tlsfuzzer's 57 TLS 1.3 scripts, run with `scripts/tlsfuzzer.sh`; the
+  results and the classification of every remaining failure are in
+  `docs/VERIFICATION-2026-10-06-tlsfuzzer.md`.
 
 ### Changed
 - Requires IronCrypto 0.2.15 or later, below 0.3. Its HPKE now also offers
