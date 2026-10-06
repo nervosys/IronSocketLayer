@@ -72,7 +72,7 @@ pins the peer's public key instead, which is stricter and easier to provision.
 
 Named in the ontology but not implemented: X448, Ed448 and the
 other groups and schemes marked so there. TLS 1.2 is excluded by design.
-IronSocketLayer 0.2 needs IronCrypto 0.2.13 or later, below 0.3.
+The current source needs IronCrypto 0.2.15 or later, below 0.3 (the published 0.2.0 and 0.2.1 need 0.2.13).
 
 ## Evidence that it interoperates
 

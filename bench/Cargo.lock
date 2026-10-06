@@ -128,18 +128,18 @@ dependencies = [
 
 [[package]]
 name = "ic-cipher"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-core"
-version = "0.2.11"
+version = "0.2.15"
 
 [[package]]
 name = "ic-drbg"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "ic-ec"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "ic-fips"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -176,14 +176,14 @@ dependencies = [
 
 [[package]]
 name = "ic-hash"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-hpke"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "ic-kdf"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mac"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mldsa"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mlkem"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -228,21 +228,21 @@ dependencies = [
 
 [[package]]
 name = "ic-ontology"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-pkix"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-rsa"
-version = "0.2.11"
+version = "0.2.15"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "ironsocketlayer"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "isl-ontology"
-version = "0.1.0"
+version = "0.2.1"
 
 [[package]]
 name = "lazy_static"

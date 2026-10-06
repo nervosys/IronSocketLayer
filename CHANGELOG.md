@@ -3,6 +3,13 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## Unreleased
+
+### Changed
+- Requires IronCrypto 0.2.15 or later, below 0.3. Its HPKE now also offers
+  DHKEM(P-384, HKDF-SHA384); ECH here still uses the X25519 suite, whose
+  outputs are unchanged.
+
 ## 0.2.1 (2026-10-06)
 
 ### Hardened

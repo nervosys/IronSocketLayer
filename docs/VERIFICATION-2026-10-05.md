@@ -404,3 +404,14 @@ commit, the latest published; fmt, clippy, the Cortex-M4 `no_std` build, the
 Rust 1.88 build, `openssl_fixed` (5) and live interop (6) passed. The QEMU
 Cortex-M4 run passed on the GREASE commit (largest session stack 34,428
 bytes).
+
+### IronCrypto 0.2.15
+
+The workspace minimum moved to IronCrypto 0.2.15 (published). On Windows: 634
+tests passed; clippy, the Cortex-M4 `no_std` build and the Rust 1.88 build
+passed; `openssl_interop` (13), `openssl_fixed` (5), `openssl_cnsa2` (1) and
+live interop (6) passed; the QEMU Cortex-M4 run passed with an unchanged
+largest session stack (34,428 bytes). The fuzz, bench and qemu-m4 lockfiles
+were moved to 0.2.15 as well. On Linux (WSL Debian, rustc 1.95.0) the 634
+tests passed. A one-minute AddressSanitizer run of all eight fuzz targets
+(about 5.4 million runs) found nothing.
