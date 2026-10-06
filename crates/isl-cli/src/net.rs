@@ -345,11 +345,30 @@ pub fn serve(
         let Ok(sock) = sock else { continue };
         let _ = sock.set_read_timeout(Some(TIMEOUT));
         let _ = sock.set_write_timeout(Some(TIMEOUT));
-        match TlsStream::accept(sock, config.clone()) {
+        let limits = ironsocketlayer::stream::Timeouts::new(TIMEOUT, TIMEOUT);
+        match TlsStream::accept_with(sock, config.clone(), limits) {
             Ok(mut tls) => {
-                let mut buf = [0u8; 4096];
-                if let Ok(n) = tls.read(&mut buf) {
-                    let _ = tls.write_all(&buf[..n]);
+                // Echo what arrives until the peer closes or goes quiet for
+                // half a second after its first message, so a request of
+                // any size comes back whole.
+                let mut buf = vec![0u8; 16 * 1024];
+                let mut first = true;
+                loop {
+                    match tls.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if tls.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    if first {
+                        first = false;
+                        tls.set_timeouts(ironsocketlayer::stream::Timeouts::new(
+                            TIMEOUT,
+                            Duration::from_millis(500),
+                        ));
+                    }
                 }
                 let _ = tls.close();
                 println!("{}", tls.report().to_json());

@@ -45,6 +45,29 @@ fn tcp_timeout(sock: &TcpStream, limit: Option<Duration>) -> io::Result<()> {
     sock.set_write_timeout(limit)
 }
 
+/// Close a TCP connection gracefully after a failed handshake. Closing a
+/// socket with the peer's bytes still unread makes the kernel send a reset,
+/// which can destroy the alert just sent before the peer reads it; so send
+/// FIN after the alert and drain briefly (at most 250 ms, 64 KiB) first.
+/// REQ-CONN-016.
+fn tcp_linger(sock: &TcpStream) {
+    let _ = sock.shutdown(std::net::Shutdown::Write);
+    let deadline = Instant::now() + Duration::from_millis(250);
+    let mut sink = [0u8; 4096];
+    let mut drained = 0usize;
+    let mut s = sock;
+    while drained < 64 * 1024 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || s.set_read_timeout(Some(left)).is_err() {
+            break;
+        }
+        match s.read(&mut sink) {
+            Ok(n) if n > 0 => drained += n,
+            _ => break,
+        }
+    }
+}
+
 /// A TLS 1.3 stream.
 pub struct TlsStream<S: Read + Write> {
     conn: Connection,
@@ -52,6 +75,7 @@ pub struct TlsStream<S: Read + Write> {
     eof: bool,
     timeouts: Timeouts,
     set_timeout: Option<SetTimeout<S>>,
+    linger: Option<fn(&S)>,
     deadline: Option<Instant>,
 }
 
@@ -98,7 +122,7 @@ impl TlsStream<TcpStream> {
         timeouts: Timeouts,
     ) -> io::Result<Self> {
         let conn = Connection::client(config, server_name).map_err(to_io)?;
-        Self::start(conn, sock, timeouts, Some(tcp_timeout))
+        Self::start(conn, sock, timeouts, Some(tcp_timeout), Some(tcp_linger))
     }
 
     /// Accept as a server within `timeouts.handshake`; as
@@ -109,7 +133,7 @@ impl TlsStream<TcpStream> {
         timeouts: Timeouts,
     ) -> io::Result<Self> {
         let conn = Connection::server(config).map_err(to_io)?;
-        Self::start(conn, sock, timeouts, Some(tcp_timeout))
+        Self::start(conn, sock, timeouts, Some(tcp_timeout), Some(tcp_linger))
     }
 }
 
@@ -128,7 +152,7 @@ impl<S: Read + Write> TlsStream<S> {
     /// [`connect_with`](TlsStream::connect_with) and its time limits.
     pub fn connect(sock: S, config: Arc<ClientConfig>, server_name: &str) -> io::Result<Self> {
         let conn = Connection::client(config, server_name).map_err(to_io)?;
-        Self::start(conn, sock, Timeouts::default(), None)
+        Self::start(conn, sock, Timeouts::default(), None, None)
     }
 
     /// Accept as a server and complete the handshake. Waits as long as the
@@ -136,7 +160,7 @@ impl<S: Read + Write> TlsStream<S> {
     /// [`accept_with`](TlsStream::accept_with).
     pub fn accept(sock: S, config: Arc<ServerConfig>) -> io::Result<Self> {
         let conn = Connection::server(config).map_err(to_io)?;
-        Self::start(conn, sock, Timeouts::default(), None)
+        Self::start(conn, sock, Timeouts::default(), None, None)
     }
 
     fn start(
@@ -144,6 +168,7 @@ impl<S: Read + Write> TlsStream<S> {
         sock: S,
         timeouts: Timeouts,
         set_timeout: Option<SetTimeout<S>>,
+        linger: Option<fn(&S)>,
     ) -> io::Result<Self> {
         let mut s = Self {
             conn,
@@ -151,10 +176,24 @@ impl<S: Read + Write> TlsStream<S> {
             eof: false,
             timeouts,
             set_timeout,
+            linger,
             deadline: timeouts.handshake.map(|d| Instant::now() + d),
         };
-        s.complete_handshake()?;
+        if let Err(e) = s.complete_handshake() {
+            if let Some(linger) = s.linger {
+                linger(&s.sock);
+            }
+            return Err(e);
+        }
         Ok(s)
+    }
+
+    /// Change the time limits of an established stream; they apply from the
+    /// next read or write. Has effect only on streams made with
+    /// [`TlsStream::connect_with`] or [`TlsStream::accept_with`].
+    /// REQ-CONN-014.
+    pub fn set_timeouts(&mut self, timeouts: Timeouts) {
+        self.timeouts = timeouts;
     }
 
     /// REQ-CONN-014: before each socket operation, limit it to what is left

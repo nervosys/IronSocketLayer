@@ -51,6 +51,13 @@ versions may change the API.
   OpenSSL's `-keymatexport`. `conn::CHANNEL_BINDING_LABEL`.
 
 ### Fixed
+- A `TlsStream` over TCP whose handshake failed could lose its own alert:
+  closing the socket with the peer's bytes unread made the kernel send a
+  reset, which on Linux discarded the alert before the peer read it. The TCP
+  constructors now close gracefully. Found with tlsfuzzer.
+- `isl serve` echoes whole messages (it echoed one read of at most 4 KiB),
+  uses the handshake deadline, and keeps its idle limit with
+  `TlsStream::set_timeouts`, which is new.
 - The record layer's legacy version is ignored apart from its major byte,
   as RFC 8446 §5.1 requires; servers refused a ClientHello in a 0x0300
   record (tlsfuzzer's default), and the fixed engine also 0x0302. The fixed

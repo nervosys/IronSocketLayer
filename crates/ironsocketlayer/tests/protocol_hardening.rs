@@ -760,3 +760,90 @@ Host: x
         assert!(fixed.receive(&bytes).is_err());
     }
 }
+
+/// The client side of a handshake up to, not including, the client's
+/// Finished: its handshake write key and the server's application read key.
+fn raw_before_client_finished(peer: &mut impl Peer) -> (Protector, Protector) {
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let ks = KeyShare::generate(NamedGroup::X25519, &mut rng).unwrap();
+    let ch = ClientHello {
+        random: [7; 32],
+        session_id: vec![1; 32],
+        suites: vec![SUITE],
+        server_name: Some("server.test".into()),
+        groups: vec![NamedGroup::X25519],
+        sig_algs: vec![SignatureScheme::EcdsaSecp256r1Sha256],
+        versions: vec![ProtocolVersion::Tls13],
+        key_shares: vec![(NamedGroup::X25519, ks.public().to_vec())],
+        ..Default::default()
+    };
+    let chm = msgs::frame(HandshakeType::ClientHello, &ch.encode().unwrap()).unwrap();
+    let mut rec = vec![22, 3, 1];
+    rec.extend((chm.len() as u16).to_be_bytes());
+    rec.extend(&chm);
+    peer.feed(&rec).unwrap();
+    let mut out = peer.take();
+    let mut th = Hash::new(HashAlg::Sha256);
+    th.update(&chm);
+    let shm = record::take_record(&mut out).unwrap().unwrap().body;
+    let sh = ServerHello::decode(&shm[4..]).unwrap();
+    th.update(&shm);
+    let (_, share) = sh.key_share.unwrap();
+    let shared = ks.complete(&share).unwrap();
+    let hs = EarlyStage::new(HashAlg::Sha256, None)
+        .unwrap()
+        .into_handshake(shared.get())
+        .unwrap();
+    let h1 = th.peek();
+    let c_hs = hs.client_traffic(h1.as_bytes()).unwrap();
+    let s_hs = hs.server_traffic(h1.as_bytes()).unwrap();
+    let mut sread = Protector::new(SUITE, &s_hs).unwrap();
+    let mut buf = Vec::new();
+    while let Some(r) = record::take_record(&mut out).unwrap() {
+        if r.header[0] == 20 {
+            continue;
+        }
+        let mut body = r.body;
+        let (_, n) = sread.open(&r.header, &mut body).unwrap();
+        buf.extend_from_slice(&body[..n]);
+        while let Some((_, m)) = msgs::take_message(&mut buf, 1 << 20).unwrap() {
+            th.update(&m);
+        }
+    }
+    let h2 = th.peek();
+    let s_ap = hs
+        .into_master()
+        .unwrap()
+        .server_traffic(h2.as_bytes())
+        .unwrap();
+    (
+        Protector::new(SUITE, &c_hs).unwrap(),
+        Protector::new(SUITE, &s_ap).unwrap(),
+    )
+}
+
+/// Application data before the client's Finished, even empty, is refused
+/// with an unexpected_message alert the client can read (under the server's
+/// application key, which it has switched to after its own Finished).
+/// Found by tlsfuzzer's test-tls13-zero-length-data.
+#[test]
+fn application_data_before_the_client_finished_gets_a_readable_alert() {
+    for payload in [&b""[..], b"early"] {
+        let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+        let mut s = Connection::server(Arc::new(server_config(&pki))).unwrap();
+        let (mut w, mut r) = raw_before_client_finished(&mut s);
+        let rec = seal(&mut w, ContentType::ApplicationData, payload);
+        assert_eq!(
+            s.read_tls(&rec).unwrap_err().kind(),
+            ErrorKind::UnexpectedMessage
+        );
+        let mut out = s.take_tls();
+        let alert = record::take_record(&mut out)
+            .unwrap()
+            .expect("an alert record");
+        let mut body = alert.body;
+        let (ty, n) = r.open(&alert.header, &mut body).expect("readable");
+        assert_eq!(ty, ContentType::Alert);
+        assert_eq!(&body[..n], &[2, 10]);
+    }
+}

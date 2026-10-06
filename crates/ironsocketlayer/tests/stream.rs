@@ -308,3 +308,74 @@ fn an_idle_read_times_out_and_the_stream_survives() {
     assert_eq!(got, b"late");
     server.join().unwrap();
 }
+
+/// REQ-CONN-016: a server whose handshake fails while the client's bytes
+/// are still unread closes gracefully, so the client reads the alert rather
+/// than a connection reset.
+#[test]
+fn a_failed_handshake_delivers_its_alert_despite_unread_bytes() {
+    use ironsocketlayer::stream::Timeouts;
+    use std::time::Duration;
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = Arc::new(pki.server_config(Profile::Default));
+    let (l, addr) = listener();
+    let server = thread::spawn(move || {
+        let (sock, _) = l.accept().unwrap();
+        TlsStream::accept_with(
+            sock,
+            sc,
+            Timeouts::new(Duration::from_secs(5), Duration::from_secs(5)),
+        )
+        .map(drop)
+    });
+    let mut sock = TcpStream::connect(addr).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // A handshake record whose ClientHello is garbage, then a lot more that
+    // the server will never read.
+    let mut flight = vec![22, 3, 3, 0, 8, 1, 0, 0, 4, 9, 9, 9, 9];
+    flight.extend(std::iter::repeat_n(0x16u8, 32 * 1024));
+    let _ = sock.write_all(&flight);
+    let mut got = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        match sock.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(e) => panic!("{e} after {got:?}: the alert was lost"),
+        }
+    }
+    assert!(server.join().unwrap().is_err());
+    assert_eq!(&got[..5], &[21, 3, 3, 0, 2], "{got:?}");
+    assert_eq!(got[5], 2, "fatal");
+}
+
+/// REQ-CONN-014: the limits of an established stream can be changed.
+#[test]
+fn timeouts_can_be_changed_on_a_live_stream() {
+    use ironsocketlayer::stream::Timeouts;
+    use std::time::{Duration, Instant};
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = Arc::new(pki.server_config(Profile::Default));
+    let cc = Arc::new(pki.client_config(Profile::Default));
+    let (l, addr) = listener();
+    let _server = thread::spawn(move || {
+        let s = TlsStream::accept(l.accept().unwrap().0, sc).unwrap();
+        thread::sleep(Duration::from_secs(3));
+        drop(s);
+    });
+    let mut c = TlsStream::connect_with(
+        TcpStream::connect(addr).unwrap(),
+        cc,
+        "server.test",
+        Timeouts::new(Duration::from_secs(5), Duration::from_secs(5)),
+    )
+    .unwrap();
+    c.set_timeouts(Timeouts::new(
+        Duration::from_secs(5),
+        Duration::from_millis(150),
+    ));
+    let started = Instant::now();
+    let e = c.read(&mut [0u8; 8]).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
