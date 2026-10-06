@@ -46,6 +46,10 @@ versions may change the API.
   relaxations; unknown keys and mistyped values are errors). Inputs are
   capped at 256 KiB. `Certificate::issuer_common_name`.
 
+- `channel_binding()` on `Connection`, `QuicConnection` and
+  `fixed::Connection`: the RFC 9266 `tls-exporter` value, checked against
+  OpenSSL's `-keymatexport`. `conn::CHANNEL_BINDING_LABEL`.
+
 ### Fixed
 - `isl serve --bind <addr>` was parsed as a flag and its address ignored,
   so the server always bound 127.0.0.1.

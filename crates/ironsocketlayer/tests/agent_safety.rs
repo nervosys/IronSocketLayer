@@ -542,3 +542,57 @@ fn a_post_handshake_certificate_is_checked_for_expiry() {
     assert!(s.report().has(Property::MutualAuthentication));
     assert!(event_detail(s.report(), "event:peer-certificate-expiring").is_some());
 }
+
+/// REQ-CONN-015: both ends of a connection share one channel binding, it is
+/// RFC 9266's exporter, no other connection has it, and there is none
+/// before the handshake completes; in the QUIC and fixed engines too.
+#[test]
+fn channel_binding_is_shared_unique_and_late() {
+    use ironsocketlayer::conn::CHANNEL_BINDING_LABEL;
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    let cc = Arc::new(pki.client_config(Profile::Default));
+    let sc = Arc::new(pki.server_config(Profile::Default));
+    let early = Connection::client(cc.clone(), NAME).unwrap();
+    assert_eq!(
+        early.channel_binding().unwrap_err().kind(),
+        ErrorKind::InvalidState
+    );
+    let (c, s) = connect(cc.clone(), sc.clone(), NAME).unwrap();
+    let cb = c.channel_binding().unwrap();
+    assert_eq!(cb, s.channel_binding().unwrap());
+    let mut raw = [0u8; 32];
+    c.export_keying_material(CHANNEL_BINDING_LABEL, b"", &mut raw)
+        .unwrap();
+    assert_eq!(cb, raw);
+    assert_eq!(CHANNEL_BINDING_LABEL, b"EXPORTER-Channel-Binding");
+    let (c2, _) = connect(cc.clone(), sc.clone(), NAME).unwrap();
+    assert_ne!(cb, c2.channel_binding().unwrap());
+
+    // The fixed engine against the owned one.
+    let mut fc = pki.client_config(Profile::Default);
+    fc.tickets = None;
+    fc.common.groups = vec![NamedGroup::X25519];
+    fc.ech_grease = false;
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut f =
+        fixed::Connection::client(&fc, NAME, &mut rng, b.storage(), fixed::Limits::default())
+            .unwrap();
+    assert_eq!(
+        f.channel_binding().unwrap_err().kind(),
+        ErrorKind::InvalidState
+    );
+    let mut s = Connection::server(sc).unwrap();
+    for _ in 0..4 {
+        let n = f.outgoing().len();
+        if n > 0 {
+            s.read_tls(f.outgoing()).unwrap();
+            f.consume_outgoing(n).unwrap();
+        }
+        let out = s.take_tls();
+        if !out.is_empty() {
+            f.receive(&out).unwrap();
+        }
+    }
+    assert_eq!(f.channel_binding().unwrap(), s.channel_binding().unwrap());
+}

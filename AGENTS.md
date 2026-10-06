@@ -74,6 +74,14 @@ The handshake limit is a deadline for the whole handshake. The idle limit
 applies to each later read or write. Both fail with
 `io::ErrorKind::TimedOut`; after an idle timeout the stream is still usable.
 
+## Bind application authentication to the session
+
+When an agent authenticates above TLS (a bearer token, a signed request, a
+password exchange), include `conn.channel_binding()` (RFC 9266
+`tls-exporter`, 32 bytes) in what is signed or checked. A credential bound
+to one TLS session cannot be relayed through another. Both ends compute the
+same value; there is none before the handshake completes.
+
 ## Rotate certificates before they expire
 
 A session report carries `event:local-certificate-expiring` and

@@ -1001,3 +1001,68 @@ fn early_data_with_openssl_both_ways() {
     );
     assert!(text.contains("Early data was accepted"), "{text}");
 }
+
+/// REQ-CONN-015: the channel binding equals what OpenSSL exports for the
+/// same session (`s_client -keymatexport EXPORTER-Channel-Binding`), an
+/// independent check of the RFC 9266 label, context and length.
+#[test]
+#[ignore = "needs openssl 3.5+ on PATH"]
+fn channel_binding_matches_openssl() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let dir = workdir("channel-binding");
+    std::fs::write(dir.join("ca.pem"), der_to_pem(&pki.ca_cert)).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let config = Arc::new(pki.server_config(Profile::Default));
+    let h = std::thread::spawn(move || {
+        let (sock, _) = listener.accept().unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let mut tls = TlsStream::accept(sock, config).unwrap();
+        let cb = tls.connection().channel_binding().unwrap();
+        let mut line = [0u8; 64];
+        let n = tls.read(&mut line).unwrap_or(0);
+        let _ = tls.write_all(&line[..n]);
+        let _ = tls.close();
+        cb
+    });
+    let port_arg = format!("127.0.0.1:{port}");
+    let mut child = Command::new("openssl")
+        .args([
+            "s_client",
+            "-connect",
+            &port_arg,
+            "-tls1_3",
+            "-CAfile",
+            "ca.pem",
+            "-verify_return_error",
+            "-servername",
+            "server.test",
+            "-keymatexport",
+            "EXPORTER-Channel-Binding",
+            "-keymatexportlen",
+            "32",
+            "-ign_eof",
+        ])
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"hello\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let theirs = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Keying material: "))
+        .unwrap_or_else(|| panic!("no keying material in:\n{text}"))
+        .to_ascii_lowercase();
+    let ours: String = h
+        .join()
+        .unwrap()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(ours, theirs);
+}

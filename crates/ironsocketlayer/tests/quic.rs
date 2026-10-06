@@ -326,6 +326,12 @@ fn both_ends_export_the_same_keying_material() {
         .export_keying_material(b"EXPORTER-test", b"ctx", &mut b)
         .unwrap();
     assert_eq!(a, b);
+    // REQ-CONN-015: the RFC 9266 channel binding, as for TLS.
+    assert_eq!(
+        c.conn.channel_binding().unwrap(),
+        s.conn.channel_binding().unwrap()
+    );
+    assert_ne!(c.conn.channel_binding().unwrap(), a);
     assert_eq!(c.conn.alpn(), Some(&b"h3"[..]));
     assert_eq!(c.conn.version(), Version::V2);
     assert!(format!("{:?}", c.conn).starts_with("QuicConnection("));

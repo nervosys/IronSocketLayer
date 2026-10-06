@@ -1177,6 +1177,17 @@ impl Connection {
         key_schedule::export(hash, secret.as_bytes(), label, context, out)
     }
 
+    /// The RFC 9266 `tls-exporter` channel binding: 32 bytes both ends
+    /// share and no other connection has. Send it inside the application's
+    /// own authentication (a signed token, a password exchange) so that the
+    /// authentication cannot be relayed to another TLS session.
+    /// `error:invalid-state` before the handshake completes. REQ-CONN-015.
+    pub fn channel_binding(&self) -> Result<[u8; 32]> {
+        let mut out = [0u8; 32];
+        self.export_keying_material(CHANNEL_BINDING_LABEL, b"", &mut out)?;
+        Ok(out)
+    }
+
     /// What was negotiated and what holds.
     pub fn report(&self) -> &SessionReport {
         &self.core.report
@@ -2034,6 +2045,9 @@ mod tests {
         }
     }
 }
+
+/// RFC 9266 §2: the exporter label for TLS 1.3 channel binding.
+pub const CHANNEL_BINDING_LABEL: &[u8] = b"EXPORTER-Channel-Binding";
 
 /// Record a completed handshake's properties and indicators in the report.
 pub(crate) fn finish_report(

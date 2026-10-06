@@ -804,6 +804,14 @@ impl<'a> Connection<'a> {
             Err(e) => self.fail(e),
         }
     }
+    /// The RFC 9266 `tls-exporter` channel binding, as
+    /// [`crate::Connection::channel_binding`]. REQ-CONN-015.
+    pub fn channel_binding(&mut self) -> Result<[u8; 32]> {
+        let mut out = [0u8; 32];
+        self.export(crate::conn::CHANNEL_BINDING_LABEL, b"", &mut out)?;
+        Ok(out)
+    }
+
     /// Derive an exporter into caller storage, without allocating.
     pub fn export(&mut self, label: &[u8], context: &[u8], out: &mut [u8]) -> Result<()> {
         self.check()?;

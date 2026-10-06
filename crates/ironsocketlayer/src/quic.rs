@@ -550,6 +550,12 @@ impl QuicConnection {
         self.conn.export_keying_material(label, context, out)
     }
 
+    /// The RFC 9266 `tls-exporter` channel binding, as for TLS.
+    /// REQ-CONN-015.
+    pub fn channel_binding(&self) -> Result<[u8; 32]> {
+        self.conn.channel_binding()
+    }
+
     /// The latched error, if any.
     pub fn error(&self) -> Option<Error> {
         self.conn.error()
