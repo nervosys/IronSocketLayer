@@ -381,3 +381,5 @@ feed the life-cycle data.
 | REQ-KS-004 | A Finished whose length is not the transcript hash length is refused with decode_error, in both engines; one of the right length that does not verify is decrypt_error. | src/key_schedule.rs | Test | tests/protocol_hardening.rs::a_finished_of_the_wrong_length_is_decode_error; src/fixed.rs::a_wrong_client_finished_is_refused |
 
 | REQ-REC-012 | A protected record whose TLSInnerPlaintext (content, type and padding) exceeds 2^14 + 1 bytes is refused with record_overflow before decryption, however it is split between content and padding, in both engines. | src/record.rs | Test | src/record.rs::inner_plaintext_over_2_14_plus_1_is_record_overflow; src/record.rs::authentic_content_over_2_14_is_record_overflow |
+
+| REQ-0RTT-007 | After a HelloRetryRequest, a server skips rejected 0-RTT records only until the second ClientHello (RFC 8446 §4.2.10); a record after it that does not decrypt is bad_record_mac. | src/server.rs | Test | tests/early_data.rs::skipping_early_data_ends_at_the_second_client_hello; tests/early_data.rs::a_hello_retry_request_ends_early_data |

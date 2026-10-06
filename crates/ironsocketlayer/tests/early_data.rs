@@ -299,3 +299,36 @@ mod quic_0rtt {
         }
     }
 }
+
+/// REQ-0RTT-007: after a HelloRetryRequest, the server skips rejected 0-RTT
+/// records only until the second ClientHello (RFC 8446 §4.2.10); a record
+/// after it that does not decrypt is bad_record_mac, not skipped. Found by
+/// tlsfuzzer's test-tls13-0rtt-garbage.
+#[test]
+fn skipping_early_data_ends_at_the_second_client_hello() {
+    use ironsocketlayer::ErrorKind;
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let mut cc = pki.client_config(Profile::Default);
+    cc.early_data = true;
+    cc.common.groups = vec![NamedGroup::X25519, NamedGroup::Secp384r1];
+    cc.initial_key_shares = 1;
+    let cc = Arc::new(cc);
+    let mut sc = pki.server_config(Profile::Default);
+    sc.early_data = Some(EarlyDataPolicy::new(16_384));
+    get_ticket(&cc, &Arc::new(sc.clone()));
+    sc.common.groups = vec![NamedGroup::Secp384r1];
+    let mut c = Connection::client_with_early_data(cc, "server.test", REQUEST).unwrap();
+    let mut s = Connection::server(Arc::new(sc)).unwrap();
+    // ClientHello1 and its 0-RTT data; the server answers with a retry.
+    s.read_tls(&c.take_tls()).unwrap();
+    c.read_tls(&s.take_tls()).unwrap();
+    assert!(c.report().hello_retry);
+    // ClientHello2: the server sends its flight.
+    s.read_tls(&c.take_tls()).unwrap();
+    assert!(!s.take_tls().is_empty());
+    // Garbage where the client's Finished belongs.
+    let mut garbage = vec![23u8, 3, 3, 0, 64];
+    garbage.extend_from_slice(&[0x5a; 64]);
+    let e = s.read_tls(&garbage).unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::BadRecordMac, "{e}");
+}

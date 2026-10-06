@@ -67,7 +67,10 @@ versions may change the API.
   - a Finished of the wrong length is `decode_error`, not `decrypt_error`;
   - a second compatibility ChangeCipherSpec is `unexpected_message`, in
     both engines: a peer sends at most one (RFC 8446 appendix D.4). 0.2
-    tolerated two.
+    tolerated two;
+  - after a HelloRetryRequest, a server kept skipping undecryptable records
+    as rejected 0-RTT data after the second ClientHello; such a record is
+    now `bad_record_mac` (RFC 8446 §4.2.10).
 - A `TlsStream` over TCP whose handshake failed could lose its own alert:
   closing the socket with the peer's bytes unread made the kernel send a
   reset, which on Linux discarded the alert before the peer read it. The TCP

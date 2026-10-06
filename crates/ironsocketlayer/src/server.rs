@@ -785,6 +785,12 @@ impl ServerHs {
                 .unwrap_or(0);
             core.skip_early_budget = bound.max(16_384).saturating_add(16 * 1024);
         }
+        // REQ-0RTT-007: after a retry, rejected 0-RTT records come only
+        // between the two ClientHellos (RFC 8446 §4.2.10); from the second
+        // on, a record that does not decrypt is bad_record_mac.
+        if self.retried {
+            core.skip_early_budget = 0;
+        }
         core.report.ech = match (self.ech_offered, self.ech_accepted) {
             (false, _) => "ech:not-offered",
             (true, true) => "ech:accepted",
