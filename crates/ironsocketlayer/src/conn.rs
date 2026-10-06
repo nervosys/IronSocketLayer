@@ -2055,6 +2055,11 @@ pub(crate) fn describe_peer(core: &mut Core, leaf: &[u8]) {
     if let Ok(cert) = crate::x509::Certificate::parse(leaf) {
         core.report.peer_not_after = Some(cert.not_after());
         core.report.peer_subject_cn = cert.common_name().map(String::from);
+        // REQ-RPT-003.
+        core.report.peer_names = cert.dns_names().into_iter().map(String::from).collect();
+        core.report
+            .peer_names
+            .extend(cert.ip_addresses().iter().map(|ip| alloc::format!("{ip}")));
         if let Ok(k) = cert.subject_public_key() {
             core.report.peer_key = Some(k.kind_id());
         }

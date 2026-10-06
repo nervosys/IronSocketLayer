@@ -340,3 +340,46 @@ fn a_pinned_server_leaf_still_gets_the_leaf_checks() {
     // Control: a well-formed pinned leaf still connects.
     assert!(pinned_server(None).is_ok());
 }
+
+/// REQ-RPT-003: the report lists the names the peer's certificate was issued
+/// for, dNSNames then iPAddresses, in the struct and in its JSON.
+#[test]
+fn the_report_lists_the_peers_verified_names() {
+    let k = key();
+    let leaf = cert(
+        7,
+        &name("srv"),
+        &name("srv"),
+        k.spki(),
+        &[
+            basic_constraints(false),
+            key_usage(false),
+            san(&[
+                (0x87, &[192, 0, 2, 1]),
+                (0x82, b"srv.example"),
+                (0x87, &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+                (0x82, b"alt.example"),
+            ]),
+        ],
+        &k,
+    );
+    let client = ClientConfig::pinned(Profile::Default, k.spki()).unwrap();
+    let server =
+        ServerConfig::new(Profile::Default, Identity::new(vec![leaf], k).unwrap()).unwrap();
+    let (c, s) = common::connect(Arc::new(client), Arc::new(server), "srv.example").unwrap();
+    let r = c.report();
+    assert_eq!(
+        r.peer_names,
+        ["srv.example", "alt.example", "192.0.2.1", "2001:db8::1"]
+    );
+    assert!(
+        r.to_json().contains(
+            r#""peerNames":["srv.example","alt.example","192.0.2.1","2001:db8::1"]"#
+        ),
+        "{}",
+        r.to_json()
+    );
+    // The server authenticated no client, so it lists none.
+    assert!(s.report().peer_names.is_empty());
+    assert!(s.report().to_json().contains(r#""peerNames":[]"#));
+}

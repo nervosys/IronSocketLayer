@@ -20,7 +20,11 @@
 //!   certificate lacking one fails. `REQ-CRL-003`.
 //! * Delta CRLs, CRLs with an issuing-distribution-point scope, indirect
 //!   CRLs and unknown critical extensions are not implemented; such a CRL is
-//!   never used to show a certificate is good. `REQ-CRL-004`.
+//!   never used to show a certificate is good. `REQ-CRL-004`. An indirect
+//!   CRL's entries still revoke, but only those attributed to the CRL issuer
+//!   itself. `REQ-CRL-027`.
+//! * [`CrlStore::add_der_for_issuer`] verifies a CRL once, at load, rather
+//!   than on every handshake. `REQ-CRL-028`.
 
 use alloc::vec::Vec;
 
@@ -62,9 +66,14 @@ struct ParsedCrl {
     signature: Vec<u8>,
     this_update: u64,
     next_update: Option<u64>,
+    /// Serials the CRL issuer itself revokes: entries attributed to another
+    /// issuer by certificateIssuer are left out (REQ-CRL-027).
     revoked: Vec<Vec<u8>>,
     /// Why this CRL cannot show a certificate is good, if it cannot.
     unsupported: Option<&'static str>,
+    /// The issuer key and scheme its signature was verified under when it
+    /// was loaded, if it was (REQ-CRL-028).
+    verified: Option<(Vec<u8>, SignatureScheme)>,
 }
 
 /// REQ-CRL-009: revoked serials are nonempty, minimally encoded DER INTEGERs.
@@ -179,6 +188,16 @@ fn check_reason_flags(body: &[u8]) -> Result<()> {
 /// REQ-CRL-022: delta CRL indicators validate BaseCRLNumber before being marked unsupported.
 /// REQ-CRL-023: certificateIssuer wraps one nonempty GeneralNames list with shared issuer-name checks.
 fn scan_extensions(body: &[u8], entry: bool) -> Result<Option<&'static str>> {
+    Ok(scan_extensions_with_issuer(body, entry)?.0)
+}
+
+/// [`scan_extensions`], also returning the GeneralNames body of an entry's
+/// certificateIssuer, when it has one.
+fn scan_extensions_with_issuer(
+    body: &[u8],
+    entry: bool,
+) -> Result<(Option<&'static str>, Option<&[u8]>)> {
+    let mut certificate_issuer = None;
     let mut wrapper = Der::new(body);
     let mut list = wrapper.nested(T_SEQUENCE)?;
     wrapper.finish()?;
@@ -238,15 +257,17 @@ fn scan_extensions(body: &[u8], entry: bool) -> Result<Option<&'static str>> {
             }
             (true, OID_CERT_ISSUER) => {
                 let mut issuer_der = Der::new(value);
-                check_authority_issuer_names(issuer_der.expect(T_SEQUENCE)?)?;
+                let names = issuer_der.expect(T_SEQUENCE)?;
+                check_authority_issuer_names(names)?;
                 issuer_der.finish()?;
+                certificate_issuer = Some(names);
                 unsupported = Some("indirect CRLs are not supported");
             }
             _ if critical => unsupported = Some("unknown critical CRL extension"),
             _ => {}
         }
     }
-    Ok(unsupported)
+    Ok((unsupported, certificate_issuer))
 }
 
 /// REQ-CRL-007: optional TBSCertList fields occur once and in ASN.1 order.
@@ -297,6 +318,10 @@ fn parse(der: &[u8]) -> Result<ParsedCrl> {
     let mut revoked = Vec::new();
     let mut unsupported = None;
     let mut last_field = 0;
+    // REQ-CRL-027: the CRL issuer as a GeneralNames body ([4] directoryName),
+    // to recognise a certificateIssuer that names it.
+    let mut own_names = Vec::new();
+    push_tlv(&mut own_names, 0xa4, issuer);
     while !t.is_empty() {
         let (tag, v, _) = t.tlv().map_err(wrap)?;
         let field = match tag {
@@ -315,6 +340,10 @@ fn parse(der: &[u8]) -> Result<ParsedCrl> {
             }
             T_SEQUENCE => {
                 let mut entries = Der::new(v);
+                // RFC 5280 §5.3.3: the first entry belongs to the CRL issuer
+                // unless it says otherwise; each later one to the issuer of
+                // the entry before it, until a certificateIssuer changes it.
+                let mut own = true;
                 while !entries.is_empty() {
                     let mut entry = entries.nested(T_SEQUENCE).map_err(wrap)?;
                     let serial = entry.expect(T_INTEGER).map_err(wrap)?;
@@ -330,12 +359,21 @@ fn parse(der: &[u8]) -> Result<ParsedCrl> {
                             return Err(bad("malformed CRL entry extensions"));
                         }
                         let _ = ev;
-                        if let Some(u) = scan_extensions(ewhole, true).map_err(wrap)? {
+                        let (u, names) =
+                            scan_extensions_with_issuer(ewhole, true).map_err(wrap)?;
+                        if let Some(u) = u {
                             unsupported = Some(u);
+                        }
+                        if let Some(names) = names {
+                            own = names == own_names.as_slice();
                         }
                     }
                     entry.finish().map_err(wrap)?;
-                    revoked.push(serial.to_vec());
+                    // A serial attributed to another issuer names another
+                    // issuer's certificate: it must not revoke this one's.
+                    if own {
+                        revoked.push(serial.to_vec());
+                    }
                 }
             }
             T_CTX0 => {
@@ -358,6 +396,7 @@ fn parse(der: &[u8]) -> Result<ParsedCrl> {
         next_update,
         revoked,
         unsupported,
+        verified: None,
     })
 }
 
@@ -378,6 +417,29 @@ impl CrlStore {
     /// the issuer known.
     pub fn add_der(&mut self, der: &[u8]) -> Result<()> {
         self.crls.push(parse(der)?);
+        Ok(())
+    }
+
+    /// Add a DER `CertificateList` issued by the CA certificate `issuer_der`,
+    /// checking now that the issuer's key signed it (and, if the issuer
+    /// carries key usage, that it may sign CRLs). Path validation then reuses
+    /// that verification instead of repeating it on every handshake.
+    /// REQ-CRL-028.
+    pub fn add_der_for_issuer(&mut self, der: &[u8], issuer_der: &[u8]) -> Result<()> {
+        let mut crl = parse(der)?;
+        let issuer = Certificate::parse(issuer_der)?;
+        if crl.issuer != issuer.subject {
+            return Err(bad("CRL issuer is not the certificate's subject"));
+        }
+        if issuer.ext.key_usage.is_some_and(|ku| ku & KU_CRL_SIGN == 0) {
+            return Err(bad("issuer key usage does not permit CRL signing"));
+        }
+        let scheme = scheme_from_alg(&crl.sig_alg)?;
+        let key = PublicKey::from_spki(issuer.spki)?;
+        sign::verify(scheme, &key, &crl.tbs, &crl.signature)
+            .map_err(|_| bad("CRL signature does not verify under its issuer's key"))?;
+        crl.verified = Some((issuer.spki.to_vec(), scheme));
+        self.crls.push(crl);
         Ok(())
     }
 
@@ -444,9 +506,15 @@ pub(super) fn check(
         let Ok(scheme) = scheme_from_alg(&crl.sig_alg) else {
             continue;
         };
-        if !allowed.contains(&scheme)
-            || sign::verify(scheme, &key, &crl.tbs, &crl.signature).is_err()
-        {
+        if !allowed.contains(&scheme) {
+            continue;
+        }
+        // REQ-CRL-028: verified at load under this very key, or now.
+        let preverified = matches!(
+            &crl.verified,
+            Some((spki, s)) if spki.as_slice() == issuer_spki && *s == scheme
+        );
+        if !preverified && sign::verify(scheme, &key, &crl.tbs, &crl.signature).is_err() {
             continue;
         }
         // REQ-CRL-002: listed in an authentic CRL is revoked, stale or not.
@@ -2639,5 +2707,113 @@ AAAA
                 "{number:#x}"
             );
         }
+    }
+
+    /// A CRL from `f.ca` whose entries carry an optional certificateIssuer
+    /// (as a GeneralNames body), validly signed.
+    fn signed_with_entries(f: &Fx, entries: &[(&[u8], Option<&[u8]>)]) -> Vec<u8> {
+        let wrap = |tag, body: &[u8]| {
+            let mut out = Vec::new();
+            push_tlv(&mut out, tag, body);
+            out
+        };
+        let scheme = f.ca_key.schemes()[0];
+        let algorithm = alg_id(scheme).unwrap();
+        let ca = Certificate::parse(&f.ca).unwrap();
+        let mut tbs = Vec::new();
+        push_tlv(&mut tbs, T_INTEGER, &[1]);
+        tbs.extend_from_slice(&algorithm);
+        tbs.extend_from_slice(ca.subject);
+        encode_time(&mut tbs, f.now - 60).unwrap();
+        encode_time(&mut tbs, f.now + 3600).unwrap();
+        let mut list = Vec::new();
+        for (serial, issuer) in entries {
+            let mut entry = Vec::new();
+            push_tlv(&mut entry, T_INTEGER, serial);
+            encode_time(&mut entry, f.now - 120).unwrap();
+            if let Some(names) = issuer {
+                let value = wrap(T_SEQUENCE, names);
+                entry.extend(ext_list(&[ext_with_value(OID_CERT_ISSUER, true, &value)]));
+            }
+            push_tlv(&mut list, T_SEQUENCE, &entry);
+        }
+        push_tlv(&mut tbs, T_SEQUENCE, &list);
+        let tbs = wrap(T_SEQUENCE, &tbs);
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let signature = f.ca_key.sign(scheme, &tbs, &mut rng).unwrap();
+        let bits = [alloc::vec![0], signature].concat();
+        wrap(
+            T_SEQUENCE,
+            &[tbs, algorithm, wrap(T_BIT_STRING, &bits)].concat(),
+        )
+    }
+
+    /// REQ-CRL-027: an entry that certificateIssuer attributes to another
+    /// issuer, and every later entry until one names the CRL issuer again,
+    /// does not revoke the CRL issuer's certificate of that serial.
+    #[test]
+    fn indirect_crl_entries_are_attributed_to_their_certificate_issuer() {
+        let f = fx();
+        let leaf = Certificate::parse(&f.leaf).unwrap();
+        let ca = Certificate::parse(&f.ca).unwrap();
+        let serial = leaf.serial();
+        let mut other = Vec::new();
+        push_tlv(&mut other, 0xa4, &x509::encode_name("Another CA"));
+        let mut own = Vec::new();
+        push_tlv(&mut own, 0xa4, ca.subject);
+        let unrelated: &[u8] = &[0x2a];
+        for (entries, revoked) in [
+            // Control: a plain listing revokes.
+            (alloc::vec![(serial, None)], true),
+            (alloc::vec![(serial, None), (unrelated, Some(&other[..]))], true),
+            // The entry itself names another issuer.
+            (alloc::vec![(unrelated, None), (serial, Some(&other[..]))], false),
+            // It inherits another issuer from the entry before it.
+            (alloc::vec![(unrelated, Some(&other[..])), (serial, None)], false),
+            // Naming the CRL issuer again restores the attribution, for it
+            // and for the entries after it.
+            (alloc::vec![(unrelated, Some(&other[..])), (serial, Some(&own[..]))], true),
+            (
+                alloc::vec![(unrelated, Some(&other[..])), (unrelated, Some(&own[..])), (serial, None)],
+                true,
+            ),
+        ] {
+            let crl = signed_with_entries(&f, &entries);
+            let result = run(&f, &crl, f.now);
+            if revoked {
+                assert_eq!(result.unwrap_err().kind(), ErrorKind::CertificateRevoked);
+            } else {
+                // Not revoked, and an indirect CRL shows nothing good either.
+                assert!(!result.unwrap());
+            }
+        }
+    }
+
+    /// REQ-CRL-028: a CRL loaded for its issuer is verified at load, and that
+    /// verification counts only for the key it was made under.
+    #[test]
+    fn crls_loaded_for_their_issuer_are_verified_once_for_that_key() {
+        let f = fx();
+        let leaf_serial = Certificate::parse(&f.leaf).unwrap().serial().to_vec();
+        let crl = make(&f, &[(&leaf_serial, f.now - 60)], f.now - 60, f.now + 3600);
+        let mut store = CrlStore::new();
+        store.add_der_for_issuer(&crl, &f.ca).unwrap();
+        let ca = Certificate::parse(&f.ca).unwrap();
+        let leaf = Certificate::parse(&f.leaf).unwrap();
+        let schemes = crate::crypto::sign::VERIFY_SCHEMES;
+        let e = check(&leaf, ca.subject, ca.spki, ca.ext.key_usage, &store, f.now, schemes)
+            .unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::CertificateRevoked);
+        // Another key under the same name gets nothing from it.
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let impostor = SigningKey::generate(KeyKind::EcdsaP384, &mut rng).unwrap();
+        assert!(!check(&leaf, ca.subject, impostor.spki(), None, &store, f.now, schemes).unwrap());
+        // The wrong issuer, or a signature that does not verify, is refused
+        // at load.
+        assert!(CrlStore::new().add_der_for_issuer(&crl, &f.leaf).is_err());
+        let mut forged = crl.clone();
+        let last = forged.len() - 1;
+        forged[last] ^= 1;
+        assert!(CrlStore::new().add_der_for_issuer(&forged, &f.ca).is_err());
     }
 }

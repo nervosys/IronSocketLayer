@@ -439,6 +439,13 @@ fn run(args: Args) -> ExitCode {
                         println!("  {k:<22} {x}");
                     }
                 }
+                let names: String = str_list(v, "peerNames")
+                    .chars()
+                    .map(|c| if c.is_control() { '?' } else { c })
+                    .collect();
+                if !names.is_empty() {
+                    println!("  peerNames              {names}");
+                }
                 println!("  properties             {}", str_list(v, "properties"));
                 if let Some(Json::String(e)) = v.get("error") {
                     println!(

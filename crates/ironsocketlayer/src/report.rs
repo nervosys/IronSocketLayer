@@ -212,6 +212,11 @@ pub struct SessionReport {
     pub peer_key: Option<&'static str>,
     /// Peer end-entity subject common name (informational only).
     pub peer_subject_cn: Option<String>,
+    /// The names the peer's end-entity certificate was issued for: its
+    /// subject alternative dNSNames, then its iPAddresses as text. These are
+    /// the names a validated path vouches for; authorize on these, not on
+    /// the common name. Empty for external-PSK sessions. REQ-RPT-003.
+    pub peer_names: Vec<String>,
     /// Peer end-entity `notAfter`, Unix seconds.
     pub peer_not_after: Option<u64>,
     /// Certificates the peer sent.
@@ -323,6 +328,10 @@ impl SessionReport {
         o.str("verification", self.verification);
         o.str_opt("peerKey", self.peer_key);
         o.str_opt("peerSubjectCommonName", self.peer_subject_cn.as_deref());
+        o.raw(
+            "peerNames",
+            &json_str_array(self.peer_names.iter().map(String::as_str)),
+        );
         o.num_opt("peerNotAfter", self.peer_not_after);
         o.num("peerChainLength", self.peer_chain_len as u64);
         o.num_opt(

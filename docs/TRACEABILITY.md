@@ -325,3 +325,13 @@ feed the life-cycle data.
 | REQ-REC-008 | A handshake message that changes the read key ends its record; anything after it in the same record is refused, in both engines. | src/fixed.rs | Test | tests/protocol_hardening.rs::both_engines_refuse_messages_after_a_key_change_in_the_same_record; tests/protocol_hardening.rs::the_fixed_client_refuses_plaintext_after_the_server_hello |
 
 | REQ-SIG-006 | An RSA public exponent above 2^32 is refused before any arithmetic. | src/crypto/sign.rs | Test | src/crypto/sign.rs::a_huge_rsa_public_exponent_is_refused |
+
+| REQ-X509-077 | A certificate whose version is an explicit v1, or a name-constraint subtree whose minimum is an explicit 0, is refused: DER omits a DEFAULT value (X.690 §11.5). | src/x509.rs | Test | src/x509.rs::certificate_versions_require_minimal_integer_encoding; src/x509.rs::unique_identifiers_require_v2_or_v3; src/x509.rs::name_constraint_distances_require_nonnegative_minimal_integers |
+
+| REQ-CRL-027 | A CRL entry that certificateIssuer attributes to another issuer, and each later entry until one names the CRL issuer again (RFC 5280 §5.3.3), does not revoke the CRL issuer's certificate with that serial. | src/x509_crl.rs | Test | src/x509_crl.rs::indirect_crl_entries_are_attributed_to_their_certificate_issuer |
+
+| REQ-CRL-028 | `CrlStore::add_der_for_issuer` verifies a CRL's issuer, key usage and signature at load; path validation reuses that verification only for the same issuer key and scheme. | src/x509_crl.rs | Test | src/x509_crl.rs::crls_loaded_for_their_issuer_are_verified_once_for_that_key |
+
+| REQ-X509-078 | A wildcard directly over a two-label suffix whose top label is a two-letter country code and whose second is a common registry label (co, com, ac, gov, ...) matches nothing. | src/x509.rs | Test | src/x509.rs::wildcards_over_registry_suffixes_cover_nothing |
+
+| REQ-RPT-003 | The session report lists the peer end entity's subject alternative dNSNames, then its iPAddresses in RFC 5952 text, in the struct and in its JSON (`peerNames`), and a resumed session reports the names of the original one. | src/report.rs | Test | tests/pki_hardening.rs::the_report_lists_the_peers_verified_names; tests/resumption.rs::a_ticket_resumes_without_certificates_and_keeps_post_quantum_key_exchange; src/x509.rs::ip_addresses_display_in_rfc_5952_form |

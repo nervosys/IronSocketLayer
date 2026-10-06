@@ -13,6 +13,8 @@ dependencies, which never reach the library's.)
 ```console
 $ isl probe cloudflare.com --alpn h2,http/1.1
 cloudflare.com:443 state:connected
+  ech                    ech:not-offered
+  revocation             revocation:not-checked
   version                version:tls1.3
   cipherSuite            suite:tls-aes-128-gcm-sha256
   keyExchangeGroup       group:x25519mlkem768
@@ -20,6 +22,7 @@ cloudflare.com:443 state:connected
   peerKey                key:ecdsa-p256
   peerSubjectCommonName  cloudflare.com
   alpn                   h2
+  peerNames              cloudflare.com, ns.cloudflare.com, *.ns.cloudflare.com, *.secondary.cloudflare.com, secondary.cloudflare.com
   properties             property:confidentiality, property:forward-secrecy, property:post-quantum-key-exchange, property:server-authenticated
 ```
 

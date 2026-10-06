@@ -80,6 +80,8 @@ fn a_ticket_resumes_without_certificates_and_keeps_post_quantum_key_exchange() {
     );
     // The report still describes the server the ticket came from.
     assert_eq!(c.report().peer_subject_cn.as_deref(), Some("server.test"));
+    // REQ-RPT-003: including the names its certificate was issued for.
+    assert_eq!(c.report().peer_names, ["server.test"]);
     assert!(c.report().to_json().contains(r#""resumed":true"#));
     exchange(&mut c, &mut s);
 }

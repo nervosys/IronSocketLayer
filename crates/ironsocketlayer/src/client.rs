@@ -1217,6 +1217,7 @@ impl ClientHs {
             // Report what the original, fully authenticated session established.
             core.report.peer_key = self.peer.key;
             core.report.peer_subject_cn = self.peer.subject_cn.clone();
+            core.report.peer_names = self.peer.names.clone();
             core.report.peer_not_after = self.peer.not_after;
             core.report.verification = self.peer.verification;
             core.report.revocation = self.peer.revocation;
@@ -1250,6 +1251,7 @@ impl ClientHs {
         self.peer = PeerSummary {
             key: core.report.peer_key,
             subject_cn: core.report.peer_subject_cn.clone(),
+            names: core.report.peer_names.clone(),
             not_after: core.report.peer_not_after,
             verification: self.config.verification.id(),
             post_quantum_authentication: pq_auth,

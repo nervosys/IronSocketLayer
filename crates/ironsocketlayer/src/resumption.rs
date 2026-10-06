@@ -44,6 +44,8 @@ pub struct PeerSummary {
     pub key: Option<&'static str>,
     /// Subject common name (informational only).
     pub subject_cn: Option<String>,
+    /// The end entity's subject alternative names, as the report lists them.
+    pub names: Vec<String>,
     /// End-entity `notAfter`.
     pub not_after: Option<u64>,
     /// Verification method id.

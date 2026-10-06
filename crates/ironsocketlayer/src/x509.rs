@@ -575,6 +575,44 @@ impl IpAddr {
     }
 }
 
+/// Dotted-quad IPv4, or IPv6 in RFC 5952 form (lowercase, the longest run
+/// of two or more zero groups, the first if tied, as `::`).
+impl core::fmt::Display for IpAddr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::V4(a) => write!(f, "{}.{}.{}.{}", a[0], a[1], a[2], a[3]),
+            Self::V6(a) => {
+                let g: [u16; 8] = core::array::from_fn(|i| u16::from_be_bytes([a[2 * i], a[2 * i + 1]]));
+                let (mut best, mut best_len, mut i) = (0, 0, 0);
+                while i < 8 {
+                    let start = i;
+                    while i < 8 && g[i] == 0 {
+                        i += 1;
+                    }
+                    if i - start > best_len {
+                        (best, best_len) = (start, i - start);
+                    }
+                    i += 1;
+                }
+                let mut i = 0;
+                while i < 8 {
+                    if best_len >= 2 && i == best {
+                        f.write_str(if i == 0 { "::" } else { ":" })?;
+                        i += best_len;
+                        continue;
+                    }
+                    write!(f, "{:x}", g[i])?;
+                    if i < 7 {
+                        f.write_str(":")?;
+                    }
+                    i += 1;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
     let mut out = [0u8; 4];
     let mut parts = s.split('.');
@@ -819,6 +857,11 @@ impl<'a> Certificate<'a> {
                 v.finish()?;
                 if n > 2 {
                     return Err(bad("unknown certificate version"));
+                }
+                // REQ-X509-077: v1 is the DEFAULT, which DER omits (X.690
+                // §11.5); an explicit v1 is not a DER encoding.
+                if n == 0 {
+                    return Err(bad("explicitly encoded default version"));
                 }
                 n
             }
@@ -1915,6 +1958,10 @@ fn check_general_subtrees(body: &[u8]) -> Result<()> {
         }
         if let Some(minimum) = subtree.optional(0x80)? {
             check_base_distance(minimum)?;
+            // REQ-X509-077: minimum DEFAULT 0 is omitted in DER.
+            if minimum == [0] {
+                return Err(bad("explicitly encoded default BaseDistance"));
+            }
         }
         if let Some(maximum) = subtree.optional(0x81)? {
             check_base_distance(maximum)?;
@@ -2561,6 +2608,31 @@ pub fn verify_chain_fixed<'a>(
     Ok(report)
 }
 
+/// Second-level labels that country-code registries commonly delegate
+/// under, so that `co.uk` or `com.au` is a public suffix, not a domain.
+const REGISTRY_SECOND_LEVEL: &[&str] = &[
+    "ac", "co", "com", "edu", "gob", "gov", "govt", "ltd", "mil", "ne", "net", "nhs", "nic",
+    "or", "org", "plc", "sch",
+];
+
+/// Whether `suffix` is `<registry label>.<two-letter country code>`.
+/// REQ-X509-078: a heuristic, not a public-suffix list (none ships in a
+/// zero-dependency library). It refuses `*.co.uk` and the like; a wildcard
+/// over a private suffix (a hosting provider's domain) is not caught.
+fn is_registry_suffix(suffix: &str) -> bool {
+    let suffix = suffix.strip_suffix('.').unwrap_or(suffix);
+    match suffix.split_once('.') {
+        Some((second, tld)) => {
+            tld.len() == 2
+                && tld.bytes().all(|b| b.is_ascii_alphabetic())
+                && REGISTRY_SECOND_LEVEL
+                    .iter()
+                    .any(|l| l.eq_ignore_ascii_case(second))
+        }
+        None => false,
+    }
+}
+
 /// Whether presented `dNSName` `pattern` covers reference name `name`.
 /// `REQ-X509-003`: wildcards only as the whole leftmost label, matching exactly
 /// one label, and only above at least two further labels.
@@ -2571,7 +2643,7 @@ fn dns_matches(pattern: &str, name: &str) -> bool {
     }
     match pattern.strip_prefix("*.") {
         Some(suffix) => {
-            if suffix.split('.').count() < 2 {
+            if suffix.split('.').count() < 2 || is_registry_suffix(suffix) {
                 return false;
             }
             match name.split_once('.') {
@@ -3057,6 +3129,45 @@ mod tests {
         assert!(!dns_matches("*", "localhost"));
         assert!(dns_matches("Example.COM", "example.com"));
         assert!(!dns_matches("example.com", "example.com.evil"));
+    }
+
+    /// REQ-RPT-003: addresses are reported in RFC 5952 text.
+    #[test]
+    fn ip_addresses_display_in_rfc_5952_form() {
+        for text in [
+            "192.0.2.1",
+            "0.0.0.0",
+            "::",
+            "::1",
+            "1::",
+            "2001:db8::1",
+            "2001:db8:0:1:1:1:1:1",
+            "2001:0:0:1::1",
+            "2001:db8::1:0:0:1",
+            "fe80::abcd:0:0:1",
+            "1:2:3:4:5:6:7:8",
+        ] {
+            assert_eq!(alloc::format!("{}", IpAddr::parse(text).unwrap()), text);
+        }
+        assert_eq!(
+            alloc::format!("{}", IpAddr::parse("2001:DB8:0000:0:0:0:0:0001").unwrap()),
+            "2001:db8::1"
+        );
+    }
+
+    /// REQ-X509-078: a wildcard directly over a registry suffix such as
+    /// `co.uk` covers nothing; one a level below still works.
+    #[test]
+    fn wildcards_over_registry_suffixes_cover_nothing() {
+        for pattern in ["*.co.uk", "*.CO.UK", "*.com.au", "*.ac.jp", "*.gov.uk", "*.org.nz."] {
+            let host = alloc::format!("victim.{}", pattern.trim_start_matches("*.").trim_end_matches('.'));
+            assert!(!dns_matches(pattern, &host), "{pattern}");
+        }
+        assert!(dns_matches("*.example.co.uk", "www.example.co.uk"));
+        assert!(dns_matches("*.co.example", "a.co.example"));
+        assert!(dns_matches("*.github.io", "a.github.io"));
+        // An exact name under a registry suffix is still matched.
+        assert!(dns_matches("co.uk", "co.uk"));
     }
 
     #[test]
@@ -4922,6 +5033,8 @@ mod tests {
             (alloc::vec![0, 0, 0x80], false),
         ] {
             for tag in [0x80, 0x81] {
+                // A minimum of 0 is the DEFAULT, omitted in DER (REQ-X509-077).
+                let accepted = accepted && !(tag == 0x80 && distance == [0]);
                 let mut body = base.clone();
                 push_tlv(&mut body, tag, &distance);
                 let mut subtree = Vec::new();
@@ -4975,7 +5088,9 @@ mod tests {
         let mut dns = Vec::new();
         push_tlv(&mut dns, T_GN_DNS, b"example.test");
         let valid = wrap(&dns);
-        let min = [0x80, 1, 0];
+        // A non-default minimum parses (and later fails closed in
+        // evaluation); the DEFAULT 0 written out is not DER (REQ-X509-077).
+        let min = [0x80, 1, 1];
         let max = [0x81, 1, 1];
         let mut basic = Vec::new();
         push_ext(
@@ -5004,6 +5119,7 @@ mod tests {
             (wrap(&[dns.as_slice(), &[T_CTX1, 0]].concat()), false),
             (wrap(&[dns.as_slice(), &[T_NULL, 0]].concat()), false),
             (wrap(&[dns.as_slice(), &[0x80, 2, 0]].concat()), false),
+            (wrap(&[dns.as_slice(), &[0x80, 1, 0]].concat()), false),
         ];
         for (encoded_subtree, accepted) in cases {
             for list in [
@@ -6666,6 +6782,12 @@ mod chain_tests {
                     let error = result.unwrap_err();
                     assert_eq!(error.kind(), ErrorKind::BadCertificate);
                     assert_eq!(error.context(), "nonminimal non-negative INTEGER");
+                } else if version == 0 {
+                    // REQ-X509-077: the DEFAULT written out is not DER.
+                    assert_eq!(
+                        result.unwrap_err().context(),
+                        "explicitly encoded default version"
+                    );
                 } else {
                     check_signature(&result.unwrap(), key.spki(), &opts()).unwrap();
                 }
@@ -6733,7 +6855,9 @@ mod chain_tests {
                     let mut encoded = Vec::new();
                     push_tlv(&mut encoded, T_SEQUENCE, &content);
                     let result = Certificate::parse(&encoded);
-                    let allowed = !(issuer || subject) || (valid && matches!(version, Some(1 | 2)));
+                    // An explicit v1 is not DER at all (REQ-X509-077).
+                    let allowed = version != Some(0)
+                        && (!(issuer || subject) || (valid && matches!(version, Some(1 | 2))));
                     assert_eq!(
                         result.is_ok(),
                         allowed,
@@ -8332,7 +8456,7 @@ mod chain_tests {
             assert_eq!(e.kind(), ErrorKind::BadCertificate);
             assert_eq!(e.context(), "unknown certificate version");
         }
-        for version in [None, Some(0u8), Some(1)] {
+        for version in [None, Some(1u8)] {
             let e = Certificate::parse(&rebuild_tbs(&original, &key, |v, _, _| {
                 *v = version.map(|n| alloc::vec![n])
             }))
@@ -8340,6 +8464,24 @@ mod chain_tests {
             assert_eq!(e.kind(), ErrorKind::BadCertificate);
             assert_eq!(e.context(), "extensions in a certificate that is not v3");
         }
+        // REQ-X509-077: an explicit v1, with or without extensions, is not
+        // DER (the DEFAULT is omitted).
+        for extensions in [true, false] {
+            let e = Certificate::parse(&rebuild_tbs(&original, &key, |v, _, x| {
+                *v = Some(alloc::vec![0]);
+                if !extensions {
+                    *x = None;
+                }
+            }))
+            .unwrap_err();
+            assert_eq!(e.context(), "explicitly encoded default version");
+        }
+        // Omitted, v1 without extensions still parses.
+        Certificate::parse(&rebuild_tbs(&original, &key, |v, _, x| {
+            *v = None;
+            *x = None;
+        }))
+        .unwrap();
     }
 
     /// REQ-X509-014: an explicit Extensions field holds SEQUENCE SIZE
