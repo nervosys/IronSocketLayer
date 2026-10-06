@@ -24,7 +24,7 @@ categories = ["cryptography", "network-programming", "no-std"]
 # Encryption source code is export-controlled (ECCN 5D002). Nothing is
 # published until the 15 CFR 742.15(b) notification has been sent and
 # recorded; IronCrypto's docs/EXPORT.md sets out the reasoning.
-publish = false   # see docs/RELEASING.md: export notification first
+publish = true
 
 [workspace.dependencies]
 isl-ontology = { path = "crates/isl-ontology", version = "0.1.0", default-features = false }
