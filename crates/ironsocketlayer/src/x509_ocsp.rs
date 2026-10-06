@@ -1737,6 +1737,27 @@ mod tests {
     /// REQ-OCSP-012: both extension locations reject unsupported critical
     /// extensions and malformed encodings, even with a valid response signature.
     /// REQ-OCSP-026: unknown noncritical extension OIDs are validated at both levels.
+    /// REQ-X509-073: an OCSP extension list holds at most 64 extensions,
+    /// counted before the duplicate check.
+    #[test]
+    fn ocsp_extension_lists_are_capped() {
+        let list = |n: u8| {
+            let mut body = Vec::new();
+            for i in 1..=n {
+                let mut e = Vec::new();
+                push_tlv(&mut e, T_OID, &[0x2a, i]);
+                push_tlv(&mut e, T_OCTET_STRING, &[0x05, 0]);
+                push_tlv(&mut body, T_SEQUENCE, &e);
+            }
+            let mut out = Vec::new();
+            push_tlv(&mut out, T_SEQUENCE, &body);
+            out
+        };
+        assert!(check_extensions(&list(64)).is_ok());
+        let e = check_extensions(&list(65)).unwrap_err();
+        assert_eq!(e.context(), "too many OCSP extensions");
+    }
+
     #[test]
     fn ocsp_extensions_are_validated_at_both_levels() {
         let f = fixture();

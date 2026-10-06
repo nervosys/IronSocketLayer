@@ -2267,6 +2267,48 @@ mod finished_tests {
         from.consume_outgoing(n).unwrap();
     }
 
+    /// REQ-ECH-011: an encrypted_client_hello in EncryptedExtensions is
+    /// ignored by a client that sent GREASE, and refused by one that sent no
+    /// ECH extension at all.
+    #[test]
+    fn encrypted_extensions_with_ech_follow_grease() {
+        let (cc, sc) = pair();
+        for grease in [true, false] {
+            let mut cc = cc.clone();
+            cc.ech_grease = grease;
+            let (mut cb, mut sb) = (buffers(), buffers());
+            let (mut cr, mut sr) = (
+                ic_drbg::Rng::from_os().unwrap(),
+                ic_drbg::Rng::from_os().unwrap(),
+            );
+            let mut c = Connection::client(
+                &cc,
+                "server.test",
+                &mut cr,
+                storage(&mut cb),
+                Limits::default(),
+            )
+            .unwrap();
+            let mut s =
+                Connection::server(&sc, &mut sr, storage(&mut sb), Limits::default()).unwrap();
+            flush(&mut c, &mut s);
+            // Only the ServerHello record.
+            let out = s.outgoing();
+            let len = usize::from(u16::from_be_bytes([out[3], out[4]]));
+            c.receive(&out[..5 + len]).unwrap();
+            assert_eq!(c.report().state, State::WaitEncryptedExtensions);
+            let ext = [0xfe, 0x0d, 0, 2, 0, 0];
+            let mut message = vec![8, 0, 0, 8, 0, 6];
+            message.extend_from_slice(&ext);
+            let r = c.on_encrypted_extensions(&message[4..], &message);
+            if grease {
+                r.unwrap();
+            } else {
+                assert_eq!(r.unwrap_err().kind(), ErrorKind::UnsupportedExtension);
+            }
+        }
+    }
+
     /// REQ-FIX-004: a client Finished whose verify_data does not match the
     /// transcript is refused with decrypt_error, and the genuine one is
     /// accepted at the same point.

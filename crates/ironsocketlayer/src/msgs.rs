@@ -1849,4 +1849,24 @@ mod tests {
             ErrorKind::IllegalParameter
         );
     }
+
+    /// RFC 6066 §3: server_name entries of a type other than host_name are
+    /// skipped, not taken as the host name.
+    #[test]
+    fn server_name_entries_of_other_types_are_skipped() {
+        let ch = ClientHello {
+            server_name: Some(String::from("a.test")),
+            ..sample_hello()
+        };
+        let mut body = ch.encode().unwrap();
+        let entry = [0u8, 0, 6, b'a', b'.', b't', b'e', b's', b't'];
+        let at = body.windows(entry.len()).position(|w| w == entry).unwrap();
+        body[at] = 1;
+        assert_eq!(ClientHello::decode(&body).unwrap().server_name, None);
+        body[at] = 0;
+        assert_eq!(
+            ClientHello::decode(&body).unwrap().server_name.as_deref(),
+            Some("a.test")
+        );
+    }
 }

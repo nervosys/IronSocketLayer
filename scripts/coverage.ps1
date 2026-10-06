@@ -31,6 +31,11 @@ if ($RequirementsOnly) {
     $traced.Keys | Sort-Object | Set-Content (Join-Path $output 'traced-tests.txt')
 }
 if (-not $ReportOnly) {
+    # Profiles from an earlier run would be merged with this one's and mapped
+    # onto source that has since changed: start from none.
+    if (Test-Path $env:CARGO_BUILD_BUILD_DIR) {
+        Get-ChildItem $env:CARGO_BUILD_BUILD_DIR -Filter '*.profraw' -Recurse | Remove-Item -Force
+    }
     & cargo @coverageArgs
     if ($LASTEXITCODE -ne 0) { throw 'Coverage test run failed' }
 }

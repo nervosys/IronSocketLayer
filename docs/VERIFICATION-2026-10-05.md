@@ -372,3 +372,26 @@ with Cloudflare, Google and GitHub (6), the QEMU Cortex-M4 run of the fixed
 engine (largest session stack 34,332 bytes), and five minutes of
 AddressSanitizer fuzzing of all eight targets with no findings. GitHub
 Actions was not used: its runners are blocked by an account billing problem.
+
+### Branch coverage after 0.2.0
+
+Same tools and aggregation, on the code after 0.2.0 (fixed-engine ECH GREASE
+included). `scripts/coverage.ps1` now deletes old execution profiles before
+a run; earlier runs could merge profiles from a previous build.
+
+| Selection | Merged production branch outcomes | Uncovered locations |
+|---|---:|---:|
+| Whole ordinary suite | 2,763 / 2,828 (97.70%) | 65 |
+
+Ten gap keys were new after the audit fixes. Each now has a requirements-based
+test: the CRL and OCSP extension caps, a CRL issuer without cRLSign, the
+Selfie guard passing a foreign hello, the wildcard heuristic's non-letter
+top label, the fixed engine's ECH handling in EncryptedExtensions, and a
+fixed-server ClientHello without TLS 1.3 or with an SNI entry of another
+type (the last two, and an owned-engine server_name case, had been reached
+only incidentally by the robustness mutations). One review row changed: the
+iPAddress length guard in `ip_within`, recorded as defensive, became
+load-bearing when iPAddress constraints became one name type (REQ-X509-072),
+and is now marked tested. All 59 remaining gap keys have a disposition
+(44 defensive, 13 unreachable, 2 environment). The inventory is
+[coverage-whole-20261006.csv](evidence/coverage-whole-20261006.csv).

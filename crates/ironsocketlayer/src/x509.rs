@@ -3177,6 +3177,8 @@ mod tests {
         assert!(dns_matches("*.example.co.uk", "www.example.co.uk"));
         assert!(dns_matches("*.co.example", "a.co.example"));
         assert!(dns_matches("*.github.io", "a.github.io"));
+        // Not a country code: the top label is not two letters.
+        assert!(dns_matches("*.co.4u", "a.co.4u"));
         // An exact name under a registry suffix is still matched.
         assert!(dns_matches("co.uk", "co.uk"));
     }

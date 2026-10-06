@@ -1150,3 +1150,25 @@ fn ech_rejected_before_a_retry_stays_rejected() {
     assert_eq!(r.server_name.as_deref(), Some(PUBLIC));
     assert!(!r.has(Property::EncryptedClientHello));
 }
+
+/// REQ-EPSK-005: with the Selfie guard on, an external-PSK ClientHello this
+/// process did not send (here, our client's hello with a fresh random and
+/// its binder recomputed) is accepted.
+#[test]
+fn the_selfie_guard_passes_a_hello_from_elsewhere() {
+    let key = [0x42u8; 32];
+    let psk = || ExternalPsk::new(b"peer-b", &key, HashAlg::Sha256).unwrap();
+    let cc = Arc::new(ClientConfig::external_psk(Profile::Default, psk()).unwrap());
+    let sc = Arc::new(ServerConfig::external_psk_only(Profile::Default, vec![psk()]).unwrap());
+    assert!(sc.selfie_guard);
+    let mut ch = hello(&cc, "gateway.local");
+    ch.random = [0x5c; 32];
+    bind(&mut ch, 0, &key, HashAlg::Sha256, true);
+    let mut s = Connection::server(sc).unwrap();
+    s.read_tls(&record_of(
+        HandshakeType::ClientHello,
+        &ch.encode().unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(server_hello(&s.take_tls()).selected_psk, Some(0));
+}

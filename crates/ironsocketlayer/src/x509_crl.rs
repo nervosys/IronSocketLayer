@@ -71,9 +71,9 @@ struct ParsedCrl {
     revoked: Vec<Vec<u8>>,
     /// Why this CRL cannot show a certificate is good, if it cannot.
     unsupported: Option<&'static str>,
-    /// The issuer key and scheme its signature was verified under when it
-    /// was loaded, if it was (REQ-CRL-028).
-    verified: Option<(Vec<u8>, SignatureScheme)>,
+    /// The issuer key its signature was verified under when it was loaded,
+    /// if it was (REQ-CRL-028). The scheme is fixed by `sig_alg`.
+    verified: Option<Vec<u8>>,
 }
 
 /// REQ-CRL-009: revoked serials are nonempty, minimally encoded DER INTEGERs.
@@ -437,7 +437,7 @@ impl CrlStore {
         let key = PublicKey::from_spki(issuer.spki)?;
         sign::verify(scheme, &key, &crl.tbs, &crl.signature)
             .map_err(|_| bad("CRL signature does not verify under its issuer's key"))?;
-        crl.verified = Some((issuer.spki.to_vec(), scheme));
+        crl.verified = Some(issuer.spki.to_vec());
         self.crls.push(crl);
         Ok(())
     }
@@ -509,10 +509,7 @@ pub(super) fn check(
             continue;
         }
         // REQ-CRL-028: verified at load under this very key, or now.
-        let preverified = matches!(
-            &crl.verified,
-            Some((spki, s)) if spki.as_slice() == issuer_spki && *s == scheme
-        );
+        let preverified = crl.verified.as_deref() == Some(issuer_spki);
         if !preverified && sign::verify(scheme, &key, &crl.tbs, &crl.signature).is_err() {
             continue;
         }
@@ -2711,25 +2708,35 @@ AAAA
     /// A CRL from `f.ca` whose entries carry an optional certificateIssuer
     /// (as a GeneralNames body), validly signed.
     fn signed_with_entries(f: &Fx, entries: &[(&[u8], Option<&[u8]>)]) -> Vec<u8> {
+        signed_by(&f.ca, &f.ca_key, f.now, entries)
+    }
+
+    /// A CRL naming `issuer`'s subject, signed with `key`.
+    fn signed_by(
+        issuer: &[u8],
+        key: &SigningKey,
+        now: u64,
+        entries: &[(&[u8], Option<&[u8]>)],
+    ) -> Vec<u8> {
         let wrap = |tag, body: &[u8]| {
             let mut out = Vec::new();
             push_tlv(&mut out, tag, body);
             out
         };
-        let scheme = f.ca_key.schemes()[0];
+        let scheme = key.schemes()[0];
         let algorithm = alg_id(scheme).unwrap();
-        let ca = Certificate::parse(&f.ca).unwrap();
+        let ca = Certificate::parse(issuer).unwrap();
         let mut tbs = Vec::new();
         push_tlv(&mut tbs, T_INTEGER, &[1]);
         tbs.extend_from_slice(&algorithm);
         tbs.extend_from_slice(ca.subject);
-        encode_time(&mut tbs, f.now - 60).unwrap();
-        encode_time(&mut tbs, f.now + 3600).unwrap();
+        encode_time(&mut tbs, now - 60).unwrap();
+        encode_time(&mut tbs, now + 3600).unwrap();
         let mut list = Vec::new();
         for (serial, issuer) in entries {
             let mut entry = Vec::new();
             push_tlv(&mut entry, T_INTEGER, serial);
-            encode_time(&mut entry, f.now - 120).unwrap();
+            encode_time(&mut entry, now - 120).unwrap();
             if let Some(names) = issuer {
                 let value = wrap(T_SEQUENCE, names);
                 entry.extend(ext_list(&[ext_with_value(OID_CERT_ISSUER, true, &value)]));
@@ -2739,7 +2746,7 @@ AAAA
         push_tlv(&mut tbs, T_SEQUENCE, &list);
         let tbs = wrap(T_SEQUENCE, &tbs);
         let mut rng = ic_drbg::Rng::from_os().unwrap();
-        let signature = f.ca_key.sign(scheme, &tbs, &mut rng).unwrap();
+        let signature = key.sign(scheme, &tbs, &mut rng).unwrap();
         let bits = [alloc::vec![0], signature].concat();
         wrap(
             T_SEQUENCE,
@@ -2847,5 +2854,47 @@ AAAA
         let last = forged.len() - 1;
         forged[last] ^= 1;
         assert!(CrlStore::new().add_der_for_issuer(&forged, &f.ca).is_err());
+        // An issuer whose key usage does not include cRLSign is refused.
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
+        let signer = x509::self_signed(
+            &CertificateParams {
+                subject_cn: "not a CRL signer",
+                dns_names: &["signer.test"],
+                ip_addresses: &[],
+                not_before: f.now - 60,
+                not_after: f.now + 86_400,
+                is_ca: false,
+                path_len: None,
+                usage: &[Usage::ServerAuth],
+                serial: [5; 16],
+            },
+            &key,
+            &mut rng,
+        )
+        .unwrap();
+        assert!(Certificate::parse(&signer).unwrap().ext.key_usage.is_some());
+        let crl = signed_by(&signer, &key, f.now, &[]);
+        let e = CrlStore::new()
+            .add_der_for_issuer(&crl, &signer)
+            .unwrap_err();
+        assert_eq!(e.context(), "issuer key usage does not permit CRL signing");
+    }
+
+    /// REQ-X509-073: a CRL carries at most 64 extensions, counted before the
+    /// duplicate check.
+    #[test]
+    fn crl_extension_lists_are_capped() {
+        let list = |n: u8| {
+            let exts: Vec<Vec<u8>> = (1..=n)
+                .map(|i| ext_with_value(&[0x2a, i], false, &[0x05, 0]))
+                .collect();
+            ext_list(&exts)
+        };
+        for entry in [false, true] {
+            assert!(scan_extensions(&list(64), entry).is_ok());
+            let e = scan_extensions(&list(65), entry).unwrap_err();
+            assert_eq!(e.context(), "too many CRL extensions");
+        }
     }
 }

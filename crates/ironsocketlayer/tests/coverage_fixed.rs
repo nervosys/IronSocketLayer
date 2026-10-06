@@ -1427,6 +1427,36 @@ fn malformed_client_hellos_are_refused() {
             "empty or odd u16 list",
         ),
         (
+            "TLS 1.3 not offered",
+            client_hello(
+                1,
+                &suites,
+                &[
+                    ext(43, &[2, 3, 3]),
+                    groups(&[X25519, P256, P384]),
+                    schemes(),
+                    shares(&[P256]),
+                ],
+            ),
+            d,
+            ErrorKind::ProtocolVersion,
+            "TLS 1.3 not offered",
+        ),
+        (
+            "SNI entry of another type",
+            client_hello(
+                1,
+                &suites,
+                &base(
+                    &[ext(0, &v16(&[&[1u8][..], &v16(b"server.test")].concat()))],
+                    &[P256],
+                ),
+            ),
+            d,
+            ErrorKind::IllegalParameter,
+            "SNI name type",
+        ),
+        (
             "repeated share",
             client_hello(1, &suites, &base(&[], &[P256, P256])),
             d,

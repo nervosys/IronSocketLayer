@@ -300,7 +300,7 @@ feed the life-cycle data.
 
 | REQ-X509-072 | iPAddress is one name type for name constraints: a permitted list of one address family leaves an address of the other outside it, and an IPv4-mapped IPv6 address is judged by excluded IPv4 subtrees. | src/x509.rs | Test | src/x509.rs::ip_name_constraints_are_enforced |
 
-| REQ-X509-073 | A certificate, CRL, CRL entry or OCSP response carries at most 64 extensions, checked before the duplicate-extension scan. | src/x509.rs | Test | tests/pki_hardening.rs::a_certificate_with_thousands_of_extensions_is_refused_quickly |
+| REQ-X509-073 | A certificate, CRL, CRL entry or OCSP response carries at most 64 extensions, checked before the duplicate-extension scan. | src/x509.rs | Test | tests/pki_hardening.rs::a_certificate_with_thousands_of_extensions_is_refused_quickly; src/x509_crl.rs::crl_extension_lists_are_capped; src/x509_ocsp.rs::ocsp_extension_lists_are_capped |
 
 | REQ-X509-074 | A trust anchor whose basicConstraints says it is not a CA, or whose keyUsage lacks keyCertSign, is trusted as itself only and issues nothing. | src/x509.rs | Test | tests/pki_hardening.rs::a_non_ca_anchor_issues_nothing |
 
@@ -336,7 +336,7 @@ feed the life-cycle data.
 
 | REQ-RPT-003 | The session report lists the peer end entity's subject alternative dNSNames, then its iPAddresses in RFC 5952 text, in the struct and in its JSON (`peerNames`), and a resumed session reports the names of the original one. | src/report.rs | Test | tests/pki_hardening.rs::the_report_lists_the_peers_verified_names; tests/resumption.rs::a_ticket_resumes_without_certificates_and_keeps_post_quantum_key_exchange; src/x509.rs::ip_addresses_display_in_rfc_5952_form |
 
-| REQ-EPSK-005 | With std, a server refuses an external-PSK ClientHello whose random this process sent with an external PSK (the Selfie reflection, RFC 9257 §4.1), unless `ServerConfig::selfie_guard` is off. | src/resumption.rs | Test | tests/protocol_hardening.rs::a_reflected_external_psk_hello_is_refused |
+| REQ-EPSK-005 | With std, a server refuses an external-PSK ClientHello whose random this process sent with an external PSK (the Selfie reflection, RFC 9257 §4.1), unless `ServerConfig::selfie_guard` is off. | src/resumption.rs | Test | tests/protocol_hardening.rs::a_reflected_external_psk_hello_is_refused; tests/coverage_server.rs::the_selfie_guard_passes_a_hello_from_elsewhere |
 
 | REQ-EPSK-006 | A server that requires client certificates never accepts an external PSK in their place, and a PSK-only server cannot be configured to require them. | src/server.rs | Test | tests/protocol_hardening.rs::a_required_client_certificate_is_not_waived_for_an_external_psk |
 
@@ -350,6 +350,6 @@ feed the life-cycle data.
 
 | REQ-0RTT-006 | `MemoryReplayGuard::with_capacity` sizes the in-memory guard; when it is full and refuses early data, the server reports `event:replay-guard-full`. | src/resumption.rs | Test | tests/protocol_hardening.rs::a_full_replay_guard_is_reported |
 
-| REQ-ECH-011 | A client (owned or fixed-capacity) without ECH configurations sends a GREASE encrypted_client_hello (RFC 9849 §6.2) unless `ech_grease` is off, repeats it after HelloRetryRequest, and ignores retry configurations sent in answer. | src/client.rs | Test | tests/ech.rs::a_greasing_client_ignores_the_retry_configurations; tests/protocol_hardening.rs::the_fixed_client_greases_ech |
+| REQ-ECH-011 | A client (owned or fixed-capacity) without ECH configurations sends a GREASE encrypted_client_hello (RFC 9849 §6.2) unless `ech_grease` is off, repeats it after HelloRetryRequest, and ignores retry configurations sent in answer. | src/client.rs | Test | tests/ech.rs::a_greasing_client_ignores_the_retry_configurations; tests/protocol_hardening.rs::the_fixed_client_greases_ech; src/fixed.rs::encrypted_extensions_with_ech_follow_grease |
 
 | REQ-REC-009 | A record protector's static IV is zeroized when the protector is dropped or replaced, as its key and traffic secret are. | src/record.rs | Review | `impl Drop for Protector` in src/record.rs wipes `iv` with IronCrypto's `Zeroize`; `AeadKey` and `Output` (the key and traffic secret) zeroize in their own `Drop`. A rekey replaces the protector, dropping the old one. Observing freed memory needs unsafe code, which the library forbids, so this is checked by review. |
