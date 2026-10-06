@@ -181,3 +181,130 @@ fn a_peer_that_only_reads_still_answers_a_key_update() {
     drop(c);
     server.join().unwrap();
 }
+
+/// Run `f` on a thread and fail, rather than hang, if it takes longer than
+/// `limit`.
+fn within<T: Send + 'static>(
+    limit: std::time::Duration,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(limit)
+        .expect("the call did not return in time")
+}
+
+/// REQ-CONN-014: a server that accepts the connection and then says nothing
+/// fails the client's handshake at the deadline.
+#[test]
+fn a_silent_server_fails_the_handshake_deadline() {
+    use ironsocketlayer::stream::Timeouts;
+    use std::time::{Duration, Instant};
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let cc = Arc::new(pki.client_config(Profile::Default));
+    let (l, addr) = listener();
+    let _keep = thread::spawn(move || {
+        let (sock, _) = l.accept().unwrap();
+        thread::sleep(Duration::from_secs(5));
+        drop(sock);
+    });
+    let started = Instant::now();
+    let err = within(Duration::from_secs(4), move || {
+        let timeouts = Timeouts {
+            handshake: Some(Duration::from_millis(300)),
+            idle: None,
+        };
+        TlsStream::connect_with(
+            TcpStream::connect(addr).unwrap(),
+            cc,
+            "server.test",
+            timeouts,
+        )
+        .unwrap_err()
+    });
+    assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+/// REQ-CONN-014: the handshake limit is a deadline, so a peer that drips one
+/// byte at a time (never idle long enough for a per-read timeout) is still
+/// cut off. Here the client's own accept side is the victim.
+#[test]
+fn a_drip_feeding_peer_cannot_stretch_the_handshake() {
+    use ironsocketlayer::stream::Timeouts;
+    use std::time::{Duration, Instant};
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = Arc::new(pki.server_config(Profile::Default));
+    let (l, addr) = listener();
+    let _dripper = thread::spawn(move || {
+        let mut sock = TcpStream::connect(addr).unwrap();
+        // A record header announcing 16 KiB, then one byte every 50 ms.
+        let _ = sock.write_all(&[22, 3, 1, 0x40, 0]);
+        for _ in 0..100 {
+            if sock.write_all(&[0]).is_err() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let started = Instant::now();
+    let err = within(Duration::from_secs(4), move || {
+        let timeouts = Timeouts {
+            handshake: Some(Duration::from_millis(500)),
+            idle: Some(Duration::from_millis(200)),
+        };
+        TlsStream::accept_with(l.accept().unwrap().0, sc, timeouts).unwrap_err()
+    });
+    assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_millis(1500),
+        "took {took:?}: the deadline was stretched"
+    );
+}
+
+/// REQ-CONN-014: after the handshake, a read that waits longer than the
+/// idle limit times out, and the stream stays usable: the data that
+/// arrives later is still read.
+#[test]
+fn an_idle_read_times_out_and_the_stream_survives() {
+    use ironsocketlayer::stream::Timeouts;
+    use std::time::Duration;
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = Arc::new(pki.server_config(Profile::Default));
+    let cc = Arc::new(pki.client_config(Profile::Default));
+    let (l, addr) = listener();
+    let server = thread::spawn(move || {
+        let mut s = TlsStream::accept(l.accept().unwrap().0, sc).unwrap();
+        thread::sleep(Duration::from_millis(700));
+        s.write_all(b"late").unwrap();
+        s.close().unwrap();
+    });
+    let got = within(Duration::from_secs(6), move || {
+        let mut c = TlsStream::connect_with(
+            TcpStream::connect(addr).unwrap(),
+            cc,
+            "server.test",
+            Timeouts::new(Duration::from_secs(5), Duration::from_millis(200)),
+        )
+        .unwrap();
+        let mut buf = [0u8; 4];
+        let first = c.read(&mut buf).unwrap_err();
+        assert_eq!(first.kind(), io::ErrorKind::TimedOut, "{first}");
+        let mut c = c;
+        let mut out = Vec::new();
+        loop {
+            match c.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => continue,
+                Err(e) => panic!("{e}"),
+            }
+        }
+        out
+    });
+    assert_eq!(got, b"late");
+    server.join().unwrap();
+}

@@ -60,6 +60,20 @@ requirement together with 0-RTT, and mutual authentication without the means
 to get it. Mutual authentication obtained later, with `request_client_auth`,
 is checked on the report.
 
+## Bound every wait
+
+Over TCP, connect with time limits, so a silent or drip-feeding peer cannot
+hang the agent:
+
+```rust
+let tls = TlsStream::connect_with(tcp, config, "example.com",
+    Timeouts::new(Duration::from_secs(10), Duration::from_secs(30)))?;
+```
+
+The handshake limit is a deadline for the whole handshake. The idle limit
+applies to each later read or write. Both fail with
+`io::ErrorKind::TimedOut`; after an idle timeout the stream is still usable.
+
 ## Know what you gave up
 
 `config.relaxations()`, and `relaxations` in every session report, list the

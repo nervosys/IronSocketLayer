@@ -136,10 +136,12 @@ $ cargo test -p ironsocketlayer --test openssl_cnsa2 -- --ignored
 
 ```rust
 use std::{io::{Read, Write}, net::TcpStream, sync::Arc};
-use ironsocketlayer::{config::{ClientConfig, Profile}, report::Property, stream::TlsStream, x509::RootStore};
+use std::time::Duration;
+use ironsocketlayer::{config::{ClientConfig, Profile}, report::Property, stream::{Timeouts, TlsStream}, x509::RootStore};
 
 let config = Arc::new(ClientConfig::new(Profile::Default, RootStore::from_system()?)?.with_alpn(&[b"http/1.1"]));
-let mut tls = TlsStream::connect(TcpStream::connect("example.com:443")?, config, "example.com")?;
+let limits = Timeouts::new(Duration::from_secs(10), Duration::from_secs(30)); // handshake deadline, idle limit
+let mut tls = TlsStream::connect_with(TcpStream::connect("example.com:443")?, config, "example.com", limits)?;
 assert!(tls.report().has(Property::ServerAuthenticated));
 tls.write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")?;
 ```

@@ -21,6 +21,11 @@ versions may change the API.
   `ServerConfig::relaxations`: the safe defaults a configuration gives up
   (revocation off, 0-RTT, no ECH GREASE, SNI fallback, Selfie guard off).
   Every session report lists them as `relaxations`.
+- `TlsStream::connect_with` and `accept_with` over TCP, with
+  `stream::Timeouts`: a deadline for the whole handshake (a peer sending a
+  byte at a time cannot stretch it) and an idle limit for each later read or
+  write. Both fail with `io::ErrorKind::TimedOut`; after an idle timeout the
+  stream remains usable.
 
 ### Changed
 - Requires IronCrypto 0.2.15 or later, below 0.3. Its HPKE now also offers
