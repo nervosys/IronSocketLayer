@@ -53,10 +53,15 @@ $ cargo package -p isl-ontology
 `iron-socket-layer` and `isl-cli` cannot be packaged until their
 dependencies are on crates.io, so they are packaged in step 5, in order.
 
-## 4. Export notification (cannot be undone)
+## 4. Export notification (first public release only; cannot be undone)
 
-Follow [EXPORT.md](EXPORT.md): send the notification, then commit the record
-under `docs/export/`. Nothing in step 5 happens before that record exists.
+Before the first public release only: follow [EXPORT.md](EXPORT.md), send the
+notification, then commit the record under `docs/export/`. Nothing in step 5
+happens before that record exists.
+
+Later releases skip this step if a record already exists and the URLs it
+names are unchanged. A new location, a new mirror, or non-standard
+cryptography (see EXPORT.md) needs a new notice first.
 
 ## 5. Publish (cannot be undone)
 

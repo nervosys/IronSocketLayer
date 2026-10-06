@@ -33,8 +33,9 @@ the ML-DSA TLS code points are IETF Internet-Drafts. Those are published,
 which is what the definition turns on, but counsel should confirm that point
 explicitly.
 
-If that reading is right, **§742.15(b)(2) does not apply**. As with
-IronCrypto, **the recommendation is to send it anyway**:
+If that reading is right, **§742.15(b)(2) does not apply**. The decision
+(2026-10-05) is to **send one notice, before the first public release**, and
+not one per release:
 
 - The rule changed on 29 March 2021. Before then the notification was required
   for publicly available encryption source code generally, and some guidance
@@ -42,6 +43,13 @@ IronCrypto, **the recommendation is to send it anyway**:
 - The failure modes are not symmetric. Not notifying when it was required
   cannot be corrected after publication; notifying when it was not costs an
   email.
+
+A notification identifies the internet location of the source code, not a
+version, so later releases at the same location need no new notice. Send
+another only if:
+- the code moves to a new location or a new mirror; or
+- IronSocketLayer would ever implement non-standard (proprietary or
+  unpublished) cryptography, which is not planned.
 
 **Commercial distribution is a different question.** If IronSocketLayer is
 also distributed under a commercial licence, as object code or source that is
