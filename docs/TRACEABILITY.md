@@ -335,3 +335,11 @@ feed the life-cycle data.
 | REQ-X509-078 | A wildcard directly over a two-label suffix whose top label is a two-letter country code and whose second is a common registry label (co, com, ac, gov, ...) matches nothing. | src/x509.rs | Test | src/x509.rs::wildcards_over_registry_suffixes_cover_nothing |
 
 | REQ-RPT-003 | The session report lists the peer end entity's subject alternative dNSNames, then its iPAddresses in RFC 5952 text, in the struct and in its JSON (`peerNames`), and a resumed session reports the names of the original one. | src/report.rs | Test | tests/pki_hardening.rs::the_report_lists_the_peers_verified_names; tests/resumption.rs::a_ticket_resumes_without_certificates_and_keeps_post_quantum_key_exchange; src/x509.rs::ip_addresses_display_in_rfc_5952_form |
+
+| REQ-EPSK-005 | With std, a server refuses an external-PSK ClientHello whose random this process sent with an external PSK (the Selfie reflection, RFC 9257 §4.1), unless `ServerConfig::selfie_guard` is off. | src/resumption.rs | Test | tests/protocol_hardening.rs::a_reflected_external_psk_hello_is_refused |
+
+| REQ-EPSK-006 | A server that requires client certificates never accepts an external PSK in their place, and a PSK-only server cannot be configured to require them. | src/server.rs | Test | tests/protocol_hardening.rs::a_required_client_certificate_is_not_waived_for_an_external_psk |
+
+| REQ-EPSK-007 | A server with only external PSKs answers an offered PSK it does not know with decrypt_error, after a binder computation, as it answers a wrong binder. | src/server.rs | Test | tests/protocol_hardening.rs::unknown_and_wrongly_keyed_psk_identities_fail_alike |
+
+| REQ-NEG-002 | A server refuses an SNI that no identity's certificate covers with unrecognized_name (RFC 6066 §3), in both engines, unless `ServerConfig::sni_fallback` is set; a ClientHello without SNI gets the first identity. | src/server.rs | Test | tests/protocol_hardening.rs::an_unknown_server_name_is_refused_with_unrecognized_name; tests/coverage_fixed.rs::pinned_peers_are_verified_by_key |

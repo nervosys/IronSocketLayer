@@ -640,6 +640,9 @@ fn an_external_psk_without_a_suite_for_its_hash_is_passed_over() {
     let cc = Arc::new(cc);
     let mut sc = pki.server_config(Profile::Default);
     sc.external_psks = vec![psk()];
+    // Client and server share this process and one key: exactly what the
+    // Selfie guard refuses (REQ-EPSK-005), so it is off for this loopback.
+    sc.selfie_guard = false;
     let sc = Arc::new(sc);
     let ch = hello(&cc, NAME);
     assert_eq!(ch.psk.as_ref().unwrap().identities[0].identity, b"k384");
@@ -899,6 +902,9 @@ fn a_ticket_from_an_external_psk_session_resumes_without_early_data() {
     let key = [0x42u8; 32];
     let psk = || ExternalPsk::new(b"sensor-17", &key, HashAlg::Sha256).unwrap();
     let mut sc = ServerConfig::external_psk_only(Profile::Default, vec![psk()]).unwrap();
+    // Client and server share this process and one key: exactly what the
+    // Selfie guard refuses (REQ-EPSK-005), so it is off for this loopback.
+    sc.selfie_guard = false;
     sc.tickets = Some(Arc::new(TicketKeys::generate(&mut rng()).unwrap()));
     sc.tickets_per_handshake = 1;
     sc.ticket_lifetime = 3600;

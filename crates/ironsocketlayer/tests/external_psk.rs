@@ -24,11 +24,14 @@ fn pair(client_key: &[u8]) -> (ClientConfig, ServerConfig) {
         psk(b"sensor-17", client_key, HashAlg::Sha256),
     )
     .unwrap();
-    let sc = ServerConfig::external_psk_only(
+    let mut sc = ServerConfig::external_psk_only(
         Profile::Default,
         vec![psk(b"sensor-17", &KEY, HashAlg::Sha256)],
     )
     .unwrap();
+    // Client and server share this process and one key: exactly what the
+    // Selfie guard refuses (REQ-EPSK-005), so it is off for this loopback.
+    sc.selfie_guard = false;
     (cc, sc)
 }
 
@@ -117,11 +120,14 @@ fn a_sha384_psk_selects_a_sha384_suite() {
     let key = [7u8; 48];
     let cc =
         ClientConfig::external_psk(Profile::Default, psk(b"k384", &key, HashAlg::Sha384)).unwrap();
-    let sc = ServerConfig::external_psk_only(
+    let mut sc = ServerConfig::external_psk_only(
         Profile::Default,
         vec![psk(b"k384", &key, HashAlg::Sha384)],
     )
     .unwrap();
+    // Client and server share this process and one key: exactly what the
+    // Selfie guard refuses (REQ-EPSK-005), so it is off for this loopback.
+    sc.selfie_guard = false;
     let (c, _) = connect(Arc::new(cc), Arc::new(sc), "x.local").unwrap();
     assert_eq!(c.suite(), Some(CipherSuite::TlsAes256GcmSha384));
     assert!(c.report().has(Property::PskAuthenticated));

@@ -743,8 +743,19 @@ pub enum ClientAuth {
 pub struct ServerConfig {
     /// Shared settings.
     pub common: Common,
-    /// Certificates to present; chosen by SNI, else the first.
+    /// Certificates to present, chosen by SNI. A client that sends no SNI
+    /// gets the first.
     pub identities: Vec<Identity>,
+    /// Whether a client whose SNI names no identity gets the first one
+    /// anyway. `false` (the default) refuses it with `unrecognized_name`, so
+    /// a server never vouches for a name it was not asked to serve.
+    /// REQ-NEG-002.
+    pub sni_fallback: bool,
+    /// Refuse an external-PSK ClientHello that this process itself sent
+    /// (the "Selfie" reflection, RFC 9257 §4.1). On by default; turn it off
+    /// only for a client and server in one process that are meant to talk
+    /// to each other with the same key. Needs `std`. REQ-EPSK-005.
+    pub selfie_guard: bool,
     /// Client authentication.
     pub client_auth: ClientAuth,
     /// Prefer the server's suite order over the client's.
@@ -790,6 +801,8 @@ impl ServerConfig {
             tickets_per_handshake: 1,
             ticket_lifetime: 86_400,
             identities: alloc::vec![identity],
+            sni_fallback: false,
+            selfie_guard: true,
             client_auth: ClientAuth::None,
             prefer_server_order: true,
             retry_cookie: false,
@@ -808,6 +821,8 @@ impl ServerConfig {
         Ok(Self {
             common,
             identities: Vec::new(),
+            sni_fallback: false,
+            selfie_guard: true,
             client_auth: ClientAuth::None,
             prefer_server_order: true,
             retry_cookie: false,
@@ -846,6 +861,14 @@ impl ServerConfig {
                     "a server key cannot sign with any scheme the profile allows",
                 ));
             }
+        }
+        // REQ-EPSK-006: a required client certificate is never waived for an
+        // external PSK, so a PSK-only server cannot require one.
+        if self.identities.is_empty() && matches!(self.client_auth, ClientAuth::Required(_)) {
+            return Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "a server that requires client certificates needs a certificate of its own",
+            ));
         }
         if self.common.profile.requires_mutual_auth()
             && !matches!(self.client_auth, ClientAuth::Required(_))

@@ -100,7 +100,8 @@ fn the_wrong_name_fails_on_both_ends() {
 
     let err = TlsStream::connect(TcpStream::connect(addr).unwrap(), cc, "other.test").unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
-    // The client sent its alert before failing, so the server hears why.
+    // The server refused the name with unrecognized_name (REQ-NEG-002);
+    // both ends fail.
     let err = server.join().unwrap().unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
 }

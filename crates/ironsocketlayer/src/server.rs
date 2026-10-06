@@ -136,8 +136,11 @@ impl ServerHs {
                 "pre_shared_key without psk_key_exchange_modes",
             ));
         }
-        // External PSKs first. REQ-EPSK-001, REQ-EPSK-002.
-        if ch.psk_modes.contains(&PSK_DHE_KE) {
+        let requires_client_cert = matches!(self.config.client_auth, ClientAuth::Required(_));
+        // External PSKs first. REQ-EPSK-001, REQ-EPSK-002. REQ-EPSK-006: not
+        // when a client certificate is required; the client then gets the
+        // certificate handshake, and must present one.
+        if ch.psk_modes.contains(&PSK_DHE_KE) && !requires_client_cert {
             for (i, id) in offered.identities.iter().enumerate() {
                 let Some(ext) = self
                     .config
@@ -159,6 +162,15 @@ impl ServerHs {
                     return Err(Error::new(
                         ErrorKind::DecryptError,
                         "external PSK binder did not verify",
+                    ));
+                }
+                // REQ-EPSK-005: our own ClientHello, reflected back to us.
+                if self.config.selfie_guard
+                    && crate::resumption::is_own_external_psk_hello(&ch.random)
+                {
+                    return Err(Error::new(
+                        ErrorKind::DecryptError,
+                        "reflected ClientHello: this process sent it (Selfie)",
                     ));
                 }
                 let state = TicketState {
@@ -188,7 +200,6 @@ impl ServerHs {
         }
         let now = core.now();
         let sni = ch.server_name.as_deref().unwrap_or("");
-        let requires_client_cert = matches!(self.config.client_auth, ClientAuth::Required(_));
         for (i, id) in offered.identities.iter().enumerate() {
             let Some(state) = keys.open(&id.identity) else {
                 continue;
@@ -218,6 +229,31 @@ impl ServerHs {
             return Ok(Some((i as u16, state)));
         }
         Ok(None)
+    }
+
+    /// REQ-EPSK-007: a server with nothing but external PSKs answers an
+    /// offered PSK it does not know as it answers a wrong binder, after the
+    /// same binder computation, so its identities cannot be enumerated.
+    fn refuse_unknown_psk(
+        &self,
+        core: &Core,
+        ch: &ClientHello,
+        msg: &[u8],
+        hash: crate::crypto::HashAlg,
+    ) -> Result<()> {
+        let Some(offered) = &ch.psk else {
+            return Ok(());
+        };
+        let cut = msg.len() - offered.binders_len();
+        let th = core.transcript.hash_with(hash, &msg[..cut])?;
+        let decoy = [0u8; crate::config::MIN_EXTERNAL_PSK_LEN];
+        let expected = EarlyStage::new(hash, Some(&decoy))?.external_binder(th.as_bytes())?;
+        let received = offered.binders.first().map(|b| b.as_slice()).unwrap_or(&[]);
+        let _ = ic_core::ct::verify(expected.as_bytes(), received);
+        Err(Error::new(
+            ErrorKind::DecryptError,
+            "external PSK binder did not verify",
+        ))
     }
 
     pub(crate) fn handle(&mut self, core: &mut Core, ty: HandshakeType, msg: &[u8]) -> Result<()> {
@@ -670,6 +706,21 @@ impl ServerHs {
                 .ok_or(Error::new(ErrorKind::Internal, "scheme"))?;
             return Ok((id.clone(), s, true));
         }
+        // REQ-NEG-002: a name we hold no certificate for is refused, not
+        // answered with a certificate for another name (RFC 6066 §3).
+        if let Some(sni) = ch.server_name.as_deref() {
+            let covered = self.config.identities.iter().any(|id| {
+                id.chain
+                    .first()
+                    .is_some_and(|leaf| x509::verify_name(leaf, &ServerName::Dns(sni)).is_ok())
+            });
+            if !covered && !self.config.sni_fallback {
+                return Err(Error::new(
+                    ErrorKind::UnrecognizedName,
+                    "no certificate for the requested server name",
+                ));
+            }
+        }
         for id in &self.config.identities {
             if let Some(s) = id.key.choose_scheme(&ch.sig_algs, schemes) {
                 return Ok((id.clone(), s, false));
@@ -814,6 +865,9 @@ impl ServerHs {
             };
         };
         let resumption = self.try_resume(core, &ch, msg, hash)?;
+        if resumption.is_none() && self.config.identities.is_empty() {
+            self.refuse_unknown_psk(core, &ch, msg, hash)?;
+        }
         self.client_accepts_tickets = ch.psk_modes.contains(&PSK_DHE_KE);
         self.client_offers_pha = ch.post_handshake_auth && !core.is_quic();
         // A resumed session was authenticated when its ticket was issued; no

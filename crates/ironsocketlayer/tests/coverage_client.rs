@@ -284,7 +284,11 @@ fn an_external_psk_accepted_under_another_hash_is_refused() {
     let key = [0x42u8; 32];
     let psk = || ExternalPsk::new(b"sensor-17", &key, HashAlg::Sha256).unwrap();
     let cc = Arc::new(ClientConfig::external_psk(Profile::Default, psk()).unwrap());
-    let sc = Arc::new(ServerConfig::external_psk_only(Profile::Default, vec![psk()]).unwrap());
+    let mut sc = ServerConfig::external_psk_only(Profile::Default, vec![psk()]).unwrap();
+    // Client and server share this process and one key: exactly what the
+    // Selfie guard refuses (REQ-EPSK-005), so it is off for this loopback.
+    sc.selfie_guard = false;
+    let sc = Arc::new(sc);
     let (mut c, _, mut sh) = hello_exchange(&cc, &sc);
     assert_eq!(sh.selected_psk, Some(0), "the server accepted the PSK");
     assert_eq!(sh.suite, Some(CipherSuite::TlsAes128GcmSha256));
@@ -354,6 +358,9 @@ fn a_retry_to_the_same_hash_keeps_the_external_psk() {
     cc.common.groups = vec![NamedGroup::X25519, NamedGroup::Secp384r1];
     cc.initial_key_shares = 1;
     let mut sc = ServerConfig::external_psk_only(Profile::Default, vec![psk()]).unwrap();
+    // Client and server share this process and one key: exactly what the
+    // Selfie guard refuses (REQ-EPSK-005), so it is off for this loopback.
+    sc.selfie_guard = false;
     sc.common.groups = vec![NamedGroup::Secp384r1];
     let (mut c, mut s) = connect(Arc::new(cc), Arc::new(sc), NAME).unwrap();
     assert!(c.report().hello_retry);
@@ -599,7 +606,10 @@ fn a_pinned_certificate_not_yet_valid_is_refused() {
 #[test]
 fn a_pin_with_name_checks_refuses_a_certificate_for_another_name() {
     let pki = Pki::new(KeyKind::EcdsaP256, NAME);
-    let sc = Arc::new(pki.server_config(Profile::Default));
+    // A server that answers any name, so the client's own check is tested.
+    let mut sc = pki.server_config(Profile::Default);
+    sc.sni_fallback = true;
+    let sc = Arc::new(sc);
     let mut cc = ClientConfig::pinned(Profile::Default, &pki.server_spki()).unwrap();
     if let PeerVerification::PinnedSpki { check_names, .. } = &mut cc.verification {
         *check_names = true;

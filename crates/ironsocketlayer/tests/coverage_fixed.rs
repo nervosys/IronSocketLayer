@@ -1015,6 +1015,13 @@ fn pinned_peers_are_verified_by_key() {
         r.unwrap();
         assert!(c.report().has(Property::PinnedPeer));
     });
+    // With SNI, a name no identity covers is refused (REQ-NEG-002).
+    let mut asks = cc.clone();
+    asks.verification = pin(&pki.server_spki(), false);
+    handshake(&asks, &sc, "other.test", default_limits(), |r, _, s| {
+        assert!(r.is_err());
+        assert_eq!(latched(s).kind(), ErrorKind::UnrecognizedName);
+    });
     // A server pinning its client.
     let identity = pki.client_identity(KeyKind::EcdsaP256, "device");
     let mut mutual = cc.clone();

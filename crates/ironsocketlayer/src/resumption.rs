@@ -171,6 +171,48 @@ impl ReplayGuard for MemoryReplayGuard {
     }
 }
 
+/// ClientHello randoms this process recently sent with an external PSK, so
+/// its own server can recognise one reflected back to it: the "Selfie"
+/// attack, RFC 9257 §4.1. REQ-EPSK-005. Without `std` there is no process-wide
+/// state and the guard records nothing; provision one key per direction.
+#[cfg(feature = "std")]
+static OFFERED_RANDOMS: std::sync::Mutex<([[u8; 32]; SELFIE_RING], usize)> =
+    std::sync::Mutex::new(([[0; 32]; SELFIE_RING], 0));
+
+/// How many recent external-PSK ClientHellos the Selfie guard remembers.
+pub const SELFIE_RING: usize = 256;
+
+/// Remember `random` as one this process sent with an external PSK.
+pub(crate) fn note_external_psk_hello(random: &[u8; 32]) {
+    #[cfg(feature = "std")]
+    {
+        let mut ring = OFFERED_RANDOMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = ring.1 % SELFIE_RING;
+        ring.0[at] = *random;
+        ring.1 = at + 1;
+    }
+    #[cfg(not(feature = "std"))]
+    let _ = random;
+}
+
+/// Whether this process sent a ClientHello with `random` and an external PSK.
+pub(crate) fn is_own_external_psk_hello(random: &[u8; 32]) -> bool {
+    #[cfg(feature = "std")]
+    {
+        let ring = OFFERED_RANDOMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ring.0.iter().any(|r| r == random)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = random;
+        false
+    }
+}
+
 /// Where a client keeps tickets between connections.
 ///
 /// Implementations must hand each ticket out at most once. `REQ-PSK-004`.

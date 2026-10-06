@@ -62,6 +62,9 @@ pub enum ErrorKind {
     CertificateRequired,
     /// No application protocol in common.
     NoApplicationProtocol,
+    /// The client asked for a server name this server has no certificate
+    /// for (RFC 6066 §3).
+    UnrecognizedName,
     /// The server did not accept Encrypted Client Hello; its retry
     /// configurations are available on the connection.
     EchRejected,
@@ -111,6 +114,7 @@ impl ErrorKind {
         Self::CertificateUsage,
         Self::CertificateRequired,
         Self::NoApplicationProtocol,
+        Self::UnrecognizedName,
         Self::EchRejected,
         Self::PolicyViolation,
         Self::FipsModule,
@@ -148,6 +152,7 @@ impl ErrorKind {
             Self::CertificateUsage => "error:certificate-usage",
             Self::CertificateRequired => "error:certificate-required",
             Self::NoApplicationProtocol => "error:no-application-protocol",
+            Self::UnrecognizedName => "error:unrecognized-name",
             Self::EchRejected => "error:ech-rejected",
             Self::PolicyViolation => "error:policy-violation",
             Self::FipsModule => "error:fips-module",
@@ -189,6 +194,7 @@ impl ErrorKind {
             Self::UnknownCa => A::UnknownCa,
             Self::CertificateRequired => A::CertificateRequired,
             Self::NoApplicationProtocol => A::NoApplicationProtocol,
+            Self::UnrecognizedName => A::UnrecognizedName,
             Self::EchRejected => A::EchRequired,
             Self::PolicyViolation => A::InsufficientSecurity,
             Self::FipsModule
@@ -220,6 +226,7 @@ impl ErrorKind {
                 | Self::UnknownCa
                 | Self::CertificateNameMismatch
                 | Self::NoApplicationProtocol
+                | Self::UnrecognizedName
                 | Self::HandshakeFailure
                 | Self::CertificateRequired
                 | Self::EchRejected

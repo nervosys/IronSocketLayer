@@ -1209,7 +1209,7 @@ impl<'a> Connection<'a> {
                 name.is_none_or(|n| x509::verify_name(&id.chain[0], &ServerName::Dns(n)).is_ok())
             })
             .ok_or(Error::new(
-                ErrorKind::HandshakeFailure,
+                ErrorKind::UnrecognizedName,
                 "no identity for requested name",
             ))?;
         let scheme = common

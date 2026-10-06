@@ -281,6 +281,8 @@ impl ClientHs {
                 binders: alloc::vec![alloc::vec![0u8; psk.hash.len()]],
             });
             core.report.event("event:external-psk-offered", "");
+            // REQ-EPSK-005: so our own server can refuse this hello reflected.
+            crate::resumption::note_external_psk_hello(&self.hello.random);
             self.send_hello(core)?;
         } else {
             self.offer_ticket(core);

@@ -230,9 +230,12 @@ fn a_required_client_certificate_that_is_missing_fails_the_handshake() {
 #[test]
 fn the_wrong_name_is_refused_by_the_client() {
     let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    // A server that answers any name, so the client's own check is tested.
+    let mut sc = pki.server_config(Profile::Default);
+    sc.sni_fallback = true;
     let err = connect(
         Arc::new(pki.client_config(Profile::Default)),
-        Arc::new(pki.server_config(Profile::Default)),
+        Arc::new(sc),
         "other.test",
     )
     .unwrap_err();
