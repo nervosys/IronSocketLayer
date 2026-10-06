@@ -395,3 +395,12 @@ load-bearing when iPAddress constraints became one name type (REQ-X509-072),
 and is now marked tested. All 59 remaining gap keys have a disposition
 (44 defensive, 13 unreachable, 2 environment). The inventory is
 [coverage-whole-20261006.csv](evidence/coverage-whole-20261006.csv).
+
+### Release 0.2.1
+
+Fixed-engine ECH GREASE and the coverage work above. On Windows: 634 tests
+passed against IronCrypto 0.2.14 (path) and against the 0.2.13 release
+commit, the latest published; fmt, clippy, the Cortex-M4 `no_std` build, the
+Rust 1.88 build, `openssl_fixed` (5) and live interop (6) passed. The QEMU
+Cortex-M4 run passed on the GREASE commit (largest session stack 34,428
+bytes).

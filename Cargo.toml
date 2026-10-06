@@ -13,7 +13,7 @@ members = [
 exclude = ["bench", "fuzz", "embedded"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-or-later"
@@ -27,12 +27,12 @@ categories = ["cryptography", "network-programming", "no-std"]
 publish = true
 
 [workspace.dependencies]
-isl-ontology = { path = "crates/isl-ontology", version = "0.2.0", default-features = false }
-ironsocketlayer = { path = "crates/ironsocketlayer", version = "0.2.0", default-features = false }
+isl-ontology = { path = "crates/isl-ontology", version = "0.2.1", default-features = false }
+ironsocketlayer = { path = "crates/ironsocketlayer", version = "0.2.1", default-features = false }
 
 # IronCrypto supplies every cryptographic primitive. Nothing in this workspace
 # implements a cipher, hash, MAC, KDF, key agreement, KEM or signature itself.
-# 0.2.13 is the release 0.2.0 was tested against.
+# 0.2.13 is the release 0.2.1 was tested against.
 # 0.2.11 is the first IronCrypto release with ic-hpke (ECH's HPKE) and ML-DSA
 # PKCS#8 in ic-pkix, both used here instead of local code.
 # 0.2.10 is the first IronCrypto release whose ML-DSA decodes its secret
