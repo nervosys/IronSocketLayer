@@ -8,6 +8,7 @@
 
 mod mcp;
 mod net;
+mod offline;
 mod ops;
 
 use ic_json::Json;
@@ -28,6 +29,9 @@ USAGE:
     isl selftest [--json]
     isl probe <host[:port]> [--profile <p>] [--alpn h2,http/1.1] [--ech] [--json]
     isl serve --cert <chain.pem> --key <pkcs8.pem> [--bind 127.0.0.1] [--port 8443] [--profile <p>] [--alpn ..] [--once]
+    isl inspect <cert.pem> [--json]
+    isl verify <chain.pem> --roots <roots.pem> [--name <host>] [--client] [--json]
+    isl check-config <config.json|-> [--json]
     isl mcp
 
 Kinds: protocol-version, content-type, handshake-message, cipher-suite,
@@ -53,7 +57,16 @@ impl Args {
             if let Some(name) = s.strip_prefix("--") {
                 if matches!(
                     name,
-                    "kind" | "format" | "profile" | "alpn" | "cert" | "key" | "port"
+                    "kind"
+                        | "format"
+                        | "profile"
+                        | "alpn"
+                        | "cert"
+                        | "key"
+                        | "port"
+                        | "bind"
+                        | "roots"
+                        | "name"
                 ) {
                     let v = it.next().unwrap_or_default();
                     a.options.push((name.to_string(), v));
@@ -85,6 +98,17 @@ impl Args {
 
 fn s<'a>(j: &'a Json, k: &str) -> &'a str {
     j.get(k).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// A scalar field for display: strings as they are, numbers and booleans
+/// written out, anything else empty.
+fn show(j: &Json, k: &str) -> String {
+    match j.get(k) {
+        Some(Json::String(v)) => v.clone(),
+        Some(Json::Number(n)) => format!("{n}"),
+        Some(Json::Bool(v)) => v.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn b(j: &Json, k: &str) -> bool {
@@ -471,6 +495,81 @@ failed: {e} ({})",
                 code
             }
         }
+        (Some("inspect"), Some(path)) => emit(
+            read_capped(path).and_then(|t| offline::inspect_certificate(&t)),
+            json,
+            |v| {
+                for c in v.as_array().unwrap_or(&[]) {
+                    for k in [
+                        "subjectCommonName",
+                        "issuerCommonName",
+                        "serial",
+                        "key",
+                        "signatureScheme",
+                        "spkiSha256",
+                    ] {
+                        println!("  {k:<18} {}", clean(&show(c, k)));
+                    }
+                    println!("  {:<18} {}", "dnsNames", clean(&str_list(c, "dnsNames")));
+                    println!("  {:<18} {}", "ipAddresses", str_list(c, "ipAddresses"));
+                    println!("  {:<18} {}", "isCa", b(c, "isCa"));
+                    println!("  {:<18} {}", "expired", b(c, "expired"));
+                    println!("  {:<18} {}", "secondsLeft", show(c, "secondsLeft"));
+                    println!();
+                }
+            },
+        ),
+        (Some("verify"), Some(path)) => {
+            let Some(roots) = args.option("roots") else {
+                return usage_error("verify needs --roots");
+            };
+            let r = read_capped(path).and_then(|chain| {
+                let roots = read_capped(roots)?;
+                offline::verify_chain(&chain, &roots, args.option("name"), args.flag("client"))
+            });
+            let valid =
+                matches!(&r, Ok(v) if v.get("valid").and_then(|x| x.as_bool()) == Some(true));
+            let code = emit(r, json, |v| {
+                println!("  {:<8} {}", "valid", b(v, "valid"));
+                for k in ["error", "context", "action", "depth", "leafKey", "anchor"] {
+                    if let Some(x) = v.get(k) {
+                        if !matches!(x, Json::Null) {
+                            println!("  {k:<8} {}", clean(&show(v, k)));
+                        }
+                    }
+                }
+            });
+            if valid {
+                code
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        (Some("check-config"), Some(path)) => {
+            let r = read_capped(path).and_then(|t| {
+                let cfg = ic_json::parse(&t).map_err(|e| format!("not JSON: {e}"))?;
+                offline::check_config(&cfg)
+            });
+            let valid =
+                matches!(&r, Ok(v) if v.get("valid").and_then(|x| x.as_bool()) == Some(true));
+            let code = emit(r, json, |v| {
+                println!("  {:<12} {}", "valid", b(v, "valid"));
+                for k in ["error", "context", "action", "profile"] {
+                    if let Some(x) = v.get(k) {
+                        if !matches!(x, Json::Null) {
+                            println!("  {k:<12} {}", s(v, k));
+                        }
+                    }
+                }
+                println!("  {:<12} {}", "required", str_list(v, "required"));
+                println!("  {:<12} {}", "relaxations", str_list(v, "relaxations"));
+            });
+            if valid {
+                code
+            } else {
+                ExitCode::FAILURE
+            }
+        }
         (Some("serve"), _) => {
             let (Some(cert), Some(key)) = (args.option("cert"), args.option("key")) else {
                 return usage_error("serve needs --cert and --key");
@@ -504,6 +603,30 @@ failed: {e} ({})",
     }
 }
 
+/// A file (or `-` for standard input) of at most `offline::MAX_INPUT` bytes.
+fn read_capped(path: &str) -> Result<String, String> {
+    use std::io::Read as _;
+    let limit = offline::MAX_INPUT as u64 + 1;
+    let mut text = String::new();
+    let read = if path == "-" {
+        std::io::stdin().take(limit).read_to_string(&mut text)
+    } else {
+        std::fs::File::open(path).and_then(|f| f.take(limit).read_to_string(&mut text))
+    };
+    read.map_err(|e| format!("{path}: {e}"))?;
+    if text.len() as u64 >= limit {
+        return Err(format!("{path}: larger than {} bytes", offline::MAX_INPUT));
+    }
+    Ok(text)
+}
+
+/// Peer-supplied text (a certificate's names) without control characters.
+fn clean(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
 fn usage_error(msg: &str) -> ExitCode {
     eprintln!("error: {msg}\n\n{USAGE}");
     ExitCode::from(2)
@@ -516,4 +639,24 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     run(Args::parse(raw))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Args;
+
+    /// Every option that takes a value consumes it: `--bind` once did not,
+    /// so `isl serve --bind 0.0.0.0` silently kept 127.0.0.1.
+    #[test]
+    fn options_with_values_are_parsed() {
+        let raw = |v: &[&str]| v.iter().map(|s| s.to_string()).collect();
+        let a = Args::parse(raw(&[
+            "serve", "--bind", "0.0.0.0", "--roots", "r.pem", "--name", "h", "--once",
+        ]));
+        assert_eq!(a.option("bind"), Some("0.0.0.0"));
+        assert_eq!(a.option("roots"), Some("r.pem"));
+        assert_eq!(a.option("name"), Some("h"));
+        assert!(a.flag("once"));
+        assert_eq!(a.positional, ["serve"]);
+    }
 }

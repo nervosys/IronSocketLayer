@@ -1032,6 +1032,11 @@ impl<'a> Certificate<'a> {
         name_common_name(self.subject)
     }
 
+    /// The issuer common name, for display only.
+    pub fn issuer_common_name(&self) -> Option<&'a str> {
+        name_common_name(self.issuer)
+    }
+
     /// REQ-X509-022: both endpoints of the certificate validity interval are inclusive.
     fn check_validity(&self, now: u64) -> Result<()> {
         if now < self.not_before {

@@ -142,6 +142,34 @@ pub fn tools() -> Vec<Tool> {
             call: |_| ops::capabilities(),
         },
         Tool {
+            name: "inspect_certificate",
+            description: "Parse PEM certificates (no network): subject and issuer names, DNS and IP names, validity and seconds left, CA flag, key and signature scheme, and spkiSha256 (the SHA-256 of the SubjectPublicKeyInfo, what a key pin is made of).",
+            schema: || schema(vec![("pem", string_prop("One or more PEM CERTIFICATE blocks, at most 256 KiB."))], &["pem"]),
+            call: |a| crate::offline::inspect_certificate(required(a, "pem")?),
+        },
+        Tool {
+            name: "verify_chain",
+            description: "Validate a certificate chain against trust anchors as a handshake would (no network): path, validity now, server or client usage, and the name if given. On failure, the error id, context and recovery action; recovery:ask-user means a trust decision to report, not to make.",
+            schema: || {
+                schema(
+                    vec![
+                        ("chain", string_prop("PEM certificates, leaf first.")),
+                        ("roots", string_prop("PEM trust anchors.")),
+                        ("name", string_prop("DNS name or IP address the leaf must cover.")),
+                        ("client", bool_prop("Check client-authentication usage instead of server.")),
+                    ],
+                    &["chain", "roots"],
+                )
+            },
+            call: |a| crate::offline::verify_chain(required(a, "chain")?, required(a, "roots")?, arg(a, "name"), flag(a, "client")),
+        },
+        Tool {
+            name: "check_config",
+            description: "Build the configuration a JSON object describes with the library's own constructors and validation (no network), and report whether it is valid (with error id and action if not), the profile, the required properties and the relaxations (safe defaults given up). Keys: side (client|server), intent (+ fips, postQuantum, mutual) or profile, require (property ids), revocation, earlyData, echGrease, echConfigs, identity (client), clientAuth, sniFallback, selfieGuard, externalPsk (server).",
+            schema: || schema(vec![("config", Json::object([("type", Json::str("object")), ("description", Json::str("The configuration to check."))]))], &["config"]),
+            call: |a| crate::offline::check_config(a.get("config").ok_or("missing required object argument 'config'")?),
+        },
+        Tool {
             name: "selftest",
             description: "Run IronCrypto's pre-operational FIPS self-tests and report each result and the module state.",
             schema: || schema(vec![], &[]),
@@ -399,7 +427,19 @@ mod tests {
     fn every_tool_returns_on_hostile_arguments() {
         for tool in tools() {
             for value in hostile() {
-                for key in ["id", "kind", "intent", "fips", "postQuantum", "mutual"] {
+                for key in [
+                    "id",
+                    "kind",
+                    "intent",
+                    "fips",
+                    "postQuantum",
+                    "mutual",
+                    "pem",
+                    "chain",
+                    "roots",
+                    "name",
+                    "config",
+                ] {
                     let args = Json::object([(key, value.clone())]);
                     let r = call(tool.name, args);
                     assert!(

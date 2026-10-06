@@ -287,7 +287,7 @@ fn downgrade_hint(
     })
 }
 
-fn pem_blocks(text: &str, label: &str) -> Result<Vec<Vec<u8>>, String> {
+pub(crate) fn pem_blocks(text: &str, label: &str) -> Result<Vec<Vec<u8>>, String> {
     let begin = format!("-----BEGIN {label}-----");
     let end = format!("-----END {label}-----");
     let mut out = Vec::new();

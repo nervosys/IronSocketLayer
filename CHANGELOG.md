@@ -38,6 +38,17 @@ versions may change the API.
   certificate in use expires within `Common::expiry_warning` (14 days by
   default; 0 never), at handshake completion and after post-handshake
   authentication. `SessionReport::local_not_after` (`localNotAfter`).
+- Offline tools, as MCP tools and `isl` commands: `inspect_certificate`
+  (`isl inspect`: names, validity, CA flag, key, signature, `spkiSha256`),
+  `verify_chain` (`isl verify`: path, usage and name, with error id and
+  action), and `check_config` (`isl check-config`: a configuration built
+  from JSON with the library's validation, its requirements and
+  relaxations; unknown keys and mistyped values are errors). Inputs are
+  capped at 256 KiB. `Certificate::issuer_common_name`.
+
+### Fixed
+- `isl serve --bind <addr>` was parsed as a flag and its address ignored,
+  so the server always bound 127.0.0.1.
 
 ### Changed
 - Requires IronCrypto 0.2.15 or later, below 0.3. Its HPKE now also offers

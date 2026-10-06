@@ -118,6 +118,15 @@ Assert on properties, not on the absence of errors. A handshake that succeeded
 with classical key exchange is a success for TLS and a failure for a task that
 required post-quantum confidentiality.
 
+## Inspect offline before connecting
+
+Three MCP tools (and `isl` commands) need no network:
+`inspect_certificate` (`isl inspect`) reads PEM certificates and gives the
+`spkiSha256` a pin is made of; `verify_chain` (`isl verify`) validates a chain
+against roots, with the error id and action on failure; `check_config`
+(`isl check-config`) builds a configuration from a JSON description with the
+library's own validation and lists its requirements and relaxations.
+
 ## When a connection fails, read the error id
 
 Every `ironsocketlayer::Error` has an `id()` such as `error:unknown-ca`.

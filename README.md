@@ -48,7 +48,7 @@ IronSocketLayer answers each one in the library itself:
 | Knowing what you got | Every connection yields a **`SessionReport`**: the safe defaults its configuration gave up (`relaxations`), version, suite, group, schemes, peer chain facts, the names the peer's certificate was issued for (`peerNames`, the ones to authorize on), the **security properties that hold** (`property:post-quantum-key-exchange`, `property:mutual-authentication`, `property:fips-approved-algorithms`, ...), FIPS service indicators, and a typed event trail. Stable camelCase JSON. |
 | Understanding failure | Every error is a closed **`ErrorKind`** with a stable id (`error:unknown-ca`), the TLS alert it maps to, and `retryable` / `caller_correctable` / `peer_fault` flags, and a **`recovery()`** action to branch on (`recovery:ask-user`, `recovery:stop`, `recovery:retry-with-ech-configs`, ...). The ontology holds its meaning and recovery steps under the same id. |
 | Discovering the library | An **ontology** of 104 protocol entries, 33 errors, 6 profiles and 11 intents, exported as JSON, JSON-LD, OWL/Turtle, JSON Schema and Markdown, linked into IronCrypto's ontology by `builtOn` edges. |
-| Tool use | An **MCP server** (`isl mcp`) exposing the ontology, the recommender, the error catalog, self-tests and a live `tls_probe`. |
+| Tool use | An **MCP server** (`isl mcp`) exposing the ontology, the recommender, the error catalog, self-tests, a live `tls_probe`, and offline `inspect_certificate`, `verify_chain` and `check_config`. |
 
 And it removes one foot-gun entirely: **there is no option to disable
 certificate verification.** An agent that needs to talk to a peer without a PKI
@@ -211,6 +211,9 @@ $ isl explain error:unknown-ca
 $ isl probe example.com:443 --profile post-quantum --json
 $ isl probe crypto.cloudflare.com --ech
 $ isl serve --cert chain.pem --key key.pem --port 8443
+$ isl inspect cert.pem                      # names, validity, SPKI pin; no network
+$ isl verify chain.pem --roots ca.pem --name api.example
+$ echo '{"side":"client","intent":"intent:https-client"}' | isl check-config -
 $ isl capabilities
 $ isl mcp        # { "mcpServers": { "ironsocketlayer": { "command": "isl", "args": ["mcp"] } } }
 ```
