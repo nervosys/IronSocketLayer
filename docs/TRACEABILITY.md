@@ -350,6 +350,6 @@ feed the life-cycle data.
 
 | REQ-0RTT-006 | `MemoryReplayGuard::with_capacity` sizes the in-memory guard; when it is full and refuses early data, the server reports `event:replay-guard-full`. | src/resumption.rs | Test | tests/protocol_hardening.rs::a_full_replay_guard_is_reported |
 
-| REQ-ECH-011 | A client without ECH configurations sends a GREASE encrypted_client_hello (RFC 9849 §6.2) unless `ech_grease` is off, repeats it after HelloRetryRequest, and ignores retry configurations sent in answer. | src/client.rs | Test | tests/ech.rs::a_greasing_client_ignores_the_retry_configurations |
+| REQ-ECH-011 | A client (owned or fixed-capacity) without ECH configurations sends a GREASE encrypted_client_hello (RFC 9849 §6.2) unless `ech_grease` is off, repeats it after HelloRetryRequest, and ignores retry configurations sent in answer. | src/client.rs | Test | tests/ech.rs::a_greasing_client_ignores_the_retry_configurations; tests/protocol_hardening.rs::the_fixed_client_greases_ech |
 
 | REQ-REC-009 | A record protector's static IV is zeroized when the protector is dropped or replaced, as its key and traffic secret are. | src/record.rs | Review | `impl Drop for Protector` in src/record.rs wipes `iv` with IronCrypto's `Zeroize`; `AeadKey` and `Output` (the key and traffic secret) zeroize in their own `Drop`. A rekey replaces the protector, dropping the old one. Observing freed memory needs unsafe code, which the library forbids, so this is checked by review. |

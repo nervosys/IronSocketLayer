@@ -20,6 +20,7 @@ use ironsocketlayer::fixed;
 use ironsocketlayer::key_schedule::{self, EarlyStage};
 use ironsocketlayer::msgs::{self, ClientHello, ServerHello};
 use ironsocketlayer::record::{self, Protector};
+use ironsocketlayer::report::HandshakeState;
 use ironsocketlayer::{Connection, ErrorKind};
 
 const SUITE: CipherSuite = CipherSuite::TlsAes128GcmSha256;
@@ -611,4 +612,92 @@ fn unread_early_data_is_bounded() {
     let mut s = Connection::server(sc).unwrap();
     let e = s.read_tls(&c.take_tls()).unwrap_err();
     assert_eq!(e.kind(), ErrorKind::CapacityExceeded, "{e}");
+}
+
+/// The ClientHello in the first record of `flight`.
+fn client_hello_in(flight: &[u8]) -> ClientHello {
+    let mut flight = flight.to_vec();
+    let rec = record::take_record(&mut flight).unwrap().unwrap();
+    ClientHello::decode(&rec.body[4..]).unwrap()
+}
+
+/// REQ-ECH-011: the fixed client sends GREASE too, repeats it unchanged
+/// after HelloRetryRequest, ignores the retry configurations an ECH server
+/// answers with, and sends none when `ech_grease` is off.
+#[test]
+fn the_fixed_client_greases_ech() {
+    use ironsocketlayer::config::ClientConfig;
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let fixed_client = |grease: bool| {
+        let mut cc: ClientConfig = pki.client_config(Profile::Default);
+        cc.tickets = None;
+        cc.ech_grease = grease;
+        cc.common.groups = vec![NamedGroup::X25519, NamedGroup::Secp384r1];
+        cc.initial_key_shares = 1;
+        cc
+    };
+    let ech = Arc::new(
+        EchServer::generate(3, "server.test", 64, &mut ic_drbg::Rng::from_os().unwrap()).unwrap(),
+    );
+    let mut sc = pki.server_config(Profile::Default);
+    sc.ech = Some(ech);
+    sc.common.groups = vec![NamedGroup::Secp384r1]; // forces HelloRetryRequest
+    let sc = Arc::new(sc);
+
+    let cc = fixed_client(true);
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut c = fixed::Connection::client(
+        &cc,
+        "server.test",
+        &mut rng,
+        b.storage(),
+        fixed::Limits::default(),
+    )
+    .unwrap();
+    let mut s = Connection::server(sc.clone()).unwrap();
+    let first = c.take();
+    let grease = client_hello_in(&first).ech.expect("a GREASE extension");
+    assert!(matches!(grease, msgs::EchHello::Outer { ref enc, .. } if enc.len() == 32));
+    s.feed(&first).unwrap();
+    c.feed(&s.take()).unwrap();
+    let second = c.take();
+    assert_eq!(
+        client_hello_in(&second).ech,
+        Some(grease),
+        "repeated after HRR"
+    );
+    s.feed(&second).unwrap();
+    for _ in 0..4 {
+        let to_c = s.take();
+        if !to_c.is_empty() {
+            c.feed(&to_c).unwrap();
+        }
+        let to_s = c.take();
+        if !to_s.is_empty() {
+            s.feed(&to_s).unwrap();
+        }
+    }
+    assert!(s.report().hello_retry);
+    assert_eq!(
+        s.report().ech,
+        "ech:rejected",
+        "the server sent retry configurations"
+    );
+    assert_eq!(c.report().state, HandshakeState::Connected);
+    assert!(!s.is_handshaking(), "{:?}", s.error());
+
+    // Off: no extension.
+    let cc = fixed_client(false);
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut c = fixed::Connection::client(
+        &cc,
+        "server.test",
+        &mut rng,
+        b.storage(),
+        fixed::Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(client_hello_in(&c.take()).ech, None);
 }

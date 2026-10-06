@@ -197,10 +197,16 @@ pub struct Connection<'a> {
     staple_requested: bool,
     revocation_checked: bool,
     retried: bool,
+    /// Seed of this client's GREASE ECH extension, so a second ClientHello
+    /// repeats it exactly without holding it. REQ-ECH-011.
+    ech_grease: Option<[u8; 32]>,
     retry_fingerprint: Option<Output>,
     retry_cookie: [u8; 256],
     retry_cookie_len: usize,
 }
+
+/// Largest GREASE ECH payload: a 288-byte padded inner hello and its tag.
+const GREASE_PAYLOAD_MAX: usize = 288 + 16;
 
 impl<'a> Connection<'a> {
     /// Initialize a client and queue its ClientHello. `REQ-FIX-004`.
@@ -242,6 +248,11 @@ impl<'a> Connection<'a> {
         c.session_id_len = 32;
         crypto::fill_random(c.rng, &mut c.random)?;
         crypto::fill_random(c.rng, &mut c.session_id)?;
+        if config.ech_grease {
+            let mut seed = [0u8; 32];
+            crypto::fill_random(c.rng, &mut seed)?;
+            c.ech_grease = Some(seed);
+        }
         c.client_hello()?;
         c.transition(State::WaitServerHello)?;
         Ok(c)
@@ -396,6 +407,7 @@ impl<'a> Connection<'a> {
             sent_close: false,
             peer_closed: false,
             retried: false,
+            ech_grease: None,
             retry_fingerprint: None,
             retry_cookie: [0; 256],
             retry_cookie_len: 0,
@@ -913,6 +925,17 @@ impl<'a> Connection<'a> {
             let sid = self.session_id;
             let cookie = self.retry_cookie;
             let cookie_len = self.retry_cookie_len;
+            // REQ-ECH-011: GREASE as the owned client sends it (a real
+            // suite, random configuration id, X25519-sized enc, a padded
+            // inner-hello-sized payload), derived from the seed.
+            let mut grease = [0u8; 2 + 32 + GREASE_PAYLOAD_MAX];
+            let grease_len = match self.ech_grease {
+                Some(seed) => {
+                    crypto::hkdf_expand(HashAlg::Sha256, &seed, b"isl ech grease", &mut grease)?;
+                    2 + 32 + 192 + 32 * usize::from(grease[1] % 4) + 16
+                }
+                None => 0,
+            };
             self.send_message(1, |w| {
                 w.u16(0x0303)?;
                 w.put(&random)?;
@@ -976,6 +999,16 @@ impl<'a> Connection<'a> {
                     }
                     if let Some(limit) = common.record_size_limit {
                         w.ext(28, |w| w.u16(limit))?;
+                    }
+                    if grease_len != 0 {
+                        w.ext(0xfe0d, |w| {
+                            w.u8(0)?;
+                            w.u16(0x0001)?;
+                            w.u16(0x0001)?;
+                            w.u8(grease[0])?;
+                            w.vector(2, &grease[2..34])?;
+                            w.vector(2, &grease[34..grease_len])
+                        })?;
                     }
                     if config.revocation != crate::config::Revocation::Off
                         && matches!(config.verification, PeerVerification::Roots(_))
@@ -1565,6 +1598,9 @@ impl<'a> Connection<'a> {
                 10 => {
                     u16_list(bytes, 2)?;
                 }
+                // REQ-ECH-011: retry configurations answering GREASE are
+                // ignored (RFC 9849 §6.2).
+                0xfe0d if self.ech_grease.is_some() => {}
                 _ => {
                     return Err(Error::new(
                         ErrorKind::UnsupportedExtension,

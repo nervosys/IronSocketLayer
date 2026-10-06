@@ -3,6 +3,14 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## Unreleased
+
+### Hardened
+- The fixed-capacity client also sends ECH GREASE (`ClientConfig::ech_grease`),
+  repeats it after HelloRetryRequest, and ignores retry configurations sent
+  in answer. Its ClientHello grows by up to 350 bytes; turn `ech_grease` off
+  where that matters.
+
 ## 0.2.0 (2026-10-06)
 
 Security fixes from the 2026-10-06 audit
