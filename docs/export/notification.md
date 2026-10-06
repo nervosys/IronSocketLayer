@@ -26,6 +26,16 @@ exist. The crate will be at `https://crates.io/crates/ironsocketlayer`. The
 GitHub repository URL is unchanged. Whether to send a short corrected notice
 naming the new crate URL is the owner's decision; if sent, record it here.
 
+## Publication
+
+First public release, after the notification above:
+
+| Field | Value |
+|---|---|
+| crates.io | `isl-ontology` 0.1.0 (04:00:33 UTC), `ironsocketlayer` 0.1.0 (04:00:50 UTC), `isl-cli` 0.1.0 (04:01:08 UTC), all on 2026-10-06 UTC (the evening of 2026-10-05 PDT) |
+| Tag | `v0.1.0`, commit `48ffc42643495e72465b64a08070ae7dbc48695b` |
+| Repository | `https://github.com/nervosys/IronSocketLayer` made public at the same time |
+
 ## To complete
 
 Replace each **Not recorded** / **Not confirmed** entry from the sent message
