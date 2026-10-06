@@ -249,7 +249,9 @@ fields to the configuration and report structs:
 - A server that requires client certificates never accepts an external PSK
   in their place.
 
-Report vulnerabilities as [SECURITY.md](SECURITY.md) describes.
+Report vulnerabilities as [SECURITY.md](SECURITY.md) describes. An
+independent review is the most useful contribution this project could get;
+[docs/REVIEW-GUIDE.md](docs/REVIEW-GUIDE.md) says where to start.
 
 ## FIPS 140-3 and DO-178C
 

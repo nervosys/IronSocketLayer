@@ -150,9 +150,18 @@ Everything a peer can make this endpoint hold is bounded:
 | Resource | Bound |
 |---|---|
 | Unparsed TLS input buffered | 4 full records + 16 KiB |
-| One handshake message | 128 KiB (configurable) |
+| One record's inner plaintext | 2^14 + 1 bytes, checked before decryption |
+| One handshake message | 128 KiB (configurable); a Finished, the hash length |
+| Extensions and key shares in a message | what the message holds; duplicates found by sorting, O(n log n) |
+| Unread application data, including 0-RTT | 1 MiB (configurable, `max_buffered_plaintext`) |
+| Compatibility ChangeCipherSpec records | 1 |
 | Certificates in a chain | 10 |
-| Path-building work | 100 candidate checks, depth 8 |
+| Path-building work | 24 signature verifications, depth 8 |
+| Extensions in a certificate, CRL or OCSP response | 64 |
+| OCSP delegated-responder candidates | 4 |
+| Post-handshake CertificateRequests answered | 16 per connection |
+| KeyUpdate requests answered while silent | 1 |
+| In-memory 0-RTT replay guard | 65,536 entries (configurable) |
 | Audit events per report | 256 |
 | Records per AES-GCM key | 2^24, with a KeyUpdate sent 2^16 before |
 
