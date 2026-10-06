@@ -359,8 +359,7 @@ fn parse(der: &[u8]) -> Result<ParsedCrl> {
                             return Err(bad("malformed CRL entry extensions"));
                         }
                         let _ = ev;
-                        let (u, names) =
-                            scan_extensions_with_issuer(ewhole, true).map_err(wrap)?;
+                        let (u, names) = scan_extensions_with_issuer(ewhole, true).map_err(wrap)?;
                         if let Some(u) = u {
                             unsupported = Some(u);
                         }
@@ -2765,16 +2764,32 @@ AAAA
         for (entries, revoked) in [
             // Control: a plain listing revokes.
             (alloc::vec![(serial, None)], true),
-            (alloc::vec![(serial, None), (unrelated, Some(&other[..]))], true),
+            (
+                alloc::vec![(serial, None), (unrelated, Some(&other[..]))],
+                true,
+            ),
             // The entry itself names another issuer.
-            (alloc::vec![(unrelated, None), (serial, Some(&other[..]))], false),
+            (
+                alloc::vec![(unrelated, None), (serial, Some(&other[..]))],
+                false,
+            ),
             // It inherits another issuer from the entry before it.
-            (alloc::vec![(unrelated, Some(&other[..])), (serial, None)], false),
+            (
+                alloc::vec![(unrelated, Some(&other[..])), (serial, None)],
+                false,
+            ),
             // Naming the CRL issuer again restores the attribution, for it
             // and for the entries after it.
-            (alloc::vec![(unrelated, Some(&other[..])), (serial, Some(&own[..]))], true),
             (
-                alloc::vec![(unrelated, Some(&other[..])), (unrelated, Some(&own[..])), (serial, None)],
+                alloc::vec![(unrelated, Some(&other[..])), (serial, Some(&own[..]))],
+                true,
+            ),
+            (
+                alloc::vec![
+                    (unrelated, Some(&other[..])),
+                    (unrelated, Some(&own[..])),
+                    (serial, None)
+                ],
                 true,
             ),
         ] {
@@ -2801,13 +2816,30 @@ AAAA
         let ca = Certificate::parse(&f.ca).unwrap();
         let leaf = Certificate::parse(&f.leaf).unwrap();
         let schemes = crate::crypto::sign::VERIFY_SCHEMES;
-        let e = check(&leaf, ca.subject, ca.spki, ca.ext.key_usage, &store, f.now, schemes)
-            .unwrap_err();
+        let e = check(
+            &leaf,
+            ca.subject,
+            ca.spki,
+            ca.ext.key_usage,
+            &store,
+            f.now,
+            schemes,
+        )
+        .unwrap_err();
         assert_eq!(e.kind(), ErrorKind::CertificateRevoked);
         // Another key under the same name gets nothing from it.
         let mut rng = ic_drbg::Rng::from_os().unwrap();
         let impostor = SigningKey::generate(KeyKind::EcdsaP384, &mut rng).unwrap();
-        assert!(!check(&leaf, ca.subject, impostor.spki(), None, &store, f.now, schemes).unwrap());
+        assert!(!check(
+            &leaf,
+            ca.subject,
+            impostor.spki(),
+            None,
+            &store,
+            f.now,
+            schemes
+        )
+        .unwrap());
         // The wrong issuer, or a signature that does not verify, is refused
         // at load.
         assert!(CrlStore::new().add_der_for_issuer(&crl, &f.leaf).is_err());

@@ -353,3 +353,22 @@ The full test suite passed:
 That run's Ubuntu, Windows and fuzz jobs did not start: GitHub reported
 an account billing problem.
 
+
+### Release 0.2.0
+
+The security release after the 2026-10-06 audit
+([SECURITY-AUDIT-2026-10-06.md](SECURITY-AUDIT-2026-10-06.md)). The full test
+suite passed:
+
+| Platform | Result | Where |
+|---|---|---|
+| Windows 11 | 628 passed, 0 failed | locally, against IronCrypto 0.2.14 (path) and against the 0.2.13 release commit, the latest published |
+| Linux (WSL Debian, x86_64, rustc 1.95.0) | 628 passed, 0 failed | locally, against IronCrypto 0.2.14 |
+
+Also on Windows: `cargo fmt --check`, clippy with no warnings, the Cortex-M4
+`no_std` build, the Rust 1.88 build, the OpenSSL 3.5.7 suites
+(`openssl_interop` 13, `openssl_fixed` 5, `openssl_cnsa2` 1), live interop
+with Cloudflare, Google and GitHub (6), the QEMU Cortex-M4 run of the fixed
+engine (largest session stack 34,332 bytes), and five minutes of
+AddressSanitizer fuzzing of all eight targets with no findings. GitHub
+Actions was not used: its runners are blocked by an account billing problem.

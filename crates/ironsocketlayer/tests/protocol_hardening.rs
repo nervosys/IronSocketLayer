@@ -386,9 +386,11 @@ fn external_psk(id: &[u8], key: u8) -> ironsocketlayer::config::ExternalPsk {
 #[test]
 fn a_reflected_external_psk_hello_is_refused() {
     use ironsocketlayer::config::ClientConfig;
-    let cc = Arc::new(ClientConfig::external_psk(Profile::Default, external_psk(b"node-a", 1)).unwrap());
-    let mut sc = ServerConfig::external_psk_only(Profile::Default, vec![external_psk(b"node-a", 1)])
-        .unwrap();
+    let cc =
+        Arc::new(ClientConfig::external_psk(Profile::Default, external_psk(b"node-a", 1)).unwrap());
+    let mut sc =
+        ServerConfig::external_psk_only(Profile::Default, vec![external_psk(b"node-a", 1)])
+            .unwrap();
     assert!(sc.selfie_guard, "the guard is on by default");
     let failure = connect(cc.clone(), Arc::new(sc.clone()), "node-a.local").unwrap_err();
     let e = failure.server.expect("the server refused");
@@ -418,7 +420,10 @@ fn a_required_client_certificate_is_not_waived_for_an_external_psk() {
     let only = ServerConfig::external_psk_only(Profile::Default, vec![external_psk(b"agent", 2)])
         .unwrap()
         .with_client_auth(ClientAuth::Required(PeerVerification::Roots(pki.roots())));
-    assert_eq!(only.validate().unwrap_err().kind(), ErrorKind::InvalidConfig);
+    assert_eq!(
+        only.validate().unwrap_err().kind(),
+        ErrorKind::InvalidConfig
+    );
 }
 
 /// REQ-EPSK-007: a server with only external PSKs answers an unknown
@@ -427,13 +432,14 @@ fn a_required_client_certificate_is_not_waived_for_an_external_psk() {
 fn unknown_and_wrongly_keyed_psk_identities_fail_alike() {
     use ironsocketlayer::config::ClientConfig;
     use ironsocketlayer::enums::AlertDescription;
-    let mut sc = ServerConfig::external_psk_only(Profile::Default, vec![external_psk(b"known", 3)])
-        .unwrap();
+    let mut sc =
+        ServerConfig::external_psk_only(Profile::Default, vec![external_psk(b"known", 3)]).unwrap();
     sc.selfie_guard = false;
     let sc = Arc::new(sc);
     let mut alerts = Vec::new();
     for (id, key) in [(&b"known"[..], 4), (&b"unknown"[..], 3)] {
-        let cc = Arc::new(ClientConfig::external_psk(Profile::Default, external_psk(id, key)).unwrap());
+        let cc =
+            Arc::new(ClientConfig::external_psk(Profile::Default, external_psk(id, key)).unwrap());
         let failure = connect(cc, sc.clone(), "gw.local").unwrap_err();
         let s = failure.server.expect("the server refused");
         assert_eq!(s.kind(), ErrorKind::DecryptError, "{s}");
@@ -509,7 +515,10 @@ fn post_handshake_certificate_requests_are_bounded() {
     s.request_client_auth().unwrap();
     let e = pump_both(&mut c, &mut s).unwrap_err();
     assert_eq!(e.kind(), ErrorKind::CapacityExceeded, "{e}");
-    assert_eq!(c.error().map(|e| e.kind()), Some(ErrorKind::CapacityExceeded));
+    assert_eq!(
+        c.error().map(|e| e.kind()),
+        Some(ErrorKind::CapacityExceeded)
+    );
 }
 
 /// REQ-CONN-012: received application data the application has not read is
@@ -560,7 +569,8 @@ fn a_full_replay_guard_is_reported() {
         c.read_tls(&s.take_tls()).unwrap();
     };
     let early = |cc: &Arc<_>| {
-        let mut c = Connection::client_with_early_data(Arc::clone(cc), "server.test", b"GET /").unwrap();
+        let mut c =
+            Connection::client_with_early_data(Arc::clone(cc), "server.test", b"GET /").unwrap();
         let mut s = Connection::server(sc.clone()).unwrap();
         s.read_tls(&c.take_tls()).unwrap();
         pump_both(&mut c, &mut s).unwrap();
@@ -573,7 +583,10 @@ fn a_full_replay_guard_is_reported() {
     let s = early(&cc);
     assert_eq!(s.report().early_data, "early-data:rejected");
     assert!(
-        s.report().events.iter().any(|e| e.id == "event:replay-guard-full"),
+        s.report()
+            .events
+            .iter()
+            .any(|e| e.id == "event:replay-guard-full"),
         "{}",
         s.report().to_json()
     );

@@ -582,7 +582,8 @@ impl core::fmt::Display for IpAddr {
         match self {
             Self::V4(a) => write!(f, "{}.{}.{}.{}", a[0], a[1], a[2], a[3]),
             Self::V6(a) => {
-                let g: [u16; 8] = core::array::from_fn(|i| u16::from_be_bytes([a[2 * i], a[2 * i + 1]]));
+                let g: [u16; 8] =
+                    core::array::from_fn(|i| u16::from_be_bytes([a[2 * i], a[2 * i + 1]]));
                 let (mut best, mut best_len, mut i) = (0, 0, 0);
                 while i < 8 {
                     let start = i;
@@ -2611,8 +2612,8 @@ pub fn verify_chain_fixed<'a>(
 /// Second-level labels that country-code registries commonly delegate
 /// under, so that `co.uk` or `com.au` is a public suffix, not a domain.
 const REGISTRY_SECOND_LEVEL: &[&str] = &[
-    "ac", "co", "com", "edu", "gob", "gov", "govt", "ltd", "mil", "ne", "net", "nhs", "nic",
-    "or", "org", "plc", "sch",
+    "ac", "co", "com", "edu", "gob", "gov", "govt", "ltd", "mil", "ne", "net", "nhs", "nic", "or",
+    "org", "plc", "sch",
 ];
 
 /// Whether `suffix` is `<registry label>.<two-letter country code>`.
@@ -3159,8 +3160,18 @@ mod tests {
     /// `co.uk` covers nothing; one a level below still works.
     #[test]
     fn wildcards_over_registry_suffixes_cover_nothing() {
-        for pattern in ["*.co.uk", "*.CO.UK", "*.com.au", "*.ac.jp", "*.gov.uk", "*.org.nz."] {
-            let host = alloc::format!("victim.{}", pattern.trim_start_matches("*.").trim_end_matches('.'));
+        for pattern in [
+            "*.co.uk",
+            "*.CO.UK",
+            "*.com.au",
+            "*.ac.jp",
+            "*.gov.uk",
+            "*.org.nz.",
+        ] {
+            let host = alloc::format!(
+                "victim.{}",
+                pattern.trim_start_matches("*.").trim_end_matches('.')
+            );
             assert!(!dns_matches(pattern, &host), "{pattern}");
         }
         assert!(dns_matches("*.example.co.uk", "www.example.co.uk"));

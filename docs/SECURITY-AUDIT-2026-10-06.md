@@ -3,7 +3,7 @@
 An audit of IronSocketLayer 0.1.0 against historical CVE classes for TLS and
 X.509 implementations, MITRE ATT&CK, NIST FIPS publications and CMMC 2.0. It
 covers the crates `ironsocketlayer`, `isl-ontology` and `isl-cli`. The
-fixes are in the release that follows 0.1.0.
+fixes are in 0.2.0.
 
 **This is not an independent audit.** The project's author, with
 AI-assisted review, examined code the same process wrote. It finds real

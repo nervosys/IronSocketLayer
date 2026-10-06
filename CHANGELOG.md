@@ -3,11 +3,13 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## Unreleased (to be 0.1.1)
+## 0.2.0 (2026-10-06)
 
 Security fixes from the 2026-10-06 audit
 ([docs/SECURITY-AUDIT-2026-10-06.md](docs/SECURITY-AUDIT-2026-10-06.md)).
-Upgrade from 0.1.0.
+Upgrade from 0.1.0. A minor version because the configuration and report
+structs gained public fields and servers now refuse unknown SNI (see
+Changed). Requires IronCrypto 0.2.13 or later, below 0.3.
 
 ### Fixed (security)
 - Name constraints: a dNSName with a trailing dot no longer escapes an

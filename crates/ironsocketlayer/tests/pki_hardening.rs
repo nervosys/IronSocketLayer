@@ -357,7 +357,10 @@ fn the_report_lists_the_peers_verified_names() {
             san(&[
                 (0x87, &[192, 0, 2, 1]),
                 (0x82, b"srv.example"),
-                (0x87, &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+                (
+                    0x87,
+                    &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                ),
                 (0x82, b"alt.example"),
             ]),
         ],
@@ -373,9 +376,8 @@ fn the_report_lists_the_peers_verified_names() {
         ["srv.example", "alt.example", "192.0.2.1", "2001:db8::1"]
     );
     assert!(
-        r.to_json().contains(
-            r#""peerNames":["srv.example","alt.example","192.0.2.1","2001:db8::1"]"#
-        ),
+        r.to_json()
+            .contains(r#""peerNames":["srv.example","alt.example","192.0.2.1","2001:db8::1"]"#),
         "{}",
         r.to_json()
     );
