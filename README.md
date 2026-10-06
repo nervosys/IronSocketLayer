@@ -154,6 +154,16 @@ socket.send(&conn.take_tls());          // client Finished
 println!("{}", conn.report().to_json());
 ```
 
+### From an intent
+
+```rust
+use ironsocketlayer::config::{ClientConfig, IntentPolicy};
+
+// The profile `isl recommend` names, its ALPN, and its needs as required
+// properties: a connection that falls short fails instead of proceeding.
+let config = ClientConfig::for_intent("intent:harvest-now-decrypt-later", &IntentPolicy::default(), roots)?;
+```
+
 ### Agent-to-agent mutual TLS with ephemeral identities
 
 ```rust

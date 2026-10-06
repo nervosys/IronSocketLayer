@@ -12,6 +12,11 @@ versions may change the API.
   or accepted, in both engines. `validate()` refuses requirements that
   cannot be enforced in time (with 0-RTT) or met (mutual authentication
   without an identity or required client authentication).
+- `ClientConfig::for_intent` and `ServerConfig::for_intent`: the
+  configuration an intent calls for, from the ontology's selector (as
+  `isl recommend`): its profile, its ALPN, and its needs as required
+  properties. An unknown intent or an unavailable profile is an error, never
+  a fallback. `config::IntentPolicy` re-exports the selector's policy flags.
 
 ### Changed
 - Requires IronCrypto 0.2.15 or later, below 0.3. Its HPKE now also offers

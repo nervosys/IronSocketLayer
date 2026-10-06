@@ -178,3 +178,116 @@ fn unenforceable_requirements_are_refused_at_configuration() {
         .validate()
         .unwrap();
 }
+
+/// REQ-CFG-005: every intent yields the configuration the ontology's
+/// selector names: its profile, its ALPN, and its needs as requirements.
+#[test]
+fn every_intent_builds_the_recommended_configuration() {
+    use ironsocketlayer::config::{ClientConfig, IntentPolicy, ServerConfig};
+    use isl_ontology::select::{recommend, INTENTS};
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    let policy = IntentPolicy::default();
+    for intent in INTENTS {
+        let rec = recommend(intent.id, &policy).unwrap();
+        let cc = ClientConfig::for_intent(intent.id, &policy, pki.roots()).unwrap();
+        assert_eq!(cc.common.profile.id(), rec.profile.id, "{}", intent.id);
+        let alpn: Vec<&[u8]> = cc.common.alpn.iter().map(Vec::as_slice).collect();
+        let want: Vec<&[u8]> = intent.alpn.iter().map(|p| p.as_bytes()).collect();
+        assert_eq!(alpn, want, "{}", intent.id);
+        let req = &cc.common.required_properties;
+        assert!(
+            req.contains(&Property::ServerAuthenticated),
+            "{}",
+            intent.id
+        );
+        assert_eq!(
+            req.contains(&Property::PostQuantumKeyExchange),
+            intent.post_quantum,
+            "{}",
+            intent.id
+        );
+        assert_eq!(
+            req.contains(&Property::FipsApprovedAlgorithms),
+            intent.fips,
+            "{}",
+            intent.id
+        );
+        assert_eq!(
+            req.contains(&Property::MutualAuthentication),
+            rec.mutual_auth,
+            "{}",
+            intent.id
+        );
+        let sc = ServerConfig::for_intent(intent.id, &policy, pki.server_identity()).unwrap();
+        assert_eq!(sc.common.profile.id(), rec.profile.id, "{}", intent.id);
+        assert!(!sc
+            .common
+            .required_properties
+            .contains(&Property::ServerAuthenticated));
+    }
+}
+
+/// REQ-CFG-005: policy flags move the choice as `isl recommend` does, and an
+/// unknown intent is an error rather than a default.
+#[test]
+fn intent_policy_and_unknown_intents() {
+    use ironsocketlayer::config::{ClientConfig, IntentPolicy};
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    let both = IntentPolicy {
+        require_fips: true,
+        require_post_quantum: true,
+        require_mutual_auth: false,
+    };
+    let cc = ClientConfig::for_intent("intent:https-client", &both, pki.roots()).unwrap();
+    assert_eq!(cc.common.profile, Profile::Cnsa2);
+    assert!(cc
+        .common
+        .required_properties
+        .contains(&Property::PostQuantumKeyExchange));
+    assert!(cc
+        .common
+        .required_properties
+        .contains(&Property::FipsApprovedAlgorithms));
+    let e = ClientConfig::for_intent(
+        "intent:no-such-thing",
+        &IntentPolicy::default(),
+        pki.roots(),
+    )
+    .unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::InvalidConfig);
+    assert_eq!(e.context(), "unknown intent");
+}
+
+/// REQ-CFG-005: agent-to-agent mTLS from the intent on both ends connects
+/// with mutual authentication and post-quantum key exchange; without the
+/// identity and client authentication the intent needs, it does not start.
+#[test]
+fn an_intent_configuration_connects_and_refuses_what_it_lacks() {
+    use ironsocketlayer::config::{ClientConfig, IntentPolicy, ServerConfig};
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    let policy = IntentPolicy::default();
+    let intent = "intent:agent-to-agent-mtls";
+    let bare = ClientConfig::for_intent(intent, &policy, pki.roots()).unwrap();
+    assert_eq!(
+        Connection::client(Arc::new(bare.clone()), NAME)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::InvalidConfig
+    );
+    let bare_server = ServerConfig::for_intent(intent, &policy, pki.server_identity()).unwrap();
+    assert_eq!(
+        Connection::server(Arc::new(bare_server.clone()))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::InvalidConfig
+    );
+    let cc = bare.with_identity(pki.client_identity(KeyKind::EcdsaP256, "agent-a"));
+    let sc =
+        bare_server.with_client_auth(ClientAuth::Required(PeerVerification::Roots(pki.roots())));
+    let (c, s) = connect(Arc::new(cc), Arc::new(sc), NAME).unwrap();
+    for r in [c.report(), s.report()] {
+        assert!(r.has(Property::MutualAuthentication), "{}", r.to_json());
+        assert!(r.has(Property::PostQuantumKeyExchange));
+        assert_eq!(r.alpn.as_deref(), Some(&b"a2a/1"[..]));
+    }
+}

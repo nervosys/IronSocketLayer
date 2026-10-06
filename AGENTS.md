@@ -17,7 +17,19 @@ Intents: `intent:https-client`, `intent:api-server`,
 `intent:harvest-now-decrypt-later`, `intent:national-security-system`, `intent:avionics-dal-a`,
 `intent:embedded-constrained`.
 
-Then build the profile it names: `ClientConfig::new(Profile::PostQuantum, roots)`.
+In code, build the configuration from the intent directly. It runs the same
+selector, sets the profile and ALPN, and turns the intent's needs into
+required properties (see below):
+
+```rust
+let config = ClientConfig::for_intent("intent:agent-to-agent-mtls", &IntentPolicy::default(), roots)?
+    .with_identity(identity);          // a mutual intent does not validate without it
+let server = ServerConfig::for_intent("intent:agent-to-agent-mtls", &IntentPolicy::default(), id)?
+    .with_client_auth(ClientAuth::Required(PeerVerification::Roots(roots)));
+```
+
+`for_intent` returns `error:invalid-config` for an unknown intent or an
+unavailable profile; it never falls back.
 
 ## When the answer is "unavailable", stop
 

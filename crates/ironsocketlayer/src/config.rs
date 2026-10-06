@@ -29,6 +29,71 @@ use crate::crypto::{kx, HashAlg};
 use crate::enums::{CipherSuite, NamedGroup, SignatureScheme};
 use crate::error::{Error, ErrorKind, Result};
 use crate::record::{suite_params, IMPLEMENTED_SUITES};
+use crate::report::Property;
+
+/// Requirements stated on top of an intent: FIPS, post-quantum key exchange,
+/// mutual authentication. The ontology's selector type, re-exported.
+pub use isl_ontology::select::Policy as IntentPolicy;
+
+/// What an intent asks of a configuration. REQ-CFG-005.
+struct IntentPlan {
+    profile: Profile,
+    alpn: Vec<Vec<u8>>,
+    post_quantum: bool,
+    fips: bool,
+    mutual: bool,
+}
+
+/// Run the ontology's selector for `intent` under `policy`. It never
+/// substitutes a weaker profile: an unknown intent, a profile this build
+/// lacks, or requirements no profile meets is an error. REQ-CFG-005.
+fn plan_intent(intent: &str, policy: &IntentPolicy) -> Result<IntentPlan> {
+    use isl_ontology::select::NoRecommendation as No;
+    let rec = isl_ontology::select::recommend(intent, policy).map_err(|e| match e {
+        No::UnknownIntent => Error::new(ErrorKind::InvalidConfig, "unknown intent"),
+        No::Unavailable { .. } => Error::new(
+            ErrorKind::InvalidConfig,
+            "profile unavailable in this build; do not substitute",
+        ),
+        No::Impossible { reason } => Error::new(ErrorKind::InvalidConfig, reason),
+    })?;
+    let profile = Profile::from_id(rec.profile.id).ok_or(Error::new(
+        ErrorKind::Internal,
+        "recommended profile unknown",
+    ))?;
+    Ok(IntentPlan {
+        profile,
+        alpn: rec
+            .intent
+            .alpn
+            .iter()
+            .map(|p| p.as_bytes().to_vec())
+            .collect(),
+        post_quantum: policy.require_post_quantum || rec.intent.post_quantum,
+        fips: policy.require_fips || rec.intent.fips,
+        mutual: rec.mutual_auth,
+    })
+}
+
+impl IntentPlan {
+    /// The properties every connection made for this intent must have.
+    fn required(&self, client: bool) -> Vec<Property> {
+        let mut out = Vec::new();
+        if client {
+            out.push(Property::ServerAuthenticated);
+        }
+        if self.post_quantum {
+            out.push(Property::PostQuantumKeyExchange);
+        }
+        if self.fips {
+            out.push(Property::FipsApprovedAlgorithms);
+        }
+        if self.mutual {
+            out.push(Property::MutualAuthentication);
+        }
+        out
+    }
+}
 use crate::x509::RootStore;
 
 /// A named security profile. Each corresponds to a `profile:*` ontology entry.
@@ -669,6 +734,23 @@ impl ClientConfig {
         })
     }
 
+    /// The configuration an intent calls for (`intent:agent-to-agent-mtls`,
+    /// see `isl recommend`): the profile the ontology's selector chooses,
+    /// the intent's ALPN, and the intent's needs as required properties
+    /// (server authentication, and post-quantum key exchange, FIPS-approved
+    /// algorithms and mutual authentication when the intent or `policy`
+    /// asks), so a connection that falls short fails rather than proceeds.
+    /// An intent that needs mutual authentication still needs
+    /// [`with_identity`](Self::with_identity); until then the configuration
+    /// does not validate. Never substitutes a weaker profile. REQ-CFG-005.
+    pub fn for_intent(intent: &str, policy: &IntentPolicy, roots: RootStore) -> Result<Self> {
+        let plan = plan_intent(intent, policy)?;
+        let mut config = Self::new(plan.profile, roots)?;
+        config.common.alpn = plan.alpn.clone();
+        config.common.required_properties = plan.required(true);
+        Ok(config)
+    }
+
     /// Whether there is nothing but an external PSK to authenticate the server.
     pub(crate) fn verification_is_empty(&self) -> bool {
         matches!(&self.verification, PeerVerification::Roots(r) if r.is_empty())
@@ -849,6 +931,19 @@ impl ServerConfig {
             prefer_server_order: true,
             retry_cookie: false,
         })
+    }
+
+    /// The configuration an intent calls for, presenting `identity`: as
+    /// [`ClientConfig::for_intent`]. An intent that needs mutual
+    /// authentication still needs [`with_client_auth`](Self::with_client_auth)
+    /// with `ClientAuth::Required`; until then the configuration does not
+    /// validate. REQ-CFG-005.
+    pub fn for_intent(intent: &str, policy: &IntentPolicy, identity: Identity) -> Result<Self> {
+        let plan = plan_intent(intent, policy)?;
+        let mut config = Self::new(plan.profile, identity)?;
+        config.common.alpn = plan.alpn.clone();
+        config.common.required_properties = plan.required(false);
+        Ok(config)
     }
 
     /// Set ALPN protocols, in server preference order.
