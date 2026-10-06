@@ -121,6 +121,12 @@ pub trait ReplayGuard: Send + Sync + core::fmt::Debug {
     /// `expires`; return `false` if it was already recorded or cannot be
     /// recorded. Must fail closed.
     fn insert_fresh(&self, key: [u8; 32], now: u64, expires: u64) -> bool;
+
+    /// Whether the guard is refusing everything because it is full, so the
+    /// server can report that rather than a replay. REQ-0RTT-006.
+    fn is_full(&self, _now: u64) -> bool {
+        false
+    }
 }
 
 /// An in-memory [`ReplayGuard`]. When full it refuses rather than forgets.
@@ -131,15 +137,33 @@ pub trait ReplayGuard: Send + Sync + core::fmt::Debug {
 /// on each would let a flood of them make every one slower. Expired entries
 /// are dropped when the map fills.
 #[cfg(feature = "std")]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MemoryReplayGuard {
     seen: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
+    capacity: usize,
 }
 
 #[cfg(feature = "std")]
 impl MemoryReplayGuard {
-    /// Most ClientHellos remembered at once.
+    /// Most ClientHellos remembered at once, by default.
     pub const CAPACITY: usize = 65_536;
+
+    /// A guard remembering at most `capacity` ClientHellos (at least one).
+    /// Size it for the 0-RTT attempts expected within the freshness window.
+    /// REQ-0RTT-006.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            seen: std::sync::Mutex::default(),
+            capacity: capacity.max(1),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Default for MemoryReplayGuard {
+    fn default() -> Self {
+        Self::with_capacity(Self::CAPACITY)
+    }
 }
 
 #[cfg(feature = "std")]
@@ -149,10 +173,10 @@ impl ReplayGuard for MemoryReplayGuard {
         let Ok(mut seen) = self.seen.lock() else {
             return false;
         };
-        if seen.len() >= Self::CAPACITY {
+        if seen.len() >= self.capacity {
             seen.retain(|_, e| *e > now);
         }
-        let full = seen.len() >= Self::CAPACITY;
+        let full = seen.len() >= self.capacity;
         match seen.entry(key) {
             // Still remembered: a replay.
             Entry::Occupied(e) if *e.get() > now => false,
@@ -168,6 +192,13 @@ impl ReplayGuard for MemoryReplayGuard {
             }
             Entry::Vacant(_) => false,
         }
+    }
+
+    fn is_full(&self, now: u64) -> bool {
+        self.seen
+            .lock()
+            .map(|seen| seen.len() >= self.capacity && seen.values().all(|e| *e > now))
+            .unwrap_or(true)
     }
 }
 

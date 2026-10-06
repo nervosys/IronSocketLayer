@@ -599,7 +599,7 @@ impl ServerHs {
     /// suite and ALPN, no retry, within the freshness window, and never twice.
     fn accept_early(
         &self,
-        core: &Core,
+        core: &mut Core,
         ch: &ClientHello,
         resumption: &Option<(u16, TicketState)>,
         suite: CipherSuite,
@@ -648,7 +648,12 @@ impl ServerHs {
         let mut k = [0u8; 32];
         k.copy_from_slice(key.as_bytes());
         let expires = now + u64::from(policy.max_skew_ms) / 1000 + 2;
-        Ok(policy.replay.insert_fresh(k, now, expires))
+        let fresh = policy.replay.insert_fresh(k, now, expires);
+        // REQ-0RTT-006: say why, when the guard is full rather than a replay.
+        if !fresh && policy.replay.is_full(now) {
+            core.report.event("event:replay-guard-full", "");
+        }
+        Ok(fresh)
     }
 
     fn choose_suite(&self, ch: &ClientHello) -> Result<CipherSuite> {

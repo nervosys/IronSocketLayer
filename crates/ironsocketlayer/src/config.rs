@@ -459,6 +459,11 @@ pub struct Common {
     pub require_alpn: bool,
     /// Largest handshake message accepted, in bytes.
     pub max_handshake_message: usize,
+    /// Most received application bytes held for the application to `recv`.
+    /// A peer that sends more than the application reads fails the
+    /// connection with `error:capacity-exceeded` rather than growing memory
+    /// without bound. REQ-CONN-012.
+    pub max_buffered_plaintext: usize,
     /// Records of zero padding appended to each protected record's inner
     /// plaintext, to blunt length analysis (0 disables).
     pub record_padding: usize,
@@ -510,6 +515,7 @@ impl Common {
             alpn: Vec::new(),
             require_alpn: false,
             max_handshake_message: 128 * 1024,
+            max_buffered_plaintext: 1024 * 1024,
             record_padding: 0,
             record_size_limit: None,
             crls: None,

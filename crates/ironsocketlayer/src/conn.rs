@@ -942,7 +942,7 @@ impl Connection {
                 }
                 self.core.early_budget = Some(left - content.len());
                 self.core.report.bytes_received += content.len() as u64;
-                self.core.app_in.extend(content.iter());
+                self.core.buffer_plaintext(content)?;
             }
             ContentType::ApplicationData => {
                 // REQ-CONN-003.
@@ -953,7 +953,7 @@ impl Connection {
                     ));
                 }
                 self.core.report.bytes_received += content.len() as u64;
-                self.core.app_in.extend(content.iter());
+                self.core.buffer_plaintext(content)?;
             }
             _ => {
                 return Err(Error::new(
@@ -1007,6 +1007,10 @@ impl Connection {
         let content = &incoming[record::HEADER_LEN..record::HEADER_LEN + n];
         if inner == ContentType::ApplicationData {
             core.report.bytes_received += n as u64;
+            // REQ-CONN-012.
+            if core.app_in.len().saturating_add(n) > core.common.max_buffered_plaintext {
+                return Err(unread_overflow());
+            }
             core.app_in.extend(content.iter());
             incoming.drain(..end);
             return Ok(true);
@@ -2039,6 +2043,25 @@ pub(crate) fn finish_report(
     core.allow_ccs(false);
     core.report.event("event:handshake-complete", suite.id());
     Ok(())
+}
+
+fn unread_overflow() -> Error {
+    Error::new(
+        ErrorKind::CapacityExceeded,
+        "unread application data exceeds max_buffered_plaintext",
+    )
+}
+
+impl Core {
+    /// Queue received application data for `recv`, within
+    /// `max_buffered_plaintext`. REQ-CONN-012.
+    pub(crate) fn buffer_plaintext(&mut self, content: &[u8]) -> Result<()> {
+        if self.app_in.len().saturating_add(content.len()) > self.common.max_buffered_plaintext {
+            return Err(unread_overflow());
+        }
+        self.app_in.extend(content.iter());
+        Ok(())
+    }
 }
 
 /// Record a path shown good by current CRLs.

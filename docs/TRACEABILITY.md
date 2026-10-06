@@ -343,3 +343,9 @@ feed the life-cycle data.
 | REQ-EPSK-007 | A server with only external PSKs answers an offered PSK it does not know with decrypt_error, after a binder computation, as it answers a wrong binder. | src/server.rs | Test | tests/protocol_hardening.rs::unknown_and_wrongly_keyed_psk_identities_fail_alike |
 
 | REQ-NEG-002 | A server refuses an SNI that no identity's certificate covers with unrecognized_name (RFC 6066 §3), in both engines, unless `ServerConfig::sni_fallback` is set; a ClientHello without SNI gets the first identity. | src/server.rs | Test | tests/protocol_hardening.rs::an_unknown_server_name_is_refused_with_unrecognized_name; tests/coverage_fixed.rs::pinned_peers_are_verified_by_key |
+
+| REQ-PHA-005 | A client answers at most 16 post-handshake CertificateRequests on one connection; the next fails it with capacity-exceeded. | src/client.rs | Test | tests/protocol_hardening.rs::post_handshake_certificate_requests_are_bounded |
+
+| REQ-CONN-012 | Received application data not yet read is held within `max_buffered_plaintext` (1 MiB by default); data beyond it fails the connection with capacity-exceeded. | src/conn.rs | Test | tests/protocol_hardening.rs::unread_application_data_is_bounded; tests/protocol_hardening.rs::unread_early_data_is_bounded |
+
+| REQ-0RTT-006 | `MemoryReplayGuard::with_capacity` sizes the in-memory guard; when it is full and refuses early data, the server reports `event:replay-guard-full`. | src/resumption.rs | Test | tests/protocol_hardening.rs::a_full_replay_guard_is_reported |

@@ -63,6 +63,10 @@ struct EchState {
     status: EchStatus,
 }
 
+/// Most post-handshake CertificateRequests a client answers on one
+/// connection. REQ-PHA-005.
+pub const MAX_POST_HANDSHAKE_REQUESTS: u8 = 16;
+
 pub(crate) struct ClientHs {
     config: Arc<ClientConfig>,
     name: TargetName,
@@ -74,6 +78,8 @@ pub(crate) struct ClientHs {
     client_hs_secret: Option<Output>,
     server_hs_secret: Option<Output>,
     cert_request: Option<CertificateRequest>,
+    /// Post-handshake CertificateRequests answered. REQ-PHA-005.
+    post_handshake_requests: u8,
     pq_chain: bool,
     /// The name exactly as the caller gave it; the ticket store's key.
     name_key: String,
@@ -132,6 +138,7 @@ impl ClientHs {
             client_hs_secret: None,
             server_hs_secret: None,
             cert_request: None,
+            post_handshake_requests: 0,
             pq_chain: false,
             name_key: String::from(server_name),
             ticket: None,
@@ -1279,6 +1286,15 @@ impl ClientHs {
                 "CertificateRequest without post_handshake_auth",
             ));
         }
+        // REQ-PHA-005: each answer costs a signature; a server cannot make
+        // the client sign without end.
+        if self.post_handshake_requests >= MAX_POST_HANDSHAKE_REQUESTS {
+            return Err(Error::new(
+                ErrorKind::CapacityExceeded,
+                "too many post-handshake CertificateRequests",
+            ));
+        }
+        self.post_handshake_requests += 1;
         let cr = CertificateRequest::decode(body)?;
         if cr.context.is_empty() {
             return Err(Error::new(

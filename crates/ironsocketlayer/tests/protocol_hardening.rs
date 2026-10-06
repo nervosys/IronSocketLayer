@@ -470,3 +470,132 @@ fn an_unknown_server_name_is_refused_with_unrecognized_name() {
     cc.send_sni = false;
     assert!(connect(Arc::new(cc), Arc::new(sc), "server.test").is_ok());
 }
+
+/// Move records both ways until neither side has anything to send.
+fn pump_both(c: &mut Connection, s: &mut Connection) -> ironsocketlayer::Result<()> {
+    for _ in 0..4 {
+        let to_c = s.take_tls();
+        if !to_c.is_empty() {
+            c.read_tls(&to_c)?;
+        }
+        let to_s = c.take_tls();
+        if !to_s.is_empty() {
+            s.read_tls(&to_s)?;
+        }
+    }
+    Ok(())
+}
+
+/// REQ-PHA-005: a client answers at most 16 post-handshake
+/// CertificateRequests on one connection, so a server cannot make it sign
+/// without end.
+#[test]
+fn post_handshake_certificate_requests_are_bounded() {
+    use ironsocketlayer::client::MAX_POST_HANDSHAKE_REQUESTS;
+    use ironsocketlayer::config::{ClientAuth, PeerVerification};
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let mut cc = pki
+        .client_config(Profile::Default)
+        .with_identity(pki.client_identity(KeyKind::EcdsaP256, "agent-7"));
+    cc.post_handshake_auth = true;
+    let sc = pki
+        .server_config(Profile::Default)
+        .with_client_auth(ClientAuth::OnDemand(PeerVerification::Roots(pki.roots())));
+    let (mut c, mut s) = connect(Arc::new(cc), Arc::new(sc), "server.test").unwrap();
+    for _ in 0..MAX_POST_HANDSHAKE_REQUESTS {
+        s.request_client_auth().unwrap();
+        pump_both(&mut c, &mut s).unwrap();
+    }
+    s.request_client_auth().unwrap();
+    let e = pump_both(&mut c, &mut s).unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::CapacityExceeded, "{e}");
+    assert_eq!(c.error().map(|e| e.kind()), Some(ErrorKind::CapacityExceeded));
+}
+
+/// REQ-CONN-012: received application data the application has not read is
+/// bounded; past the bound the connection fails closed.
+#[test]
+fn unread_application_data_is_bounded() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.max_buffered_plaintext = 4096;
+    let (mut c, mut s) = connect(
+        Arc::new(cc),
+        Arc::new(pki.server_config(Profile::Default)),
+        "server.test",
+    )
+    .unwrap();
+    // Read as it arrives: any amount passes.
+    let mut buf = vec![0u8; 4096];
+    for _ in 0..4 {
+        s.send(&[7u8; 4000]).unwrap();
+        c.read_tls(&s.take_tls()).unwrap();
+        assert_eq!(c.recv(&mut buf), 4000);
+    }
+    // Left unread, the bound holds.
+    s.send(&[7u8; 4000]).unwrap();
+    s.send(&[7u8; 200]).unwrap();
+    let e = c.read_tls(&s.take_tls()).unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::CapacityExceeded, "{e}");
+    assert!(c.available() <= 4096);
+}
+
+/// REQ-0RTT-006: a full replay guard refuses early data, and the server
+/// reports that the guard was full rather than a replay.
+#[test]
+fn a_full_replay_guard_is_reported() {
+    use ironsocketlayer::config::EarlyDataPolicy;
+    use ironsocketlayer::resumption::MemoryReplayGuard;
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let mut cc = pki.client_config(Profile::Default);
+    cc.early_data = true;
+    let cc = Arc::new(cc);
+    let mut sc = pki.server_config(Profile::Default);
+    let mut policy = EarlyDataPolicy::new(16_384);
+    policy.replay = Arc::new(MemoryReplayGuard::with_capacity(1));
+    sc.early_data = Some(policy);
+    let sc = Arc::new(sc);
+    let ticket = |cc: &Arc<_>| {
+        let (mut c, mut s) = connect(Arc::clone(cc), sc.clone(), "server.test").unwrap();
+        c.read_tls(&s.take_tls()).unwrap();
+    };
+    let early = |cc: &Arc<_>| {
+        let mut c = Connection::client_with_early_data(Arc::clone(cc), "server.test", b"GET /").unwrap();
+        let mut s = Connection::server(sc.clone()).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        pump_both(&mut c, &mut s).unwrap();
+        s
+    };
+    ticket(&cc);
+    let s = early(&cc);
+    assert_eq!(s.report().early_data, "early-data:accepted");
+    ticket(&cc);
+    let s = early(&cc);
+    assert_eq!(s.report().early_data, "early-data:rejected");
+    assert!(
+        s.report().events.iter().any(|e| e.id == "event:replay-guard-full"),
+        "{}",
+        s.report().to_json()
+    );
+}
+
+/// REQ-CONN-012: accepted 0-RTT data the server has not read counts against
+/// the same bound.
+#[test]
+fn unread_early_data_is_bounded() {
+    use ironsocketlayer::config::EarlyDataPolicy;
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let mut cc = pki.client_config(Profile::Default);
+    cc.early_data = true;
+    let cc = Arc::new(cc);
+    let mut sc = pki.server_config(Profile::Default);
+    sc.early_data = Some(EarlyDataPolicy::new(16_384));
+    sc.common.max_buffered_plaintext = 1000;
+    let sc = Arc::new(sc);
+    let (mut c, mut s) = connect(cc.clone(), sc.clone(), "server.test").unwrap();
+    c.read_tls(&s.take_tls()).unwrap();
+    let mut c = Connection::client_with_early_data(cc, "server.test", &[1u8; 1500]).unwrap();
+    let mut s = Connection::server(sc).unwrap();
+    let e = s.read_tls(&c.take_tls()).unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::CapacityExceeded, "{e}");
+}
