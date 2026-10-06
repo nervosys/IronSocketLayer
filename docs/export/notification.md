@@ -26,10 +26,17 @@ exist. The crate will be at `https://crates.io/crates/ironsocketlayer`. The
 GitHub repository URL is unchanged. Whether to send a short corrected notice
 naming the new crate URL is the owner's decision; if sent, record it here.
 
-Status, 2026-10-05: a correction notice has been **drafted, not sent**. It
-replaces the old crate URL with `https://crates.io/crates/ironsocketlayer`
-and restates the unchanged locations. Record the date here only once it is
-confirmed sent.
+### Correction notice
+
+| Field | Value |
+|---|---|
+| Status | **Submitted, per the owner's report** on 2026-10-06, relayed by the IronCrypto session; not independently confirmed |
+| Time sent | **Not recorded.** After the 0.1.0 publication (04:01 UTC, 2026-10-06), so it followed rather than preceded publication |
+| Sent from | **Not recorded** |
+| Sent to | `crypt@bis.doc.gov`, `enc@nsa.gov` |
+| Subject line | `Correction to notification of publicly available encryption source code — 15 CFR 742.15(b) — IronSocketLayer`, as relayed |
+| Content | Names `https://crates.io/crates/ironsocketlayer` in place of `https://crates.io/crates/iron-socket-layer`; restates `https://github.com/nervosys/IronSocketLayer`, `isl-ontology` and `isl-cli` as unchanged; states that IronSocketLayer implements no algorithms of its own. **The body as sent is not recorded** |
+| Acknowledgement | None received as of 2026-10-06 (none is expected) |
 
 ## Publication
 
