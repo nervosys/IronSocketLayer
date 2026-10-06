@@ -1,10 +1,14 @@
 # IronSocketLayer
 
-**Agentic-first TLS 1.3 and QUIC-TLS in pure Rust, over [IronCrypto](../IronCrypto), with a machine-readable ontology.**
+**Agentic-first TLS 1.3 and QUIC-TLS in pure Rust, over [IronCrypto](https://github.com/nervosys/IronCrypto), with a machine-readable ontology.**
 
-Post-quantum by default. Sans-I/O. `no_std`. No C, no `unsafe` in this repository, no third-party
-dependencies. Every cryptographic operation is IronCrypto's; IronSocketLayer
-implements the protocol and nothing else.
+Post-quantum by default. Sans-I/O. `no_std`. No C, no `unsafe` in the library
+(`#![forbid(unsafe_code)]`), and no third-party dependencies. Every
+cryptographic operation is IronCrypto's; IronSocketLayer implements the
+protocol and nothing else. (The only `unsafe` in the repository is test and
+measurement instrumentation: an allocation counter and the Cortex-M4 stack
+probe. The excluded `bench/`, `fuzz/` and `embedded/` crates have their own
+dependencies, which never reach the library's.)
 
 ```console
 $ isl probe cloudflare.com --alpn h2,http/1.1
