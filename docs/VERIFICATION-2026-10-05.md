@@ -338,3 +338,18 @@ the absence of defects.
 | quic_server | 7,995,582 | 2,623 |
 | fixed_server | 2,307,521 | 3,516 |
 | fixed_client | 491,019 | 3,314 |
+
+### Release 0.1.0
+
+Tag `v0.1.0` (commit 48ffc42) was published to crates.io on 2026-10-06 UTC.
+The full test suite passed:
+
+| Platform | Result | Where |
+|---|---|---|
+| Windows 11 | 597 passed, 0 failed | locally, against IronCrypto 0.2.11 and against 0.2.12 |
+| Linux (WSL, x86_64) | 598 passed, 0 failed | locally, earlier the same day; the count is from before one test moved to IronCrypto |
+| macOS | 597 passed, 0 failed | GitHub Actions run 37411718066, on the tag; clippy, the no_std Cortex-M build and the benchmark build also passed |
+
+That run's Ubuntu, Windows and fuzz jobs did not start: GitHub reported
+an account billing problem.
+
