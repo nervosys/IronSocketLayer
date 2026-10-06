@@ -26,6 +26,11 @@ exist. The crate will be at `https://crates.io/crates/ironsocketlayer`. The
 GitHub repository URL is unchanged. Whether to send a short corrected notice
 naming the new crate URL is the owner's decision; if sent, record it here.
 
+Status, 2026-10-05: a correction notice has been **drafted, not sent**. It
+replaces the old crate URL with `https://crates.io/crates/ironsocketlayer`
+and restates the unchanged locations. Record the date here only once it is
+confirmed sent.
+
 ## Publication
 
 First public release, after the notification above:
