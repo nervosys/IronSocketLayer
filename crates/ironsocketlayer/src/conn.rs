@@ -1746,6 +1746,33 @@ mod tests {
         assert!(e.to_string().contains(want), "wanted {want:?}, got {e}");
     }
 
+    /// REQ-RPT-004: a window of 0 never warns, even for a certificate that
+    /// has already expired (a resumed session's, say); a window warns with
+    /// the seconds left, and only once.
+    #[test]
+    fn expiry_warnings_follow_the_window() {
+        let (cc, _) = configs();
+        let mut c = Connection::client(cc, "s.test").unwrap();
+        let expired = c.core.now() - 10;
+        c.core.report.peer_not_after = Some(expired);
+        c.core.common.expiry_warning = 0;
+        note_expiry(&mut c.core);
+        let warned = |c: &Connection| {
+            c.core
+                .report
+                .events
+                .iter()
+                .filter(|e| e.id == "event:peer-certificate-expiring")
+                .map(|e| e.detail.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(warned(&c).is_empty());
+        c.core.common.expiry_warning = 60;
+        note_expiry(&mut c.core);
+        note_expiry(&mut c.core);
+        assert_eq!(warned(&c), ["0"]);
+    }
+
     /// REQ-MSG-006: the client refuses EncryptedExtensions that answer what it
     /// did not ask, or omit what it required.
     #[test]
@@ -2057,6 +2084,7 @@ pub(crate) fn finish_report(
         core.report.add(P::FipsApprovedAlgorithms);
     }
     core.report.fips_indicators = ind;
+    note_expiry(core);
     // REQ-CONN-013: before the connection may carry application data.
     if let Some(missing) = core
         .common
@@ -2099,6 +2127,43 @@ pub(crate) fn note_crl(core: &mut Core, checked: bool) {
         core.report.revocation = "revocation:good";
         core.report.add(crate::report::Property::RevocationChecked);
         core.report.event("event:crl-checked", "");
+    }
+}
+
+/// Record this endpoint's own certificate for the report. REQ-RPT-004.
+pub(crate) fn describe_local(core: &mut Core, chain: &[Vec<u8>]) {
+    if let Some(cert) = chain
+        .first()
+        .and_then(|leaf| crate::x509::Certificate::parse(leaf).ok())
+    {
+        core.report.local_not_after = Some(cert.not_after());
+    }
+}
+
+/// REQ-RPT-004: warn when a certificate in use is close to expiry, so an
+/// agent can rotate its identity, or plan for the peer's, in time.
+pub(crate) fn note_expiry(core: &mut Core) {
+    let window = core.common.expiry_warning;
+    if window == 0 {
+        return;
+    }
+    let now = core.now();
+    for (not_after, id) in [
+        (
+            core.report.peer_not_after,
+            "event:peer-certificate-expiring",
+        ),
+        (
+            core.report.local_not_after,
+            "event:local-certificate-expiring",
+        ),
+    ] {
+        if let Some(t) = not_after {
+            let left = t.saturating_sub(now);
+            if left <= window && !core.report.events.iter().any(|e| e.id == id) {
+                core.report.event(id, &alloc::format!("{left}"));
+            }
+        }
     }
 }
 

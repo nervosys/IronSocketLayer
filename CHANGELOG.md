@@ -33,6 +33,11 @@ versions may change the API.
   version turns an ECH rejection without retry configurations into
   `ask-user`. The ontology's error catalog carries the same `action`, and
   `isl explain` and `isl probe` print it.
+- Expiry warnings: `event:peer-certificate-expiring` and
+  `event:local-certificate-expiring` (detail: seconds left) when a
+  certificate in use expires within `Common::expiry_warning` (14 days by
+  default; 0 never), at handshake completion and after post-handshake
+  authentication. `SessionReport::local_not_after` (`localNotAfter`).
 
 ### Changed
 - Requires IronCrypto 0.2.15 or later, below 0.3. Its HPKE now also offers

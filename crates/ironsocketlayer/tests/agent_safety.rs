@@ -465,3 +465,80 @@ fn a_failed_connection_says_what_to_do() {
     .unwrap();
     assert_eq!(c.recovery(), None);
 }
+
+fn event_detail(r: &ironsocketlayer::report::SessionReport, id: &str) -> Option<u64> {
+    r.events
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| e.detail.parse().unwrap())
+}
+
+/// REQ-RPT-004: certificates close to expiry are reported on both sides,
+/// for the peer's and this endpoint's own, with the seconds left; a
+/// narrower window, or none, reports nothing.
+#[test]
+fn certificates_close_to_expiry_are_reported() {
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME); // certificates live one day
+    let mutual = |window: u64| {
+        let mut cc = pki
+            .client_config(Profile::Default)
+            .with_identity(pki.client_identity(KeyKind::EcdsaP256, "agent"));
+        cc.common.expiry_warning = window;
+        let mut sc = pki
+            .server_config(Profile::Default)
+            .with_client_auth(ClientAuth::Required(PeerVerification::Roots(pki.roots())));
+        sc.common.expiry_warning = window;
+        connect(Arc::new(cc), Arc::new(sc), NAME).unwrap()
+    };
+    let (c, s) = mutual(14 * 86_400);
+    for r in [c.report(), s.report()] {
+        for id in [
+            "event:peer-certificate-expiring",
+            "event:local-certificate-expiring",
+        ] {
+            let left = event_detail(r, id).unwrap_or_else(|| panic!("{id}: {}", r.to_json()));
+            assert!((86_000..=86_400).contains(&left), "{id}: {left}");
+        }
+        assert!(r.local_not_after.is_some());
+        assert!(r.to_json().contains("\"localNotAfter\":"));
+    }
+    for window in [3_600, 0] {
+        let (c, s) = mutual(window);
+        for r in [c.report(), s.report()] {
+            assert!(
+                !r.events
+                    .iter()
+                    .any(|e| e.id.ends_with("certificate-expiring")),
+                "window {window}: {}",
+                r.to_json()
+            );
+            assert!(r.local_not_after.is_some());
+        }
+    }
+}
+
+/// REQ-RPT-004: a certificate first sent after the handshake, to answer a
+/// post-handshake request, is checked then.
+#[test]
+fn a_post_handshake_certificate_is_checked_for_expiry() {
+    let pki = Pki::new(KeyKind::EcdsaP256, NAME);
+    let mut cc = pki
+        .client_config(Profile::Default)
+        .with_identity(pki.client_identity(KeyKind::EcdsaP256, "agent"));
+    cc.post_handshake_auth = true;
+    let sc = pki
+        .server_config(Profile::Default)
+        .with_client_auth(ClientAuth::OnDemand(PeerVerification::Roots(pki.roots())));
+    let (mut c, mut s) = connect(Arc::new(cc), Arc::new(sc), NAME).unwrap();
+    assert!(c.report().local_not_after.is_none());
+    s.request_client_auth().unwrap();
+    for _ in 0..3 {
+        let _ = c.read_tls(&s.take_tls());
+        let _ = s.read_tls(&c.take_tls());
+    }
+    assert!(c.report().local_not_after.is_some());
+    assert!(event_detail(c.report(), "event:local-certificate-expiring").is_some());
+    // The server checks the certificate it has just been shown.
+    assert!(s.report().has(Property::MutualAuthentication));
+    assert!(event_detail(s.report(), "event:peer-certificate-expiring").is_some());
+}

@@ -563,6 +563,11 @@ pub struct Common {
     /// (the missing property's id is the error context) before any
     /// application data is sent or accepted. Empty by default. REQ-CONN-013.
     pub required_properties: Vec<crate::report::Property>,
+    /// Report `event:peer-certificate-expiring` or
+    /// `event:local-certificate-expiring` when a certificate in use expires
+    /// within this many seconds (14 days by default; 0 never). The event's
+    /// detail is the seconds left. REQ-RPT-004.
+    pub expiry_warning: u64,
     /// Largest handshake message accepted, in bytes.
     pub max_handshake_message: usize,
     /// Most received application bytes held for the application to `recv`.
@@ -621,6 +626,7 @@ impl Common {
             alpn: Vec::new(),
             require_alpn: false,
             required_properties: Vec::new(),
+            expiry_warning: 14 * 86_400,
             max_handshake_message: 128 * 1024,
             max_buffered_plaintext: 1024 * 1024,
             record_padding: 0,

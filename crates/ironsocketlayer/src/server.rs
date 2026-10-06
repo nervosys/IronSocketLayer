@@ -425,6 +425,8 @@ impl ServerHs {
                     Some(scheme) => {
                         let leaf = p.chain.first().cloned().unwrap_or_default();
                         conn::describe_peer(core, &leaf);
+                        // REQ-RPT-004.
+                        conn::note_expiry(core);
                         core.report.peer_chain_len = p.chain.len();
                         core.peer_chain = p.chain;
                         core.report.peer_signature_scheme = Some(scheme);
@@ -1039,6 +1041,7 @@ impl ServerHs {
                 _ => None,
             };
             let stapled = ocsp.is_some();
+            conn::describe_local(core, &identity.chain);
             let cert = CertificateMsg {
                 context: Vec::new(),
                 chain: identity.chain.clone(),

@@ -1329,6 +1329,11 @@ impl ClientHs {
             .as_ref()
             .map(|(id, _)| id.chain.clone())
             .unwrap_or_default();
+        // REQ-RPT-004: a certificate first sent after the handshake.
+        if !chain.is_empty() {
+            conn::describe_local(core, &chain);
+            conn::note_expiry(core);
+        }
         let cert = msgs::frame(
             HandshakeType::Certificate,
             &CertificateMsg {
@@ -1438,6 +1443,7 @@ impl ClientHs {
             core.report.event("event:client-certificate-declined", "");
             return Ok(false);
         };
+        conn::describe_local(core, &identity.chain);
         let cert = CertificateMsg {
             context: Vec::new(),
             chain: identity.chain.clone(),

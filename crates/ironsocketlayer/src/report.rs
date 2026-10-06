@@ -222,6 +222,9 @@ pub struct SessionReport {
     pub relaxations: Vec<crate::config::Relaxation>,
     /// Peer end-entity `notAfter`, Unix seconds.
     pub peer_not_after: Option<u64>,
+    /// This endpoint's end-entity `notAfter`, Unix seconds, when it sent a
+    /// certificate. REQ-RPT-004.
+    pub local_not_after: Option<u64>,
     /// Certificates the peer sent.
     pub peer_chain_len: usize,
     /// Weakest classical strength along the verified chain, in bits.
@@ -340,6 +343,7 @@ impl SessionReport {
             &json_str_array(self.relaxations.iter().map(|r| r.id())),
         );
         o.num_opt("peerNotAfter", self.peer_not_after);
+        o.num_opt("localNotAfter", self.local_not_after);
         o.num("peerChainLength", self.peer_chain_len as u64);
         o.num_opt(
             "peerChainMinClassicalBits",

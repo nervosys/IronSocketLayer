@@ -74,6 +74,15 @@ The handshake limit is a deadline for the whole handshake. The idle limit
 applies to each later read or write. Both fail with
 `io::ErrorKind::TimedOut`; after an idle timeout the stream is still usable.
 
+## Rotate certificates before they expire
+
+A session report carries `event:local-certificate-expiring` and
+`event:peer-certificate-expiring` (detail: seconds left) when a certificate in
+use expires within `common.expiry_warning`, 14 days by default, and
+`localNotAfter` / `peerNotAfter` always. To rotate a server's identity, build a
+new `ServerConfig` and use it for new connections; connections already open
+keep the configuration they started with.
+
 ## Know what you gave up
 
 `config.relaxations()`, and `relaxations` in every session report, list the
