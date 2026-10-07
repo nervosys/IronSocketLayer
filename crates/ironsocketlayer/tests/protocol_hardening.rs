@@ -1080,6 +1080,41 @@ fn both_engines_refuse_an_empty_record_on_its_header() {
     }
 }
 
+/// REQ-FIX-009: both servers refuse a handshake header announcing a length
+/// no message may have as soon as the header is complete, not when the next
+/// record arrives. The kinds differ by design: the fixed engine reports its
+/// configured maximum as CapacityExceeded (REQ-FIX-005). Found by the
+/// hello_differential fuzz target.
+#[test]
+fn both_engines_refuse_an_impossible_handshake_length_on_its_header() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = server_config(&pki);
+    let cases: [(&[u8], ErrorKind, ErrorKind); 2] = [
+        // A ClientHello of 0xff0045 bytes, its header ending the record.
+        (
+            &[22, 3, 3, 0, 4, 1, 0xff, 0x00, 0x45],
+            ErrorKind::IllegalParameter,
+            ErrorKind::CapacityExceeded,
+        ),
+        // A Finished longer than any hash.
+        (
+            &[22, 3, 3, 0, 4, 20, 0, 0, 65],
+            ErrorKind::Decode,
+            ErrorKind::Decode,
+        ),
+    ];
+    for (input, owned_kind, fixed_kind) in cases {
+        let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+        assert_eq!(owned.read_tls(input).unwrap_err().kind(), owned_kind);
+        let mut b = Buffers::new();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut fixed =
+            fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default())
+                .unwrap();
+        assert_eq!(fixed.receive(input).unwrap_err().kind(), fixed_kind);
+    }
+}
+
 /// REQ-FIX-007: both servers skip a server_name entry of a type other than
 /// host_name and use the host_name entry (RFC 6066 §3). Found by the
 /// hello_differential fuzz target.

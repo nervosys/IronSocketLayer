@@ -740,6 +740,22 @@ impl<'a> Connection<'a> {
             // header, so an empty-bodied message is processed, not skipped
             // forever.
             if reading_header && self.hs_len == 4 {
+                // REQ-FIX-009: refuse a length no message may have on the
+                // header, as the owned engine does, not when the next
+                // record arrives; the errors are those the body would draw.
+                let b = &self.storage.handshake;
+                let len = (usize::from(b[1]) << 16) | (usize::from(b[2]) << 8) | usize::from(b[3]);
+                if b[0] == 20 && len > crypto::MAX_HASH_LEN {
+                    return Err(Error::new(
+                        ErrorKind::Decode,
+                        "Finished has the wrong length",
+                    ));
+                }
+                if 4 + len > self.storage.handshake.len()
+                    || len > self.common().max_handshake_message
+                {
+                    return Err(capacity("handshake reassembly capacity"));
+                }
                 continue;
             }
             if self.hs_len != need {

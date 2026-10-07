@@ -20,6 +20,9 @@ versions may change the API.
   - the fixed-capacity engine refuses a zero-length record other than
     application data on its header, as the owned engine does, not when the
     next byte arrives.
+  - the fixed-capacity engine refuses a handshake message header announcing
+    more than it can hold, or a Finished longer than any hash, as soon as
+    the header is complete, not when the next record arrives.
 
 ### Verification
 - Two differential fuzz targets: `pki_differential` (the two path
