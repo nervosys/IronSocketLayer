@@ -1,4 +1,4 @@
-# TLS-Anvil, client side, 2026-10-07
+# TLS-Anvil, 2026-10-07
 
 [TLS-Anvil](https://tls-anvil.com) is an independent conformance suite from
 the TLS-Attacker project. In client mode it plays a server, mostly a hostile
@@ -85,16 +85,39 @@ The disabled templates are server tests (205), TLS 1.2 and older (71), and
 features the test client does not use (PSK resumption and 0-RTT, maximum
 fragment length, legacy RSA signature schemes and others: 52).
 
+## Server side
+
+TLS-Anvil also ran against the server: `isl serve --http` with a 2048-bit
+RSA certificate for `localhost`, in a container on a private Docker network,
+TLS-Anvil connecting with SNI `localhost` (`sh scripts/tls-anvil.sh <dir> 1
+server`, the same image and patched jar, strength 1). `isl serve` now serves
+connections concurrently (at most 64), so a test that stalls a connection on
+purpose does not hold up the next.
+
+| Result | Templates | Cases |
+|---|---|---|
+| Strictly succeeded | 116 | 789 |
+| Conceptually succeeded | 0 | |
+| Partially or fully failed | 0 | |
+| Disabled | 321 | |
+
+The templates that ran were 65 TLS 1.3 server tests, 28 TLS 1.3 tests for
+either side, 17 length-field tests and 6 others. The disabled ones are
+client tests (157), TLS 1.2 and older (105), and features this server
+configuration does not offer: PSK resumption and 0-RTT (`isl serve` issues
+no tickets), ECDSA and DSA certificates, FFDHE groups and others (59).
+
 ## Limits
 
 - Strength 1, the suite's standard run; higher strengths test more
   parameter combinations.
-- One client configuration: the default profile, no ALPN, no client
-  certificate, no session resumption or 0-RTT, no ECH.
+- One configuration on each side: the default profile; for the client no
+  ALPN, client certificate, resumption, 0-RTT or ECH; for the server one
+  RSA certificate, no tickets, no client authentication.
 - The certificates carry no names, so name checking was not exercised here;
   it is covered by the library's own tests and the OpenSSL interoperability
   tests.
-- Only the owned engine ran under TLS-Anvil.
+- Only the owned engine ran under TLS-Anvil, as client and as server.
 - The runs were made step by step (client built in WSL, Docker on
   Windows), not with `scripts/tls-anvil.sh` end to end, which this machine
   cannot run (no Docker inside WSL). The script's patched X509-Attacker,

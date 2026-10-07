@@ -17,6 +17,10 @@ versions may change the API.
   extension is `unsupported_extension` (RFC 8446 §4.2). A protocol outside
   the offered list is now `illegal_parameter` in both clients (REQ-MSG-006).
 
+### Changed
+- `isl serve` serves connections concurrently, up to 64 at once, so a peer
+  that stalls no longer holds up the next one.
+
 ## 0.3.1 (2026-10-06)
 
 Fixes to the fixed-capacity engine found by fuzzing it against the owned

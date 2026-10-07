@@ -8,6 +8,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +20,8 @@ use ironsocketlayer::x509::{RootStore, ServerName};
 use ironsocketlayer::Connection;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// The most connections `isl serve` handles at once.
+const MAX_CONNECTIONS: usize = 64;
 
 fn parse_profile(p: Option<&str>) -> Result<Profile, String> {
     let Some(p) = p else {
@@ -364,72 +367,92 @@ pub fn serve(o: &ServeOptions<'_>) -> Result<(), String> {
     let listener =
         TcpListener::bind((bind, port)).map_err(|e| format!("bind {bind}:{port}: {e}"))?;
     eprintln!("isl: serving {} on {bind}:{port}", profile.id());
+    // Connections are served concurrently, up to MAX_CONNECTIONS at once, so a
+    // peer that stalls (as conformance suites do on purpose) holds up no one
+    // else; beyond that, a connection is closed at once.
+    let active = Arc::new(AtomicUsize::new(0));
     for sock in listener.incoming() {
         let Ok(sock) = sock else { continue };
-        let _ = sock.set_read_timeout(Some(TIMEOUT));
-        let _ = sock.set_write_timeout(Some(TIMEOUT));
-        let limits = ironsocketlayer::stream::Timeouts::new(TIMEOUT, TIMEOUT);
-        match TlsStream::accept_with(sock, config.clone(), limits) {
-            Ok(mut tls) if http => {
-                // As `openssl s_server -www` does, which conformance suites
-                // such as tlsfuzzer expect: read one request to its blank
-                // line, answer once, close.
-                const END: &[u8] = b"\r\n\r\n";
-                let mut req = Vec::new();
-                let mut buf = vec![0u8; 16 * 1024];
-                while !req.windows(4).any(|w| w == END) && req.len() < 64 * 1024 {
-                    match tls.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => req.extend_from_slice(&buf[..n]),
-                    }
-                }
-                if req.windows(4).any(|w| w == END) {
-                    let body = b"<html><body>isl</body></html>\r\n";
-                    let head = format!(
-                        "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
-                        body.len()
-                    );
-                    // One record, as tlsfuzzer expects one.
-                    let mut response = head.into_bytes();
-                    response.extend_from_slice(body);
-                    let _ = tls.write_all(&response);
-                }
-                let _ = tls.close();
-                println!("{}", tls.report().to_json());
-            }
-            Ok(mut tls) => {
-                // Echo what arrives until the peer closes or goes quiet for
-                // half a second after its first message, so a request of
-                // any size comes back whole.
-                let mut buf = vec![0u8; 16 * 1024];
-                let mut first = true;
-                loop {
-                    match tls.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if tls.write_all(&buf[..n]).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    if first {
-                        first = false;
-                        tls.set_timeouts(ironsocketlayer::stream::Timeouts::new(
-                            TIMEOUT,
-                            Duration::from_millis(500),
-                        ));
-                    }
-                }
-                let _ = tls.close();
-                println!("{}", tls.report().to_json());
-            }
-            Err(e) => eprintln!("isl: handshake failed: {e}"),
-        }
         if once {
+            serve_connection(sock, &config, http);
             break;
         }
+        if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+            active.fetch_sub(1, Ordering::SeqCst);
+            eprintln!("isl: {MAX_CONNECTIONS} connections already open; closing a new one");
+            continue;
+        }
+        let (config, active) = (config.clone(), active.clone());
+        std::thread::spawn(move || {
+            serve_connection(sock, &config, http);
+            active.fetch_sub(1, Ordering::SeqCst);
+        });
     }
     Ok(())
+}
+
+/// One `isl serve` connection: the handshake, then one HTTP answer or an
+/// echo, then close_notify and the session report as one JSON line.
+fn serve_connection(sock: TcpStream, config: &Arc<ServerConfig>, http: bool) {
+    let _ = sock.set_read_timeout(Some(TIMEOUT));
+    let _ = sock.set_write_timeout(Some(TIMEOUT));
+    let limits = ironsocketlayer::stream::Timeouts::new(TIMEOUT, TIMEOUT);
+    match TlsStream::accept_with(sock, config.clone(), limits) {
+        Ok(mut tls) if http => {
+            // As `openssl s_server -www` does, which conformance suites
+            // such as tlsfuzzer expect: read one request to its blank
+            // line, answer once, close.
+            const END: &[u8] = b"\r\n\r\n";
+            let mut req = Vec::new();
+            let mut buf = vec![0u8; 16 * 1024];
+            while !req.windows(4).any(|w| w == END) && req.len() < 64 * 1024 {
+                match tls.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => req.extend_from_slice(&buf[..n]),
+                }
+            }
+            if req.windows(4).any(|w| w == END) {
+                let body = b"<html><body>isl</body></html>\r\n";
+                let head = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                // One record, as tlsfuzzer expects one.
+                let mut response = head.into_bytes();
+                response.extend_from_slice(body);
+                let _ = tls.write_all(&response);
+            }
+            let _ = tls.close();
+            println!("{}", tls.report().to_json());
+        }
+        Ok(mut tls) => {
+            // Echo what arrives until the peer closes or goes quiet for
+            // half a second after its first message, so a request of
+            // any size comes back whole.
+            let mut buf = vec![0u8; 16 * 1024];
+            let mut first = true;
+            loop {
+                match tls.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tls.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                    }
+                }
+                if first {
+                    first = false;
+                    tls.set_timeouts(ironsocketlayer::stream::Timeouts::new(
+                        TIMEOUT,
+                        Duration::from_millis(500),
+                    ));
+                }
+            }
+            let _ = tls.close();
+            println!("{}", tls.report().to_json());
+        }
+        Err(e) => eprintln!("isl: handshake failed: {e}"),
+    }
 }
 
 #[cfg(test)]
@@ -462,6 +485,93 @@ mod tests {
     }
 
     use super::*;
+
+    /// `isl serve` serves connections concurrently: one that stalls before
+    /// its ClientHello does not hold up the next.
+    #[test]
+    fn a_stalled_connection_does_not_block_the_next() {
+        use ironsocketlayer::config::PeerVerification;
+        use ironsocketlayer::x509::{self, CertificateParams, Usage};
+        let key_pem = include_str!("../../ironsocketlayer/tests/data/throwaway-keys/p256.pem");
+        let key = SigningKey::from_pem(key_pem).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut rng = ClientConfig::new(Profile::Default, RootStore::new())
+            .unwrap()
+            .common
+            .new_rng()
+            .unwrap();
+        let cert = x509::self_signed(
+            &CertificateParams {
+                subject_cn: "localhost",
+                dns_names: &["localhost"],
+                ip_addresses: &[],
+                not_before: now - 60,
+                not_after: now + 3600,
+                is_ca: false,
+                path_len: None,
+                usage: &[Usage::ServerAuth],
+                serial: [9; 16],
+            },
+            &key,
+            &mut *rng,
+        )
+        .unwrap();
+        let mut pem = vec![0u8; cert.len() * 2 + 128];
+        let n = ic_pkix::pem::encode("CERTIFICATE", &cert, &mut pem).unwrap();
+        let dir = std::env::temp_dir().join(format!("isl-serve-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (cert_path, key_path) = (dir.join("cert.pem"), dir.join("key.pem"));
+        std::fs::write(&cert_path, &pem[..n]).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (cert_path, key_path) = (
+            cert_path.to_str().unwrap().to_string(),
+            key_path.to_str().unwrap().to_string(),
+        );
+        std::thread::spawn(move || {
+            serve(&ServeOptions {
+                cert_path: &cert_path,
+                key_path: &key_path,
+                bind: "127.0.0.1",
+                port,
+                profile: None,
+                alpn: None,
+                once: false,
+                http: false,
+            })
+        });
+        let connect = || loop {
+            if let Ok(s) = TcpStream::connect(("127.0.0.1", port)) {
+                break s;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // A connection that sends nothing, held open.
+        let _stalled = connect();
+        let mut config = ClientConfig::new(Profile::Default, RootStore::new()).unwrap();
+        config.verification = PeerVerification::pin_spki(key.spki());
+        let started = std::time::Instant::now();
+        let mut tls = TlsStream::connect_with(
+            connect(),
+            Arc::new(config),
+            "localhost",
+            ironsocketlayer::stream::Timeouts::new(Duration::from_secs(3), Duration::from_secs(3)),
+        )
+        .expect("the second connection is served while the first stalls");
+        tls.write_all(b"ping").unwrap();
+        let mut buf = [0u8; 4];
+        tls.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ping");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn internal_addresses_are_recognised() {

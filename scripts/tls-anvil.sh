@@ -25,14 +25,21 @@
 #   rebuilds X509-Attacker with it and mounts that jar over the shipped one.
 #   Nothing else in the tool changes.
 #
+# With `server`, TLS-Anvil tests `isl serve --http` instead, run in a
+# container on a private Docker network with SERVER_CERT and SERVER_KEY (a
+# PEM chain for `localhost` and its PKCS#8 key); it connects with SNI
+# `localhost`, which the server serves.
+#
 # Usage:
-#   sh scripts/tls-anvil.sh [work-dir] [strength]
-# Results go to <work-dir>/results/ (TLS-Anvil's report and client.log).
+#   sh scripts/tls-anvil.sh [work-dir] [strength] [client|server]
+# Results go to <work-dir>/results/ (TLS-Anvil's report, and client.log or
+# server.log).
 set -eu
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 WORK=${1:-$HOME/tls-anvil-work}
 STRENGTH=${2:-1}
+MODE=${3:-client}
 IMAGE=${IMAGE:-ghcr.io/tls-attacker/tlsanvil:latest}
 # The X509-Attacker release commit for v4.3.10 (the version in the image).
 X509_COMMIT=${X509_COMMIT:-122688c}
@@ -43,10 +50,11 @@ PINS=$(echo $PINS)
 mkdir -p "$WORK/client" "$WORK/results"
 cd "$WORK"
 
-# The client under test.
-(cd "$REPO" && cargo build -q --release -p ironsocketlayer --example tls_anvil_client)
+# The client and the server under test.
+(cd "$REPO" && cargo build -q --release -p ironsocketlayer --example tls_anvil_client \
+    && cargo build -q --release -p isl-cli)
 TARGET_DIR=${CARGO_TARGET_DIR:-$REPO/target}
-cp "$TARGET_DIR/release/examples/tls_anvil_client" client/
+cp "$TARGET_DIR/release/examples/tls_anvil_client" "$TARGET_DIR/release/isl" client/
 
 # X509-Attacker, patched.
 if [ ! -d X509-Attacker ]; then
@@ -61,10 +69,30 @@ docker run --rm -v "$WORK/X509-Attacker:/src" -v isl-m2:/root/.m2 -w /src \
     -Dmaven.javadoc.skip=true -Dgpg.skip package
 cp X509-Attacker/target/X509Attacker.jar client/x509-attacker-4.3.10.jar
 
+PATCHED="$WORK/client/x509-attacker-4.3.10.jar:/apps/lib/x509-attacker-4.3.10.jar:ro"
+if [ "$MODE" = server ]; then
+    cp "${SERVER_CERT:?a PEM chain for localhost}" client/cert.pem
+    cp "${SERVER_KEY:?its PKCS#8 key}" client/key.p8
+    docker network create isl-anvil >/dev/null 2>&1 || true
+    docker rm -f isl-server >/dev/null 2>&1 || true
+    docker run -d --name isl-server --network isl-anvil \
+        -v "$WORK/client:/client:ro" --entrypoint /client/isl "$IMAGE" \
+        serve --cert /client/cert.pem --key /client/key.p8 \
+        --bind 0.0.0.0 --port 4433 --http >/dev/null
+    docker run --rm --network isl-anvil \
+        -v "$WORK/results:/output" -v "$PATCHED" "$IMAGE" \
+        -parallelHandshakes 3 -parallelTests 3 -strength "$STRENGTH" \
+        -disableTcpDump -identifier ironsocketlayer-server \
+        server -connect isl-server:4433 -server_name localhost
+    docker logs isl-server > "$WORK/results/server.log" 2>&1
+    docker rm -f isl-server >/dev/null
+    exit 0
+fi
+
 docker run --rm \
     -v "$WORK/results:/output" \
     -v "$WORK/client:/client:ro" \
-    -v "$WORK/client/x509-attacker-4.3.10.jar:/apps/lib/x509-attacker-4.3.10.jar:ro" \
+    -v "$PATCHED" \
     "$IMAGE" \
     -parallelHandshakes 3 -parallelTests 3 -strength "$STRENGTH" \
     -disableTcpDump -identifier ironsocketlayer-client \
