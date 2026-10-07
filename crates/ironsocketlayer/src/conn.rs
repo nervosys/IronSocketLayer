@@ -1817,6 +1817,11 @@ mod tests {
             (
                 |_| {},
                 |e| e.alpn = Some(b"h2".to_vec()),
+                "ALPN answered but not offered",
+            ),
+            (
+                |c| c.common.alpn = alloc::vec![b"h2".to_vec()],
+                |e| e.alpn = Some(b"x".to_vec()),
                 "server selected an ALPN protocol not offered",
             ),
             (
@@ -1861,6 +1866,24 @@ mod tests {
                 deliver(&mut c, HandshakeType::EncryptedExtensions, &ee(e)),
                 want,
             );
+        }
+        // An answer to what was never asked is unsupported_extension (RFC
+        // 8446 section 4.2); a protocol outside the list is illegal_parameter.
+        for (offered, kind) in [
+            (false, ErrorKind::UnsupportedExtension),
+            (true, ErrorKind::IllegalParameter),
+        ] {
+            let (mut c, _) = client_after_server_hello(if offered {
+                |c: &mut ClientConfig| c.common.alpn = alloc::vec![b"h2".to_vec()]
+            } else {
+                |_: &mut ClientConfig| {}
+            });
+            let e = Ee {
+                alpn: Some(b"x".to_vec()),
+                ..Ee::default()
+            };
+            let err = deliver(&mut c, HandshakeType::EncryptedExtensions, &ee(e)).unwrap_err();
+            assert_eq!(err.kind(), kind, "offered {offered}");
         }
     }
 

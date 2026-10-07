@@ -1369,6 +1369,61 @@ fn both_engines_handle_alerts_alike() {
     }
 }
 
+/// REQ-MSG-014: both clients ignore a ServerHello legacy_version above SSL
+/// 3.0 (RFC 8446 §4.2.1) and refuse SSL 3.0 with protocol_version. Found by
+/// TLS-Anvil (SupportedVersions.invalidLegacyVersion).
+#[test]
+fn both_clients_ignore_a_server_hello_legacy_version_above_ssl3() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = Arc::new(server_config(&pki));
+    let mut cc = pki.client_config(Profile::Default);
+    cc.tickets = None;
+    cc.common.groups = vec![NamedGroup::X25519];
+    // The ServerHello record alone, its legacy_version (after the record and
+    // handshake headers) replaced.
+    let server_hello = |hello: &[u8], version: u16| {
+        let mut s = Connection::server(sc.clone()).unwrap();
+        s.read_tls(hello).unwrap();
+        let mut flight = s.take_tls();
+        let mut rec = record::take_record(&mut flight).unwrap().unwrap();
+        assert_eq!(rec.body[0], 2);
+        rec.body[4..6].copy_from_slice(&version.to_be_bytes());
+        let mut out = vec![22, 3, 3];
+        out.extend((rec.body.len() as u16).to_be_bytes());
+        out.extend(&rec.body);
+        out
+    };
+    for (version, want) in [
+        (0x0304u16, None),
+        (0x0505, None),
+        (0x0300, Some(ErrorKind::ProtocolVersion)),
+    ] {
+        let mut owned = Connection::client(Arc::new(cc.clone()), "server.test").unwrap();
+        let sh = server_hello(&owned.take_tls(), version);
+        assert_eq!(
+            owned.read_tls(&sh).err().map(|e| e.kind()),
+            want,
+            "owned {version:#06x}"
+        );
+        let mut b = Buffers::new();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut fixed = fixed::Connection::client(
+            &cc,
+            "server.test",
+            &mut rng,
+            b.storage(),
+            fixed::Limits::default(),
+        )
+        .unwrap();
+        let sh = server_hello(&fixed.take(), version);
+        assert_eq!(
+            fixed.receive(&sh).err().map(|e| e.kind()),
+            want,
+            "fixed {version:#06x}"
+        );
+    }
+}
+
 /// REQ-FIX-007: both servers skip a server_name entry of a type other than
 /// host_name and use the host_name entry (RFC 6066 §3). Found by the
 /// hello_differential fuzz target.

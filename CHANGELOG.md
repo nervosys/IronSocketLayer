@@ -3,6 +3,20 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## Unreleased
+
+### Fixed
+- Found with TLS-Anvil: both clients refused a TLS 1.3 ServerHello whose
+  legacy_version was not 0x0303. RFC 8446 §4.2.1 says clients MUST ignore
+  it when supported_versions is present; values above SSL 3.0 are now
+  ignored, and SSL 3.0 and below are still `protocol_version`
+  (REQ-MSG-014).
+- Found with TLS-Anvil: a client that offered no ALPN answered a server's
+  ALPN response with `illegal_parameter` (the owned client) or
+  `no_application_protocol` (the fixed-capacity client); an unrequested
+  extension is `unsupported_extension` (RFC 8446 §4.2). A protocol outside
+  the offered list is now `illegal_parameter` in both clients (REQ-MSG-006).
+
 ## 0.3.1 (2026-10-06)
 
 Fixes to the fixed-capacity engine found by fuzzing it against the owned

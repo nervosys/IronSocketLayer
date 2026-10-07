@@ -743,10 +743,14 @@ fn certificate_status_framing_is_checked_on_every_entry() {
     }
 }
 
-/// REQ-MSG-014: RFC 8446 sections 4.1.3 and 4.1.4 require 0x0303 in the
-/// legacy_version of a TLS 1.3 ServerHello or HelloRetryRequest.
+/// REQ-MSG-014: a server sends 0x0303 in the legacy_version of a TLS 1.3
+/// ServerHello or HelloRetryRequest (RFC 8446 sections 4.1.3 and 4.1.4), and
+/// a client ignores the value above SSL 3.0 (section 4.2.1: "clients MUST
+/// ignore the ServerHello.legacy_version value"); SSL 3.0 and below are
+/// protocol_version. TLS-Anvil's SupportedVersions.invalidLegacyVersion
+/// found the client refusing 0x0304 and 0x0505.
 #[test]
-fn tls13_server_hellos_require_the_tls12_legacy_version() {
+fn tls13_server_hello_legacy_versions_are_ignored_above_ssl3() {
     let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
     for retry in [false, true] {
         let mut cc = pki.client_config(Profile::Default);
@@ -782,29 +786,32 @@ fn tls13_server_hellos_require_the_tls12_legacy_version() {
             encoded[..2].copy_from_slice(&version.to_be_bytes());
             let error = match ServerHello::decode(&encoded) {
                 Err(error) => error,
-                Ok(_) => panic!("TLS 1.3 ServerHello legacy_version must be 0x0303"),
+                Ok(sh) => {
+                    assert!(version > 0x0300, "{version:#06x} accepted");
+                    assert_eq!(sh, ServerHello::decode(&body).unwrap());
+                    continue;
+                }
             };
             if version == 0x0300 {
                 assert_eq!(error.kind(), ErrorKind::ProtocolVersion);
                 assert_eq!(error.context(), "SSL 3.0 legacy_version is forbidden");
-            } else if version < 0x0300 {
+            } else {
                 // REQ-MSG-021: not TLS at all.
+                assert!(version < 0x0300, "{version:#06x} refused: {error}");
                 assert_eq!(error.kind(), ErrorKind::ProtocolVersion);
                 assert_eq!(error.context(), "legacy_version below SSL 3.0");
-            } else {
-                assert_eq!(error.kind(), ErrorKind::IllegalParameter);
-                assert_eq!(
-                    error.context(),
-                    "TLS 1.3 ServerHello legacy_version must be 0x0303"
-                );
             }
         }
-        for version in [0u16, 0x0300, 0x0301, 0x0302, 0x0304, 0xffff] {
+        for version in [0u16, 0x0300, 0x0301, 0x0302, 0x0304, 0x0505, 0xffff] {
             let (mut client, mut encoded) = exchange();
             encoded[..2].copy_from_slice(&version.to_be_bytes());
-            let error = client
-                .read_tls(&record_of(HandshakeType::ServerHello, &encoded))
-                .unwrap_err();
+            let result = client.read_tls(&record_of(HandshakeType::ServerHello, &encoded));
+            if version > 0x0300 {
+                result.unwrap();
+                assert_ne!(client.state(), HandshakeState::Failed);
+                continue;
+            }
+            let error = result.unwrap_err();
             if version == 0x0300 {
                 assert_eq!(error.kind(), ErrorKind::ProtocolVersion);
                 assert_eq!(error.context(), "SSL 3.0 legacy_version is forbidden");
@@ -814,12 +821,6 @@ fn tls13_server_hellos_require_the_tls12_legacy_version() {
                 assert_eq!(error.kind(), ErrorKind::ProtocolVersion);
                 assert_eq!(error.context(), "legacy_version below SSL 3.0");
                 assert_eq!(client.take_tls(), [21, 3, 3, 0, 2, 2, 70]);
-            } else {
-                assert_eq!(error.kind(), ErrorKind::IllegalParameter);
-                assert_eq!(
-                    error.context(),
-                    "TLS 1.3 ServerHello legacy_version must be 0x0303"
-                );
             }
             assert_eq!(client.state(), HandshakeState::Failed);
             assert_eq!(client.available(), 0);

@@ -827,11 +827,14 @@ impl ServerHello {
     }
 
     /// Decode a body.
-    /// REQ-MSG-014: TLS 1.3 ServerHello and HelloRetryRequest use legacy_version 0x0303.
+    /// REQ-MSG-014: a client ignores the legacy_version of a ServerHello or
+    /// HelloRetryRequest above SSL 3.0, the version coming from
+    /// supported_versions (RFC 8446 §4.2.1); SSL 3.0 and below are refused
+    /// (REQ-MSG-017, REQ-MSG-021).
     pub fn decode(body: &[u8]) -> Result<Self> {
         let whole = body;
         let mut r = Reader::new(body);
-        let legacy_version = read_hello_legacy_version(&mut r)?;
+        read_hello_legacy_version(&mut r)?;
         let random = r.array::<32>()?;
         let session_id = r.vec8()?;
         if session_id.len() > 32 {
@@ -898,12 +901,6 @@ impl ServerHello {
                 }
             }
             er.finish()?;
-        }
-        // supported_versions carries the negotiated version.
-        if sh.selected_version == Some(ProtocolVersion::Tls13)
-            && legacy_version != ProtocolVersion::Tls12.to_wire()
-        {
-            return Err(illegal("TLS 1.3 ServerHello legacy_version must be 0x0303"));
         }
         Ok(sh)
     }

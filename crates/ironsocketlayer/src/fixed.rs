@@ -1474,8 +1474,13 @@ impl<'a> Connection<'a> {
     }
     fn on_server_hello(&mut self, body: &[u8], message: &[u8]) -> Result<()> {
         let mut r = Reader::new(body);
-        if r.u16()? != 0x0303 {
-            return Err(invalid("ServerHello legacy version"));
+        // REQ-MSG-014: legacy_version above SSL 3.0 is ignored, as in the
+        // owned client (RFC 8446 §4.2.1); SSL 3.0 and below are refused.
+        if r.u16()? <= 0x0300 {
+            return Err(Error::new(
+                ErrorKind::ProtocolVersion,
+                "ServerHello legacy version",
+            ));
         }
         let random = r.take(32)?;
         if r.vec8()? != &self.session_id[..self.session_id_len] {
@@ -1702,13 +1707,22 @@ impl<'a> Connection<'a> {
                     r.finish()?;
                     let name = p.vec8()?;
                     p.finish()?;
+                    // REQ-MSG-006: as in the owned client, an answer to no
+                    // ALPN offer is unsupported_extension, a protocol outside
+                    // the list illegal_parameter.
+                    if self.common().alpn.is_empty() {
+                        return Err(Error::new(
+                            ErrorKind::UnsupportedExtension,
+                            "ALPN answered but not offered",
+                        ));
+                    }
                     let protocol = self
                         .common()
                         .alpn
                         .iter()
                         .find(|p| p.as_slice() == name)
                         .ok_or(Error::new(
-                            ErrorKind::NoApplicationProtocol,
+                            ErrorKind::IllegalParameter,
                             "server selected unoffered ALPN",
                         ))?;
                     self.report.alpn = Some(protocol);
@@ -2897,6 +2911,10 @@ mod tests {
         let p = pki();
         let mut no_sni = p.cc.clone();
         no_sni.send_sni = false;
+        let mut no_alpn = p.cc.clone();
+        no_alpn.common.alpn = Vec::new();
+        let mut h2 = p.cc.clone();
+        h2.common.alpn = vec![b"h2".to_vec()];
         for (cc, exts, kind, context) in [
             (
                 &no_sni,
@@ -2915,6 +2933,18 @@ mod tests {
                 vec![ext(28, &[0, 64])],
                 ErrorKind::UnsupportedExtension,
                 "unsolicited EncryptedExtensions extension",
+            ),
+            (
+                &no_alpn,
+                vec![ext(16, &[0, 3, 2, b'h', b'2'])],
+                ErrorKind::UnsupportedExtension,
+                "ALPN answered but not offered",
+            ),
+            (
+                &h2,
+                vec![ext(16, &[0, 2, 1, b'x'])],
+                ErrorKind::IllegalParameter,
+                "server selected unoffered ALPN",
             ),
         ] {
             after_server_hello(cc, &p.sc, |c, _, mut key| {

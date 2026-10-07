@@ -889,6 +889,15 @@ impl ClientHs {
     fn on_encrypted_extensions(&mut self, core: &mut Core, body: &[u8], msg: &[u8]) -> Result<()> {
         let ee = EncryptedExtensions::decode(body)?;
         if let Some(p) = &ee.alpn {
+            // REQ-MSG-006: an ALPN response to a ClientHello without ALPN is
+            // an unrequested extension (RFC 8446 §4.2); a protocol outside
+            // the offered list is an illegal value.
+            if self.hello.alpn.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::UnsupportedExtension,
+                    "ALPN answered but not offered",
+                ));
+            }
             if !self.hello.alpn.contains(p) {
                 return Err(Error::new(
                     ErrorKind::IllegalParameter,
