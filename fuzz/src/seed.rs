@@ -168,6 +168,46 @@ fn main() {
         write("fixed_client", "server-flight", &frame_chunks(&[&flight]));
     }
 
+    // Both clients' view of the server's plaintext records: the whole flight
+    // (the target cuts it before the first encrypted record), and a
+    // HelloRetryRequest from a server that wants a group neither key share
+    // offers, followed by the ServerHello to the owned client's second
+    // ClientHello.
+    {
+        let cc = fixed_client_config();
+        let mut c = Connection::client(cc.clone(), NAME).unwrap();
+        let mut s = Connection::server(fixed_server_config()).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        let flight = s.take_tls();
+        write(
+            "server_hello_differential",
+            "server-flight",
+            &frame_chunks(&[&flight]),
+        );
+        let (head, tail) = flight.split_at(7);
+        write(
+            "server_hello_differential",
+            "fragmented-server-flight",
+            &frame_chunks(&[head, tail]),
+        );
+
+        let mut sc = (*fixed_server_config()).clone();
+        sc.common.groups = vec![ironsocketlayer::enums::NamedGroup::Secp256r1];
+        let mut c = Connection::client(cc, NAME).unwrap();
+        let mut s = Connection::server(Arc::new(sc)).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        let hrr = s.take_tls();
+        c.read_tls(&hrr).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        let flight = s.take_tls();
+        assert_eq!(hrr[5], 2, "the server must answer with a HelloRetryRequest");
+        write(
+            "server_hello_differential",
+            "hello-retry-request",
+            &frame_chunks(&[&hrr, &flight]),
+        );
+    }
+
     // ML-KEM-1024 key shares: the hybrid and the pure group.
     for (name, group) in [
         (

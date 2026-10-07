@@ -524,9 +524,9 @@ fn input_after_close_notify_is_refused() {
 const CCS: [u8; 6] = [20, 3, 3, 0, 1, 1];
 
 /// REQ-FIX-005: a change_cipher_spec record before the first ClientHello,
-/// after the handshake, or a second one during it, is UnexpectedMessage
-/// (RFC 8446 section 5 and appendix D.4); one during the handshake is
-/// tolerated.
+/// before the ServerHello (REQ-FIX-012), after the handshake, or a second one
+/// during it, is UnexpectedMessage (RFC 8446 section 5 and appendix D.4); one
+/// during the handshake is tolerated.
 #[test]
 fn change_cipher_spec_outside_the_compatibility_window_is_unexpected() {
     let pki = Pki::new(KeyKind::EcdsaP256, NAME);
@@ -537,13 +537,23 @@ fn change_cipher_spec_outside_the_compatibility_window_is_unexpected() {
     let e = s.receive(&CCS).unwrap_err();
     assert_eq!(e.kind(), ErrorKind::UnexpectedMessage);
     assert_latched(&mut s, e);
-    // A second during the handshake.
+    // Before the ServerHello.
     let (mut b, mut r) = (Buffers::new(), rng());
     let mut c = Connection::client(&cc, NAME, &mut r, b.storage(), Limits::default()).unwrap();
-    c.receive(&CCS).unwrap();
     let e = c.receive(&CCS).unwrap_err();
     assert_eq!(e.kind(), ErrorKind::UnexpectedMessage);
     assert_latched(&mut c, e);
+    // A second during the handshake: the server tolerates one after the
+    // ClientHello.
+    let (mut cb, mut sb) = (Buffers::new(), Buffers::new());
+    let (mut cr, mut sr) = (rng(), rng());
+    let mut c = Connection::client(&cc, NAME, &mut cr, cb.storage(), Limits::default()).unwrap();
+    let mut s = Connection::server(&sc, &mut sr, sb.storage(), Limits::default()).unwrap();
+    transfer(&mut c, &mut s).unwrap();
+    s.receive(&CCS).unwrap();
+    let e = s.receive(&CCS).unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::UnexpectedMessage);
+    assert_latched(&mut s, e);
     // After the handshake.
     handshake(&cc, &sc, NAME, default_limits(), |r, c, _| {
         r.unwrap();

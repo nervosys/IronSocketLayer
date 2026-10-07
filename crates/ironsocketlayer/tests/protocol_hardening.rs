@@ -1142,6 +1142,85 @@ fn both_engines_process_an_empty_body_at_once() {
     }
 }
 
+/// REQ-FIX-011: both servers refuse QUIC transport parameters in a
+/// ClientHello over TCP with unsupported_extension (RFC 9001 §8.2). Found by
+/// the hello_differential fuzz target.
+#[test]
+fn both_engines_refuse_quic_transport_parameters_over_tcp() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = server_config(&pki);
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.groups = vec![NamedGroup::X25519];
+    cc.ech_grease = false;
+    let mut hello = Connection::client(Arc::new(cc), "server.test")
+        .unwrap()
+        .take_tls();
+    // Append quic_transport_parameters (57), with one empty parameter, as
+    // the last extension; grow the record, the message and the block.
+    let extra = [0x00u8, 0x39, 0x00, 0x02, 0x00, 0x00];
+    hello.extend_from_slice(&extra);
+    let grow = |v: &mut Vec<u8>, i: usize, by: u16| {
+        let n = u16::from_be_bytes([v[i], v[i + 1]]) + by;
+        v[i..i + 2].copy_from_slice(&n.to_be_bytes());
+    };
+    grow(&mut hello, 3, 6);
+    let hs_len = u32::from_be_bytes([0, hello[6], hello[7], hello[8]]) + 6;
+    hello[6..9].copy_from_slice(&hs_len.to_be_bytes()[1..]);
+    let mut p = 9 + 2 + 32;
+    p += 1 + hello[p] as usize;
+    p += 2 + u16::from_be_bytes([hello[p], hello[p + 1]]) as usize;
+    p += 1 + hello[p] as usize;
+    grow(&mut hello, p, 6);
+    assert!(ClientHello::decode(&hello[9..]).is_ok());
+    let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+    assert_eq!(
+        owned.read_tls(&hello).unwrap_err().kind(),
+        ErrorKind::UnsupportedExtension
+    );
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut fixed =
+        fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default()).unwrap();
+    assert_eq!(
+        fixed.receive(&hello).unwrap_err().kind(),
+        ErrorKind::UnsupportedExtension
+    );
+}
+
+/// REQ-FIX-012: both clients refuse a ChangeCipherSpec before the server's
+/// first handshake message, after which a server sends its one
+/// compatibility CCS (RFC 8446 appendix D.4). Found by the
+/// server_hello_differential fuzz target.
+#[test]
+fn both_clients_refuse_a_change_cipher_spec_before_the_server_hello() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let mut cc = pki.client_config(Profile::Default);
+    cc.tickets = None;
+    cc.common.groups = vec![NamedGroup::X25519];
+    let ccs = [20u8, 3, 3, 0, 1, 1];
+    let mut owned = Connection::client(Arc::new(cc.clone()), "server.test").unwrap();
+    let _ = owned.take_tls();
+    assert_eq!(
+        owned.read_tls(&ccs).unwrap_err().kind(),
+        ErrorKind::UnexpectedMessage
+    );
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut fixed = fixed::Connection::client(
+        &cc,
+        "server.test",
+        &mut rng,
+        b.storage(),
+        fixed::Limits::default(),
+    )
+    .unwrap();
+    let _ = fixed.take();
+    assert_eq!(
+        fixed.receive(&ccs).unwrap_err().kind(),
+        ErrorKind::UnexpectedMessage
+    );
+}
+
 /// REQ-FIX-007: both servers skip a server_name entry of a type other than
 /// host_name and use the host_name entry (RFC 6066 §3). Found by the
 /// hello_differential fuzz target.

@@ -660,6 +660,10 @@ impl<'a> Connection<'a> {
             if body != [1]
                 || self.report.state == State::Connected
                 || (self.report.state == State::WaitClientHello && !self.retried)
+                // REQ-FIX-012: a server sends its one compatibility CCS after
+                // its ServerHello or HelloRetryRequest (RFC 8446 D.4), so
+                // before either it is misplaced, as the owned client holds.
+                || (self.report.state == State::WaitServerHello && !self.retried)
                 || self.report.state == State::Start
                 || self.ccs_count == 1
             {
@@ -1164,6 +1168,15 @@ impl<'a> Connection<'a> {
             self.limits.extensions,
         )?;
         r.finish()?;
+        // REQ-FIX-011: this engine is TLS over TCP; QUIC transport parameters
+        // there are unsupported_extension (RFC 9001 §8.2), as in the owned
+        // server.
+        if ext.get(0x0039)?.is_some() {
+            return Err(Error::new(
+                ErrorKind::UnsupportedExtension,
+                "QUIC transport parameters over TCP",
+            ));
+        }
         if !contains_u16(u16_list(ext.required(43)?, 1)?, 0x0304) {
             return Err(Error::new(
                 ErrorKind::ProtocolVersion,

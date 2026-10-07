@@ -93,3 +93,10 @@ path = "fuzz_targets/hello_differential.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "server_hello_differential"
+path = "fuzz_targets/server_hello_differential.rs"
+test = false
+doc = false
+bench = false

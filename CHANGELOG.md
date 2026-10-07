@@ -27,11 +27,18 @@ versions may change the API.
     header announces an empty body at once, not when more input arrives
     (an empty application-data record before any keys went unrefused until
     then).
+  - the fixed-capacity server refuses QUIC transport parameters in a
+    ClientHello with `unsupported_extension` (RFC 9001 §8.2), as the owned
+    server does over TCP;
+  - the fixed-capacity client refuses a ChangeCipherSpec before the
+    server's ServerHello or HelloRetryRequest, as the owned client does.
 
 ### Verification
-- Two differential fuzz targets: `pki_differential` (the two path
+- Three differential fuzz targets: `pki_differential` (the two path
   validators on re-signed, mutated chains with name constraints) and
-  `hello_differential` (the two servers on the same client flight).
+  `hello_differential` (the two servers on the same client flight); and
+  `server_hello_differential` (the two clients on the server's plaintext
+  records: ServerHello, HelloRetryRequest, ChangeCipherSpec and alerts).
 
 ## 0.3.0 (2026-10-06)
 
