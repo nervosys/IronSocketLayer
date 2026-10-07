@@ -23,6 +23,10 @@ versions may change the API.
   - the fixed-capacity engine refuses a handshake message header announcing
     more than it can hold, or a Finished longer than any hash, as soon as
     the header is complete, not when the next record arrives.
+  - the fixed-capacity engine processes a record or handshake message whose
+    header announces an empty body at once, not when more input arrives
+    (an empty application-data record before any keys went unrefused until
+    then).
 
 ### Verification
 - Two differential fuzz targets: `pki_differential` (the two path

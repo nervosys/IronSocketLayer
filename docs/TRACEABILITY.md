@@ -392,3 +392,4 @@ feed the life-cycle data.
 
 | REQ-FIX-008 | The fixed-capacity server ignores a ClientHello legacy_version above SSL 3.0 and refuses SSL 3.0 and below with protocol_version, as the owned engine does. | src/fixed.rs | Test | tests/protocol_hardening.rs::both_engines_treat_the_legacy_version_alike |
 | REQ-FIX-009 | The fixed-capacity engine refuses a handshake message header announcing more than its capacity or configured maximum, or a Finished longer than any hash, as soon as the header is complete. | src/fixed.rs | Test | tests/protocol_hardening.rs::both_engines_refuse_an_impossible_handshake_length_on_its_header |
+| REQ-FIX-010 | The fixed-capacity engine processes a record or handshake message whose header announces an empty body as soon as the header is complete. | src/fixed.rs | Test | tests/protocol_hardening.rs::both_engines_process_an_empty_body_at_once |

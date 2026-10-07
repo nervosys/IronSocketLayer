@@ -1115,6 +1115,33 @@ fn both_engines_refuse_an_impossible_handshake_length_on_its_header() {
     }
 }
 
+/// REQ-FIX-010: both servers process a record, or a handshake message,
+/// whose header announces an empty body as soon as the header is complete,
+/// rather than when more input arrives. Found by the hello_differential fuzz
+/// target.
+#[test]
+fn both_engines_process_an_empty_body_at_once() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = server_config(&pki);
+    let cases: [&[u8]; 2] = [
+        // An empty application-data record before any keys.
+        &[23, 3, 3, 0, 0],
+        // A ClientHello with an empty body, ending its record.
+        &[22, 3, 3, 0, 4, 1, 0, 0, 0],
+    ];
+    for input in cases {
+        let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+        let o = owned.read_tls(input).unwrap_err().kind();
+        let mut b = Buffers::new();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut fixed =
+            fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default())
+                .unwrap();
+        let f = fixed.receive(input).unwrap_err().kind();
+        assert_eq!(o, f, "{input:02x?}");
+    }
+}
+
 /// REQ-FIX-007: both servers skip a server_name entry of a type other than
 /// host_name and use the host_name entry (RFC 6066 §3). Found by the
 /// hello_differential fuzz target.

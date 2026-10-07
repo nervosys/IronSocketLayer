@@ -634,7 +634,11 @@ impl<'a> Connection<'a> {
                 // REQ-REC-010: refuse bytes that are not TLS on the header,
                 // not after waiting for a body they announce.
                 check_record_header(&self.storage.record[..5])?;
-                continue;
+                // REQ-FIX-010: a record announcing an empty body is complete
+                // now; process it, rather than when more input arrives.
+                if self.storage.record[3..5] != [0, 0] {
+                    continue;
+                }
             }
             if self.record_len != need {
                 continue;
@@ -756,7 +760,10 @@ impl<'a> Connection<'a> {
                 {
                     return Err(capacity("handshake reassembly capacity"));
                 }
-                continue;
+                // REQ-FIX-010: likewise a message with an empty body.
+                if len > 0 {
+                    continue;
+                }
             }
             if self.hs_len != need {
                 continue;
