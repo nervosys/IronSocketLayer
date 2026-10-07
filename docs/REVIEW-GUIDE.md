@@ -80,16 +80,17 @@ Read these first; each has a fuzz target (`fuzz/`) and robustness tests
 | 276 low-level requirements, each traced to code and a test that fails when the behaviour is removed | [TRACEABILITY.md](TRACEABILITY.md) (enforced by `tests/traceability.rs`) | The requirements are the author's reading of the RFCs. |
 | Interoperability with OpenSSL 3.5 (both directions), Cloudflare, Google, GitHub | `tests/openssl_*.rs`, `tests/interop.rs` | Agreement with other implementations, not proof of correctness. |
 | tlsfuzzer's TLS 1.3 conformance scripts | [VERIFICATION-2026-10-06-tlsfuzzer.md](VERIFICATION-2026-10-06-tlsfuzzer.md) | Found eight defects. Server side only; client side not run. |
-| libFuzzer under AddressSanitizer, eight targets | `fuzz/` | Short campaigns (minutes per target), not days. |
+| libFuzzer under AddressSanitizer, ten targets | `fuzz/` | Short campaigns (minutes per target), not days. |
 | Branch coverage 97.7%, every gap dispositioned | [VERIFICATION-2026-10-05.md](VERIFICATION-2026-10-05.md), `docs/evidence/` | Branch coverage, not MC/DC; dispositions are the author's. |
+| Differential fuzzing of the two engines and the two path validators | [VERIFICATION-2026-10-06-differential.md](VERIFICATION-2026-10-06-differential.md) | Found seven differences in the fixed-capacity engine. Server side only; finds no defect both share. |
 | Mutation checks: each security fix's test was run against the code with the fix removed | commit messages and the audit report | Manual, per fix; no mutation-testing tool was run over the whole crate. |
 
 ## What has not been checked
 
 - An independent review of any of the above.
 - tlsfuzzer against the client side, and BoringSSL's BoGo or TLS-Anvil.
-- Long fuzzing campaigns, and differential fuzzing of the two engines and
-  the two path validators against each other.
+- Long fuzzing campaigns (days), and differential fuzzing of the two
+  clients.
 - Timing side channels beyond the constant-time comparisons and the
   padding scan reviewed in [VERIFICATION-2026-10-05.md](VERIFICATION-2026-10-05.md).
 - IronCrypto itself (see its own documentation; it is not CMVP-validated).
