@@ -1168,14 +1168,13 @@ fn append_extension(flight: &mut Vec<u8>, extra: &[u8]) {
     p += 2 + u16::from_be_bytes([flight[p], flight[p + 1]]) as usize;
     p += 1 + flight[p] as usize;
     grow(flight, p);
-    assert!(ClientHello::decode(&flight[hs + 4..]).is_ok());
 }
 
 /// REQ-FIX-013: both servers ignore a cookie in a first ClientHello, which
 /// RFC 8446 §4.2.2 forbids a client to send but gives a server no duty to
 /// refuse (OpenSSL ignores it too), and refuse one in a second ClientHello
-/// after a HelloRetryRequest that carried none. Found by the
-/// hello_differential fuzz target.
+/// after a HelloRetryRequest that carried none. An ignored cookie must still
+/// be well formed. Found by the hello_differential fuzz target.
 #[test]
 fn both_engines_treat_a_cookie_alike() {
     let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
@@ -1198,6 +1197,32 @@ fn both_engines_treat_a_cookie_alike() {
     let mut fixed =
         fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default()).unwrap();
     fixed.receive(&hello).unwrap();
+
+    // Ignored, but still decoded: a cookie whose length overruns its
+    // extension, or an empty one, is decode_error in a first ClientHello.
+    for bad in [
+        [0x00u8, 0x2c, 0x00, 0x04, 0x04, 0x00, b'c', b'o'].as_slice(),
+        [0x00u8, 0x2c, 0x00, 0x02, 0x00, 0x00].as_slice(),
+    ] {
+        let mut cc = pki.client_config(Profile::Default);
+        cc.common.groups = vec![NamedGroup::X25519];
+        cc.ech_grease = false;
+        let mut hello = Connection::client(Arc::new(cc), "server.test")
+            .unwrap()
+            .take_tls();
+        append_extension(&mut hello, bad);
+        let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+        assert_eq!(
+            owned.read_tls(&hello).unwrap_err().kind(),
+            ErrorKind::Decode
+        );
+        let mut b = Buffers::new();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut fixed =
+            fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default())
+                .unwrap();
+        assert_eq!(fixed.receive(&hello).unwrap_err().kind(), ErrorKind::Decode);
+    }
 
     // In a second ClientHello, after a HelloRetryRequest without one:
     // illegal_parameter.

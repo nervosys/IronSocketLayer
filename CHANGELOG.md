@@ -35,7 +35,8 @@ versions may change the API.
   - the fixed-capacity server refused a cookie in a first ClientHello; it
     ignores it, as the owned server and OpenSSL do (RFC 8446 §4.2.2 forbids
     the client to send one but gives the server no duty to refuse it), and
-    still refuses one in a second ClientHello it did not ask for.
+    still refuses one in a second ClientHello it did not ask for. An
+    ignored cookie must still be well formed, as in the owned server;
   - the fixed-capacity engine handles alerts as the owned engine does: an
     alert between the fragments of a handshake message is refused, a
     close_notify before the handshake completes is a failure rather than a

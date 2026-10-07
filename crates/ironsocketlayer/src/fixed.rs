@@ -1190,6 +1190,17 @@ impl<'a> Connection<'a> {
                 "QUIC transport parameters over TCP",
             ));
         }
+        // REQ-FIX-013: a cookie, even one ignored, is well formed: a
+        // non-empty opaque<1..2^16-1> filling the extension, as the owned
+        // server decodes it.
+        if let Some(body) = ext.get(44)? {
+            let mut c = Reader::new(body);
+            let cookie = c.vec16()?;
+            c.finish()?;
+            if cookie.is_empty() {
+                return Err(Error::new(ErrorKind::Decode, "empty cookie"));
+            }
+        }
         if !contains_u16(u16_list(ext.required(43)?, 1)?, 0x0304) {
             return Err(Error::new(
                 ErrorKind::ProtocolVersion,
