@@ -1142,6 +1142,103 @@ fn both_engines_process_an_empty_body_at_once() {
     }
 }
 
+/// Append `extra` (a whole extension) to the ClientHello in the last record
+/// of `flight`, growing the record, the message and the extensions block.
+fn append_extension(flight: &mut Vec<u8>, extra: &[u8]) {
+    let mut at = 0;
+    while at + 5 + (u16::from_be_bytes([flight[at + 3], flight[at + 4]]) as usize) < flight.len() {
+        at += 5 + u16::from_be_bytes([flight[at + 3], flight[at + 4]]) as usize;
+    }
+    assert_eq!(flight[at + 5], 1, "the last record holds a ClientHello");
+    let by = extra.len() as u16;
+    flight.extend_from_slice(extra);
+    let grow = |v: &mut Vec<u8>, i: usize| {
+        let n = u16::from_be_bytes([v[i], v[i + 1]]) + by;
+        v[i..i + 2].copy_from_slice(&n.to_be_bytes());
+    };
+    grow(flight, at + 3);
+    let hs = at + 5;
+    let hs_len =
+        u32::from_be_bytes([0, flight[hs + 1], flight[hs + 2], flight[hs + 3]]) + u32::from(by);
+    flight[hs + 1..hs + 4].copy_from_slice(&hs_len.to_be_bytes()[1..]);
+    // The extensions block: after version, random, session id, suites and
+    // compression.
+    let mut p = hs + 4 + 2 + 32;
+    p += 1 + flight[p] as usize;
+    p += 2 + u16::from_be_bytes([flight[p], flight[p + 1]]) as usize;
+    p += 1 + flight[p] as usize;
+    grow(flight, p);
+    assert!(ClientHello::decode(&flight[hs + 4..]).is_ok());
+}
+
+/// REQ-FIX-013: both servers ignore a cookie in a first ClientHello, which
+/// RFC 8446 §4.2.2 forbids a client to send but gives a server no duty to
+/// refuse (OpenSSL ignores it too), and refuse one in a second ClientHello
+/// after a HelloRetryRequest that carried none. Found by the
+/// hello_differential fuzz target.
+#[test]
+fn both_engines_treat_a_cookie_alike() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let cookie = [
+        0x00u8, 0x2c, 0x00, 0x08, 0x00, 0x06, b'c', b'o', b'o', b'k', b'i', b'e',
+    ];
+    // In a first ClientHello: ignored.
+    let sc = server_config(&pki);
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.groups = vec![NamedGroup::X25519];
+    cc.ech_grease = false;
+    let mut hello = Connection::client(Arc::new(cc), "server.test")
+        .unwrap()
+        .take_tls();
+    append_extension(&mut hello, &cookie);
+    let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+    owned.read_tls(&hello).unwrap();
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut fixed =
+        fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default()).unwrap();
+    fixed.receive(&hello).unwrap();
+
+    // In a second ClientHello, after a HelloRetryRequest without one:
+    // illegal_parameter.
+    let mut sc = server_config(&pki);
+    sc.common.groups = vec![NamedGroup::Secp256r1];
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.groups = vec![NamedGroup::X25519, NamedGroup::Secp256r1];
+    cc.initial_key_shares = 1;
+    cc.ech_grease = false;
+    let cc = Arc::new(cc);
+    let second_hello = |answer: &mut dyn FnMut(&[u8]) -> Vec<u8>| {
+        let mut c = Connection::client(cc.clone(), "server.test").unwrap();
+        let hrr = answer(&c.take_tls());
+        c.read_tls(&hrr).unwrap();
+        let mut ch2 = c.take_tls();
+        append_extension(&mut ch2, &cookie);
+        ch2
+    };
+    let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+    let ch2 = second_hello(&mut |ch| {
+        owned.read_tls(ch).unwrap();
+        owned.take_tls()
+    });
+    assert_eq!(
+        owned.read_tls(&ch2).unwrap_err().kind(),
+        ErrorKind::IllegalParameter
+    );
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut fixed =
+        fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default()).unwrap();
+    let ch2 = second_hello(&mut |ch| {
+        fixed.receive(ch).unwrap();
+        fixed.take()
+    });
+    assert_eq!(
+        fixed.receive(&ch2).unwrap_err().kind(),
+        ErrorKind::IllegalParameter
+    );
+}
+
 /// REQ-FIX-011: both servers refuse QUIC transport parameters in a
 /// ClientHello over TCP with unsupported_extension (RFC 9001 §8.2). Found by
 /// the hello_differential fuzz target.
@@ -1155,22 +1252,8 @@ fn both_engines_refuse_quic_transport_parameters_over_tcp() {
     let mut hello = Connection::client(Arc::new(cc), "server.test")
         .unwrap()
         .take_tls();
-    // Append quic_transport_parameters (57), with one empty parameter, as
-    // the last extension; grow the record, the message and the block.
-    let extra = [0x00u8, 0x39, 0x00, 0x02, 0x00, 0x00];
-    hello.extend_from_slice(&extra);
-    let grow = |v: &mut Vec<u8>, i: usize, by: u16| {
-        let n = u16::from_be_bytes([v[i], v[i + 1]]) + by;
-        v[i..i + 2].copy_from_slice(&n.to_be_bytes());
-    };
-    grow(&mut hello, 3, 6);
-    let hs_len = u32::from_be_bytes([0, hello[6], hello[7], hello[8]]) + 6;
-    hello[6..9].copy_from_slice(&hs_len.to_be_bytes()[1..]);
-    let mut p = 9 + 2 + 32;
-    p += 1 + hello[p] as usize;
-    p += 2 + u16::from_be_bytes([hello[p], hello[p + 1]]) as usize;
-    p += 1 + hello[p] as usize;
-    grow(&mut hello, p, 6);
+    // quic_transport_parameters (57), with one empty parameter.
+    append_extension(&mut hello, &[0x00, 0x39, 0x00, 0x02, 0x00, 0x00]);
     assert!(ClientHello::decode(&hello[9..]).is_ok());
     let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
     assert_eq!(

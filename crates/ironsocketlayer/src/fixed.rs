@@ -1286,7 +1286,9 @@ impl<'a> Connection<'a> {
         if self.retried && (group != self.group || count != 1) {
             return Err(invalid("ClientHello2 key share"));
         }
-        if ext.get(44)?.is_some() {
+        // REQ-FIX-013: a cookie in a first ClientHello is ignored, as the
+        // owned server ignores it; in a second it answers none of ours.
+        if self.retried && ext.get(44)?.is_some() {
             return Err(invalid("unsolicited retry cookie"));
         }
         self.suite = Some(suite);

@@ -1533,13 +1533,6 @@ fn malformed_client_hellos_are_refused() {
             "duplicate extension",
         ),
         (
-            "unsolicited cookie",
-            client_hello(1, &suites, &base(&[ext(44, &v16(b"cookie"))], &[P256])),
-            d,
-            ErrorKind::IllegalParameter,
-            "unsolicited retry cookie",
-        ),
-        (
             "empty ALPN name",
             client_hello(
                 1,

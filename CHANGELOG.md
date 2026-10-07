@@ -32,6 +32,10 @@ versions may change the API.
     server does over TCP;
   - the fixed-capacity client refuses a ChangeCipherSpec before the
     server's ServerHello or HelloRetryRequest, as the owned client does.
+  - the fixed-capacity server refused a cookie in a first ClientHello; it
+    ignores it, as the owned server and OpenSSL do (RFC 8446 §4.2.2 forbids
+    the client to send one but gives the server no duty to refuse it), and
+    still refuses one in a second ClientHello it did not ask for.
 
 ### Verification
 - Three differential fuzz targets: `pki_differential` (the two path
