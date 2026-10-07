@@ -79,7 +79,8 @@ Read these first; each has a fuzz target (`fuzz/`) and robustness tests
 | Author's audit against CVE classes, ATT&CK, FIPS and CMMC | [SECURITY-AUDIT-2026-10-06.md](SECURITY-AUDIT-2026-10-06.md) | Not independent. 21 findings and 12 weaknesses, all fixed. |
 | 276 low-level requirements, each traced to code and a test that fails when the behaviour is removed | [TRACEABILITY.md](TRACEABILITY.md) (enforced by `tests/traceability.rs`) | The requirements are the author's reading of the RFCs. |
 | Interoperability with OpenSSL 3.5 (both directions), Cloudflare, Google, GitHub | `tests/openssl_*.rs`, `tests/interop.rs` | Agreement with other implementations, not proof of correctness. |
-| tlsfuzzer's TLS 1.3 conformance scripts | [VERIFICATION-2026-10-06-tlsfuzzer.md](VERIFICATION-2026-10-06-tlsfuzzer.md) | Found eight defects. Server side only; client side not run. |
+| tlsfuzzer's TLS 1.3 conformance scripts | [VERIFICATION-2026-10-06-tlsfuzzer.md](VERIFICATION-2026-10-06-tlsfuzzer.md) | Found eight defects. Server side only: tlsfuzzer cannot test clients. |
+| TLS-Anvil's TLS 1.3 client tests | [VERIFICATION-2026-10-07-tls-anvil.md](VERIFICATION-2026-10-07-tls-anvil.md) | Found two defects. Owned engine, one configuration, strength 1; two defects in the test tool patched, server keys pinned. |
 | libFuzzer under AddressSanitizer, eleven targets | `fuzz/` | Short campaigns (minutes per target), not days. |
 | Branch coverage 97.7%, every gap dispositioned | [VERIFICATION-2026-10-05.md](VERIFICATION-2026-10-05.md), `docs/evidence/` | Branch coverage, not MC/DC; dispositions are the author's. |
 | Differential fuzzing of the two engines (servers, and clients up to the encrypted flight) and the two path validators | [VERIFICATION-2026-10-06-differential.md](VERIFICATION-2026-10-06-differential.md) | Found fourteen differences in the fixed-capacity engine, all fixed. Finds no defect both share. |
@@ -88,7 +89,7 @@ Read these first; each has a fuzz target (`fuzz/`) and robustness tests
 ## What has not been checked
 
 - An independent review of any of the above.
-- tlsfuzzer against the client side, and BoringSSL's BoGo or TLS-Anvil.
+- BoringSSL's BoGo; TLS-Anvil against the server side, at higher strengths, or with resumption, 0-RTT, client certificates or ECH.
 - Long fuzzing campaigns (days), and differential fuzzing of the two
   clients on the encrypted part of the server's flight.
 - Timing side channels beyond the constant-time comparisons and the
@@ -107,6 +108,7 @@ $ cargo test -p ironsocketlayer --test openssl_interop -- --ignored --test-threa
 $ cargo test -p ironsocketlayer --test openssl_cnsa2 -- --ignored
 $ cargo test -p ironsocketlayer --test interop -- --ignored                          # network
 $ sh scripts/tlsfuzzer.sh ~/tlsfuzzer-work                                           # Linux
+$ sh scripts/tls-anvil.sh ~/tls-anvil-work                                            # Linux, Docker
 $ ./scripts/fuzz.ps1 -Seconds 600                                                    # see fuzz/README.md
 ```
 

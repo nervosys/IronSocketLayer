@@ -1,0 +1,67 @@
+diff --git a/src/main/java/de/rub/nds/x509attacker/config/DateTimeAdapter.java b/src/main/java/de/rub/nds/x509attacker/config/DateTimeAdapter.java
+new file mode 100644
+index 0000000..a7e1520
+--- /dev/null
++++ b/src/main/java/de/rub/nds/x509attacker/config/DateTimeAdapter.java
+@@ -0,0 +1,29 @@
++/*
++ * X.509-Attacker - A Library for Arbitrary X.509 Certificates
++ *
++ * Copyright 2014-2023 Ruhr University Bochum, Paderborn University, Technology Innovation Institute, and Hackmanit GmbH
++ *
++ * Licensed under Apache License, Version 2.0
++ * http://www.apache.org/licenses/LICENSE-2.0.txt
++ */
++package de.rub.nds.x509attacker.config;
++
++import jakarta.xml.bind.annotation.adapters.XmlAdapter;
++import org.joda.time.DateTime;
++
++/**
++ * Local patch for IronSocketLayer's TLS-Anvil run: without an adapter JAXB writes a Joda DateTime
++ * as an empty element and reads it back with DateTime's no-argument constructor, the current
++ * time, so a configuration copied through XML gets a certificate valid from now until now.
++ */
++public class DateTimeAdapter extends XmlAdapter<String, DateTime> {
++    @Override
++    public DateTime unmarshal(String value) {
++        return value == null || value.isEmpty() ? null : DateTime.parse(value);
++    }
++
++    @Override
++    public String marshal(DateTime value) {
++        return value == null ? null : value.toString();
++    }
++}
+diff --git a/src/main/java/de/rub/nds/x509attacker/config/X509CertificateConfig.java b/src/main/java/de/rub/nds/x509attacker/config/X509CertificateConfig.java
+index b5f6391..1296b0f 100644
+--- a/src/main/java/de/rub/nds/x509attacker/config/X509CertificateConfig.java
++++ b/src/main/java/de/rub/nds/x509attacker/config/X509CertificateConfig.java
+@@ -59,6 +59,7 @@ public class X509CertificateConfig implements Serializable {
+     private List<Pair<X500AttributeType, DirectoryStringChoiceType>>
+             divergentIssuerDirectoryStringChoices = new ArrayList<>();
+ 
++    @XmlJavaTypeAdapter(DateTimeAdapter.class)
+     private DateTime notBefore =
+             new DateTime(2026, 1, 1, 0, 0, DateTimeZone.forID("UTC")); // 1.1.2026
+ 
+@@ -66,6 +67,7 @@ public class X509CertificateConfig implements Serializable {
+ 
+     private ValidityEncoding defaultNotBeforeEncoding = ValidityEncoding.UTC;
+ 
++    @XmlJavaTypeAdapter(DateTimeAdapter.class)
+     private DateTime notAfter =
+             new DateTime(2028, 1, 1, 0, 0, DateTimeZone.forID("UTC")); // 1.1.2028
+ 
+@@ -685,7 +687,10 @@ public class X509CertificateConfig implements Serializable {
+     }
+ 
+     public boolean isIncludeExtensions() {
+-        return includeExtensions;
++        // Local patch for IronSocketLayer's TLS-Anvil run: RFC 5280 4.1 has
++        // Extensions ::= SEQUENCE SIZE (1..MAX), so with no extension present
++        // the optional field is omitted instead of encoded empty.
++        return includeExtensions && extensions.stream().anyMatch(ExtensionConfig::isPresent);
+     }
+ 
+     public void setIncludeExtensions(boolean includeExtensions) {
