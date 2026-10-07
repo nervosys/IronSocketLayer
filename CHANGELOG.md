@@ -3,51 +3,52 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## Unreleased
+## 0.3.1 (2026-10-06)
+
+Fixes to the fixed-capacity engine found by fuzzing it against the owned
+engine: it now accepts and refuses what the owned engine does, at the same
+point in the input. No API change, but a non-conforming peer may notice the
+fixed engine's new refusals (an alert or ChangeCipherSpec out of place,
+QUIC transport parameters over TCP, a malformed `signature_algorithms_cert`
+or cookie). Requires IronCrypto 0.2.15 or later, below 0.3.
 
 ### Fixed
-- Found by differential fuzzing of the two engines:
-  - the fixed-capacity engine ignored a malformed
-    `signature_algorithms_cert`; it checks its syntax as the owned engine
-    does;
-  - the fixed-capacity server refused a server_name entry of a type other
-    than host_name; it skips it, as the owned engine does (RFC 6066 §3);
-  - the fixed-capacity engine refuses a record header announcing more than
-    2^14 + 256 bytes at once, not when the body would have arrived.
-  - the fixed-capacity server refused a ClientHello whose legacy_version
-    was not 0x0303; it ignores any value above SSL 3.0, as the owned engine
-    does (RFC 8446 §4.1.2, §D.5);
-  - the fixed-capacity engine refuses a zero-length record other than
-    application data on its header, as the owned engine does, not when the
-    next byte arrives.
-  - the fixed-capacity engine refuses a handshake message header announcing
-    more than it can hold, or a Finished longer than any hash, as soon as
-    the header is complete, not when the next record arrives.
-  - the fixed-capacity engine processes a record or handshake message whose
-    header announces an empty body at once, not when more input arrives
-    (an empty application-data record before any keys went unrefused until
-    then).
-  - the fixed-capacity server refuses QUIC transport parameters in a
-    ClientHello with `unsupported_extension` (RFC 9001 §8.2), as the owned
-    server does over TCP;
-  - the fixed-capacity client refuses a ChangeCipherSpec before the
-    server's ServerHello or HelloRetryRequest, as the owned client does.
-  - the fixed-capacity server refused a cookie in a first ClientHello; it
-    ignores it, as the owned server and OpenSSL do (RFC 8446 §4.2.2 forbids
-    the client to send one but gives the server no duty to refuse it), and
-    still refuses one in a second ClientHello it did not ask for. An
-    ignored cookie must still be well formed, as in the owned server;
-  - the fixed-capacity engine handles alerts as the owned engine does: an
-    alert between the fragments of a handshake message is refused, a
-    close_notify before the handshake completes is a failure rather than a
-    clean close, and user_canceled is ignored rather than fatal.
+Found by differential fuzzing of the two engines; in the fixed-capacity
+engine:
+- a malformed `signature_algorithms_cert` was ignored; its syntax is
+  checked, as in the owned engine;
+- a server_name entry of a type other than host_name was refused; it is
+  skipped (RFC 6066 §3);
+- a ClientHello `legacy_version` other than 0x0303 was refused; any value
+  above SSL 3.0 is ignored, and SSL 3.0 and below are `protocol_version`
+  (RFC 8446 §4.1.2, appendix D.5);
+- QUIC transport parameters in a ClientHello were ignored; they are
+  `unsupported_extension` over TCP (RFC 9001 §8.2);
+- a cookie in a first ClientHello was refused; a well-formed one is
+  ignored, as in the owned server and OpenSSL (RFC 8446 §4.2.2 forbids the
+  client to send one but gives the server no duty to refuse it), and a
+  cookie in a second ClientHello the server did not ask for is still
+  refused;
+- the client accepted a ChangeCipherSpec before the server's ServerHello or
+  HelloRetryRequest; it is `unexpected_message` (RFC 8446 appendix D.4);
+- alerts are handled as in the owned engine: one between the fragments of
+  a handshake message is `unexpected_message` (RFC 8446 §5.1), a
+  close_notify before the handshake completes is a failure rather than a
+  clean close, and user_canceled is ignored rather than fatal (§6.1);
+- several refusals came only when more input arrived; they now come as soon
+  as the header that warrants them is complete: a record header announcing
+  more than 2^14 + 256 bytes, a zero-length record other than application
+  data, a handshake header announcing more than the engine can hold or a
+  Finished longer than any hash, and any record or handshake message with
+  an empty body (an empty application-data record before any keys went
+  unrefused until more input arrived).
 
 ### Verification
 - Three differential fuzz targets: `pki_differential` (the two path
-  validators on re-signed, mutated chains with name constraints) and
-  `hello_differential` (the two servers on the same client flight); and
+  validators on re-signed, mutated chains with name constraints),
+  `hello_differential` (the two servers on the same client flight) and
   `server_hello_differential` (the two clients on the server's plaintext
-  records: ServerHello, HelloRetryRequest, ChangeCipherSpec and alerts).
+  records). Results in `docs/VERIFICATION-2026-10-06-differential.md`.
 
 ## 0.3.0 (2026-10-06)
 

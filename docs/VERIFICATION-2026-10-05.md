@@ -427,3 +427,14 @@ interop (6) passed; the QEMU Cortex-M4 run passed (largest session stack
 [VERIFICATION-2026-10-06-tlsfuzzer.md](VERIFICATION-2026-10-06-tlsfuzzer.md).
 Fuzzing ran after each parser change (one to two minutes per target, no
 findings).
+
+### Release 0.3.1
+
+The fixed-capacity engine's fixes from differential fuzzing, over IronCrypto
+0.2.15 (published). On Windows: 677 tests passed; fmt, clippy, the
+Cortex-M4 `no_std` build and the Rust 1.88 build passed; `openssl_interop`
+(14), `openssl_fixed` (5), `openssl_cnsa2` (1) and live interop (6) passed
+against OpenSSL 3.5.7; the QEMU Cortex-M4 run passed (largest session stack
+34,412 bytes). On Linux (WSL Debian, rustc 1.95.0): 677 passed. Differential
+fuzzing:
+[VERIFICATION-2026-10-06-differential.md](VERIFICATION-2026-10-06-differential.md).

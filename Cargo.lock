@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "ironsocketlayer"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "isl-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ic-core",
  "ic-fips",
@@ -164,4 +164,4 @@ dependencies = [
 
 [[package]]
 name = "isl-ontology"
-version = "0.3.0"
+version = "0.3.1"
