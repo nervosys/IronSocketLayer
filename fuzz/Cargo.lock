@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "ironsocketlayer"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "isl-ontology"
-version = "0.3.1"
+version = "0.3.2"
 
 [[package]]
 name = "jobserver"

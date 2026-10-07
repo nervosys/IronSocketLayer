@@ -438,3 +438,13 @@ against OpenSSL 3.5.7; the QEMU Cortex-M4 run passed (largest session stack
 34,412 bytes). On Linux (WSL Debian, rustc 1.95.0): 677 passed. Differential
 fuzzing:
 [VERIFICATION-2026-10-06-differential.md](VERIFICATION-2026-10-06-differential.md).
+
+### Release 0.3.2
+
+The client fixes found with TLS-Anvil, over IronCrypto 0.2.15 (published).
+On Windows: 679 tests passed; fmt, clippy, the Cortex-M4 `no_std` build and
+the Rust 1.88 build passed; `openssl_interop` (14), `openssl_fixed` (5),
+`openssl_cnsa2` (1) and live interop (6) passed against OpenSSL 3.5.7; the
+QEMU Cortex-M4 run passed (largest session stack 34,412 bytes). On Linux
+(WSL Debian, rustc 1.95.0): 679 passed. TLS-Anvil:
+[VERIFICATION-2026-10-07-tls-anvil.md](VERIFICATION-2026-10-07-tls-anvil.md).

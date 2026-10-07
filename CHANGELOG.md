@@ -3,7 +3,13 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## Unreleased
+## 0.3.2 (2026-10-07)
+
+Client fixes found by running TLS-Anvil, an independent conformance suite,
+against the client and the server. No API change. A client now accepts a
+ServerHello it used to refuse (one whose legacy_version is not 0x0303), and
+sends a different alert for an unrequested ALPN answer. Requires IronCrypto
+0.2.15 or later, below 0.3.
 
 ### Fixed
 - Found with TLS-Anvil: both clients refused a TLS 1.3 ServerHello whose
@@ -20,6 +26,12 @@ versions may change the API.
 ### Changed
 - `isl serve` serves connections concurrently, up to 64 at once, so a peer
   that stalls no longer holds up the next one.
+
+### Verification
+- TLS-Anvil's TLS 1.3 tests against the client and the server, with
+  `scripts/tls-anvil.sh`; the results, and two defects in the test tool
+  patched to make the run possible, are in
+  `docs/VERIFICATION-2026-10-07-tls-anvil.md`.
 
 ## 0.3.1 (2026-10-06)
 
