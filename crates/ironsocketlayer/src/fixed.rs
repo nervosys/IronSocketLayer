@@ -207,12 +207,12 @@ pub struct Connection<'a> {
 
 /// REQ-REC-010: a record header is TLS if its content type is one TLS 1.3
 /// defines and its legacy version's major byte is 3; the rest of the legacy
-/// version is ignored (RFC 8446 §5.1).
+/// version is ignored (RFC 8446 §5.1). REQ-REC-004: a zero-length record
+/// other than application data is refused on its header, as the owned engine
+/// refuses it, not when the next record's first byte arrives.
 fn check_record_header(header: &[u8]) -> Result<()> {
-    if matches!(
-        ContentType::from_wire(header[0]),
-        ContentType::Unknown(_) | ContentType::Invalid
-    ) {
+    let ty = ContentType::from_wire(header[0]);
+    if matches!(ty, ContentType::Unknown(_) | ContentType::Invalid) {
         return Err(unexpected());
     }
     if header[1] != 3 {
@@ -228,6 +228,9 @@ fn check_record_header(header: &[u8]) -> Result<()> {
             ErrorKind::RecordOverflow,
             "record body exceeds TLS bound",
         ));
+    }
+    if header[3..5] == [0, 0] && ty != ContentType::ApplicationData {
+        return Err(Error::new(ErrorKind::Decode, "zero-length record"));
     }
     Ok(())
 }
@@ -1109,8 +1112,14 @@ impl<'a> Connection<'a> {
         };
         let common = &config.common;
         let mut r = Reader::new(body);
-        if r.u16()? != 0x0303 {
-            return Err(invalid("ClientHello legacy version"));
+        // REQ-FIX-008: as the owned engine (RFC 8446 §4.1.2, appendix D.5):
+        // the version comes from supported_versions; SSL 3.0 and below are
+        // protocol_version, any later legacy_version is ignored.
+        if r.u16()? <= 0x0300 {
+            return Err(Error::new(
+                ErrorKind::ProtocolVersion,
+                "ClientHello legacy version",
+            ));
         }
         r.take(32)?;
         let sid = r.vec8()?;

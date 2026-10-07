@@ -1052,6 +1052,34 @@ fn an_oversized_record_header_is_refused_at_once() {
     );
 }
 
+/// REQ-REC-004: both servers refuse a zero-length record other than
+/// application data on its header alone, rather than when the next byte
+/// arrives. Found by the hello_differential fuzz target.
+#[test]
+fn both_engines_refuse_an_empty_record_on_its_header() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = server_config(&pki);
+    for ty in [20u8, 21, 22] {
+        let header = [ty, 3, 3, 0, 0];
+        let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+        assert_eq!(
+            owned.read_tls(&header).unwrap_err().kind(),
+            ErrorKind::Decode,
+            "owned, type {ty}"
+        );
+        let mut b = Buffers::new();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut fixed =
+            fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default())
+                .unwrap();
+        assert_eq!(
+            fixed.receive(&header).unwrap_err().kind(),
+            ErrorKind::Decode,
+            "fixed, type {ty}"
+        );
+    }
+}
+
 /// REQ-FIX-007: both servers skip a server_name entry of a type other than
 /// host_name and use the host_name entry (RFC 6066 §3). Found by the
 /// hello_differential fuzz target.
@@ -1102,4 +1130,45 @@ fn both_engines_skip_server_name_entries_of_other_types() {
     let mut fixed =
         fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default()).unwrap();
     fixed.receive(&hello).unwrap();
+}
+
+/// REQ-FIX-008: both servers ignore a ClientHello legacy_version above SSL
+/// 3.0 (the version comes from supported_versions) and refuse SSL 3.0 and
+/// below with protocol_version. Found by the hello_differential fuzz
+/// target; tlsfuzzer's test-tls13-legacy-version checks the same.
+#[test]
+fn both_engines_treat_the_legacy_version_alike() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = server_config(&pki);
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.groups = vec![NamedGroup::X25519];
+    cc.ech_grease = false;
+    let hello = Connection::client(Arc::new(cc), "server.test")
+        .unwrap()
+        .take_tls();
+    for (version, refused) in [
+        (0x0303u16, false),
+        (0x0304, false),
+        (0x0301, false),
+        (0xffff, false),
+        (0x0300, true),
+        (0x0200, true),
+    ] {
+        let mut h = hello.clone();
+        h[9..11].copy_from_slice(&version.to_be_bytes());
+        let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+        let o = owned.read_tls(&h);
+        let mut b = Buffers::new();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut fixed =
+            fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default())
+                .unwrap();
+        let f = fixed.receive(&h);
+        assert_eq!(o.is_err(), refused, "owned {version:#06x}");
+        assert_eq!(f.is_err(), refused, "fixed {version:#06x}");
+        if refused {
+            assert_eq!(o.unwrap_err().kind(), ErrorKind::ProtocolVersion);
+            assert_eq!(f.unwrap_err().kind(), ErrorKind::ProtocolVersion);
+        }
+    }
 }

@@ -14,6 +14,12 @@ versions may change the API.
     than host_name; it skips it, as the owned engine does (RFC 6066 §3);
   - the fixed-capacity engine refuses a record header announcing more than
     2^14 + 256 bytes at once, not when the body would have arrived.
+  - the fixed-capacity server refused a ClientHello whose legacy_version
+    was not 0x0303; it ignores any value above SSL 3.0, as the owned engine
+    does (RFC 8446 §4.1.2, §D.5);
+  - the fixed-capacity engine refuses a zero-length record other than
+    application data on its header, as the owned engine does, not when the
+    next byte arrives.
 
 ### Verification
 - Two differential fuzz targets: `pki_differential` (the two path
