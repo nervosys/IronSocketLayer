@@ -492,7 +492,7 @@ mod tests {
     fn a_stalled_connection_does_not_block_the_next() {
         use ironsocketlayer::config::PeerVerification;
         use ironsocketlayer::x509::{self, CertificateParams, Usage};
-        let key_pem = include_str!("../../ironsocketlayer/tests/data/throwaway-keys/p256.pem");
+        let key_pem = include_str!("../tests/data/throwaway-p256.pem");
         let key = SigningKey::from_pem(key_pem).unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -3,6 +3,10 @@
 //! `docs/TRACEABILITY.md` must list every `REQ-*` tag the source carries and
 //! nothing else, and every test it cites must exist. Delete a test, rename a
 //! requirement, or add one without tracing it, and this fails.
+//!
+//! The matrix lives at the repository root, outside the published package:
+//! built from the package alone, these tests have nothing to check and say
+//! so. In the repository the matrix must exist.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -55,10 +59,23 @@ struct Row {
     evidence: String,
 }
 
-fn matrix() -> Vec<Row> {
+/// Whether this crate is being built inside its repository: the workspace
+/// manifest two levels up names it as a member.
+fn in_repository() -> bool {
+    std::fs::read_to_string(crate_dir().join("../../Cargo.toml"))
+        .is_ok_and(|m| m.contains("[workspace]") && m.contains("crates/ironsocketlayer"))
+}
+
+/// The matrix's rows, or `None` outside the repository.
+fn matrix() -> Option<Vec<Row>> {
+    if !in_repository() {
+        eprintln!("not in the repository: docs/TRACEABILITY.md is not here to check");
+        return None;
+    }
     let doc = std::fs::read_to_string(crate_dir().join("../../docs/TRACEABILITY.md"))
         .expect("docs/TRACEABILITY.md");
-    doc.lines()
+    let rows = doc
+        .lines()
         .filter(|l| l.starts_with("| REQ-"))
         .map(|l| {
             let cols: Vec<&str> = l.split('|').map(str::trim).collect();
@@ -68,7 +85,8 @@ fn matrix() -> Vec<Row> {
                 evidence: cols[5].to_string(),
             }
         })
-        .collect()
+        .collect();
+    Some(rows)
 }
 
 #[test]
@@ -79,7 +97,7 @@ fn every_requirement_in_the_source_is_traced_and_nothing_else() {
     for f in &files {
         in_source.extend(tags_in(&std::fs::read_to_string(f).unwrap()));
     }
-    let rows = matrix();
+    let Some(rows) = matrix() else { return };
     let in_matrix: BTreeSet<String> = rows.iter().map(|r| r.id.clone()).collect();
     assert_eq!(
         rows.len(),
@@ -100,7 +118,8 @@ fn every_requirement_in_the_source_is_traced_and_nothing_else() {
 
 #[test]
 fn every_cited_test_exists_and_every_requirement_is_verified() {
-    for row in matrix() {
+    let Some(rows) = matrix() else { return };
+    for row in rows {
         match row.method.as_str() {
             "Test" => {
                 let refs: Vec<&str> = row

@@ -3,6 +3,16 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## Unreleased
+
+### Fixed
+- The published packages' own tests now run from the package alone:
+  `isl-cli` 0.3.2's tests read a key from the `ironsocketlayer` crate and
+  did not compile, and `ironsocketlayer`'s traceability tests read
+  `docs/TRACEABILITY.md` from the repository root. `isl-cli` carries its own
+  copy of the throwaway key; the traceability tests check the matrix in the
+  repository and say they have nothing to check outside it.
+
 ## 0.3.2 (2026-10-07)
 
 Client fixes found by running TLS-Anvil, an independent conformance suite,
