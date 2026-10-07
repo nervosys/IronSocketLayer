@@ -221,6 +221,14 @@ fn check_record_header(header: &[u8]) -> Result<()> {
             "record legacy version",
         ));
     }
+    // A length no record may have is refused on the header too, as the
+    // owned engine does, not when the body would have arrived.
+    if usize::from(u16::from_be_bytes([header[3], header[4]])) > record::MAX_CIPHERTEXT {
+        return Err(Error::new(
+            ErrorKind::RecordOverflow,
+            "record body exceeds TLS bound",
+        ));
+    }
     Ok(())
 }
 
@@ -601,16 +609,11 @@ impl<'a> Connection<'a> {
             let need = if reading_header {
                 5
             } else {
+                // check_record_header has bounded the length already.
                 let n = usize::from(u16::from_be_bytes([
                     self.storage.record[3],
                     self.storage.record[4],
                 ]));
-                if n > record::MAX_CIPHERTEXT {
-                    return Err(Error::new(
-                        ErrorKind::RecordOverflow,
-                        "record body exceeds TLS bound",
-                    ));
-                }
                 5 + n
             };
             if need > self.storage.record.len() {
@@ -1137,6 +1140,11 @@ impl<'a> Connection<'a> {
         }
         let groups = u16_list(ext.required(10)?, 2)?;
         let schemes = u16_list(ext.required(13)?, 2)?;
+        // REQ-FIX-006: signature_algorithms_cert is checked as the owned
+        // engine checks it, though the fixed engine does not use it.
+        if let Some(cert_schemes) = ext.get(50)? {
+            u16_list(cert_schemes, 2)?;
+        }
         let mut sr = Reader::new(ext.required(51)?);
         let shares = sr.vec16()?;
         sr.finish()?;
@@ -1244,18 +1252,36 @@ impl<'a> Connection<'a> {
             let mut nr = Reader::new(bytes);
             let mut names = nr.sub16()?;
             nr.finish()?;
-            if names.u8()? != 0 {
-                return Err(invalid("SNI name type"));
+            if names.is_empty() {
+                return Err(invalid("empty SNI list"));
             }
-            let bytes = names.vec16()?;
-            names.finish()?;
-            if bytes.len() > self.limits.name {
-                return Err(capacity("SNI name capacity"));
+            // REQ-FIX-007: as the owned engine does, take the host_name entry
+            // and skip entries of other types (RFC 6066 §3); two host names
+            // are refused.
+            let mut host = None;
+            while !names.is_empty() {
+                let name_type = names.u8()?;
+                let entry = names.vec16()?;
+                if name_type != 0 {
+                    continue;
+                }
+                if host.is_some() {
+                    return Err(invalid("two host names in SNI"));
+                }
+                host = Some(entry);
             }
-            let name = core::str::from_utf8(bytes).map_err(|_| invalid("SNI ASCII"))?;
-            match ServerName::parse(name)? {
-                ServerName::Dns(_) => Some(name),
-                _ => return Err(invalid("IP address in SNI")),
+            match host {
+                None => None,
+                Some(bytes) => {
+                    if bytes.len() > self.limits.name {
+                        return Err(capacity("SNI name capacity"));
+                    }
+                    let name = core::str::from_utf8(bytes).map_err(|_| invalid("SNI ASCII"))?;
+                    match ServerName::parse(name)? {
+                        ServerName::Dns(_) => Some(name),
+                        _ => return Err(invalid("IP address in SNI")),
+                    }
+                }
             }
         } else {
             None
@@ -1655,6 +1681,10 @@ impl<'a> Connection<'a> {
         )?;
         r.finish()?;
         let schemes = u16_list(ext.required(13)?, 2)?;
+        // REQ-FIX-006.
+        if let Some(cert_schemes) = ext.get(50)? {
+            u16_list(cert_schemes, 2)?;
+        }
         if schemes.len() / 2 > self.request_schemes.len() {
             return Err(capacity("CertificateRequest signature slots"));
         }

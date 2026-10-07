@@ -254,3 +254,205 @@ pub fn frame_chunks(parts: &[&[u8]]) -> Vec<u8> {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// Differential fixtures: certificates whose to-be-signed bytes the fuzzer
+// mutates and the harness re-signs, so signatures always verify and both
+// path validators reach their deepest checks.
+
+fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    ironsocketlayer::crypto::sign::push_tlv(&mut out, tag, body);
+    out
+}
+
+fn dn(cn: &str) -> Vec<u8> {
+    let atv = [tlv(0x06, &[0x55, 0x04, 0x03]), tlv(0x0c, cn.as_bytes())].concat();
+    tlv(0x30, &tlv(0x31, &tlv(0x30, &atv)))
+}
+
+fn ext(oid: &[u8], critical: bool, value: &[u8]) -> Vec<u8> {
+    let mut b = tlv(0x06, oid);
+    if critical {
+        b.extend(tlv(0x01, &[0xff]));
+    }
+    b.extend(tlv(0x04, value));
+    tlv(0x30, &b)
+}
+
+const ECDSA_SHA256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+
+fn tbs(serial: u8, issuer: &str, subject: &str, spki: &[u8], exts: &[Vec<u8>]) -> Vec<u8> {
+    let validity = [tlv(0x17, b"260927000000Z"), tlv(0x17, b"260929000000Z")].concat();
+    tlv(
+        0x30,
+        &[
+            tlv(0xa0, &tlv(0x02, &[2])),
+            tlv(0x02, &[serial]),
+            tlv(0x30, &tlv(0x06, ECDSA_SHA256)),
+            dn(issuer),
+            tlv(0x30, &validity),
+            dn(subject),
+            spki.to_vec(),
+            tlv(0xa3, &tlv(0x30, &exts.concat())),
+        ]
+        .concat(),
+    )
+}
+
+/// A certificate from `tbs`, signed by `key` (ECDSA P-256, SHA-256) with the
+/// fixed DRBG.
+pub fn sign_tbs(tbs: &[u8], key: &SigningKey) -> Vec<u8> {
+    let sig = key
+        .sign(
+            ironsocketlayer::enums::SignatureScheme::EcdsaSecp256r1Sha256,
+            tbs,
+            &mut *rng(),
+        )
+        .unwrap();
+    let mut bits = vec![0u8];
+    bits.extend(sig);
+    tlv(
+        0x30,
+        &[
+            tbs.to_vec(),
+            tlv(0x30, &tlv(0x06, ECDSA_SHA256)),
+            tlv(0x03, &bits),
+        ]
+        .concat(),
+    )
+}
+
+/// A root, an intermediate with name constraints (permitted dNSName
+/// fuzz.test, excluded bad.fuzz.test, permitted iPAddress 10.0.0.0/8), and a
+/// leaf under it; the keys sign whatever TBS the fuzzer makes of them.
+pub struct DiffPki {
+    pub root_key: SigningKey,
+    pub int_key: SigningKey,
+    pub int_tbs: Vec<u8>,
+    pub leaf_tbs: Vec<u8>,
+    pub roots: RootStore,
+}
+
+/// The differential fixtures, built once per process.
+pub fn diff_pki() -> &'static DiffPki {
+    static D: OnceLock<DiffPki> = OnceLock::new();
+    D.get_or_init(|| {
+        let mut r = rng();
+        let root_key = SigningKey::generate(KeyKind::EcdsaP256, &mut *r).unwrap();
+        let int_key = SigningKey::generate(KeyKind::EcdsaP256, &mut *r).unwrap();
+        let leaf_key = SigningKey::generate(KeyKind::EcdsaP256, &mut *r).unwrap();
+        let ca_bc = ext(&[0x55, 0x1d, 0x13], true, &tlv(0x30, &[0x01, 0x01, 0xff]));
+        let ca_ku = ext(&[0x55, 0x1d, 0x0f], true, &tlv(0x03, &[0x01, 0x06]));
+        let root = sign_tbs(
+            &tbs(
+                1,
+                "Diff Root",
+                "Diff Root",
+                root_key.spki(),
+                &[ca_bc.clone(), ca_ku.clone()],
+            ),
+            &root_key,
+        );
+        let subtree = |t: u8, v: &[u8]| tlv(0x30, &tlv(t, v));
+        let permitted = [
+            subtree(0x82, b"fuzz.test"),
+            subtree(0x87, &[10, 0, 0, 0, 255, 0, 0, 0]),
+        ]
+        .concat();
+        let excluded = subtree(0x82, b"bad.fuzz.test");
+        let nc = ext(
+            &[0x55, 0x1d, 0x1e],
+            true,
+            &tlv(
+                0x30,
+                &[tlv(0xa0, &permitted), tlv(0xa1, &excluded)].concat(),
+            ),
+        );
+        let int_tbs = tbs(
+            2,
+            "Diff Root",
+            "Diff Int",
+            int_key.spki(),
+            &[ca_bc, ca_ku, nc],
+        );
+        let san = ext(
+            &[0x55, 0x1d, 0x11],
+            false,
+            &tlv(
+                0x30,
+                &[tlv(0x82, b"a.fuzz.test"), tlv(0x87, &[10, 1, 2, 3])].concat(),
+            ),
+        );
+        let leaf_bc = ext(&[0x55, 0x1d, 0x13], true, &tlv(0x30, &[]));
+        let leaf_ku = ext(&[0x55, 0x1d, 0x0f], true, &tlv(0x03, &[0x07, 0x80]));
+        let eku = ext(
+            &[0x55, 0x1d, 0x25],
+            false,
+            &tlv(
+                0x30,
+                &tlv(0x06, &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01]),
+            ),
+        );
+        let leaf_tbs = tbs(
+            3,
+            "Diff Int",
+            "a.fuzz.test",
+            leaf_key.spki(),
+            &[leaf_bc, leaf_ku, eku, san],
+        );
+        let mut roots = RootStore::new();
+        roots.add_der(&root).unwrap();
+        DiffPki {
+            root_key,
+            int_key,
+            int_tbs,
+            leaf_tbs,
+            roots,
+        }
+    })
+}
+
+/// The pki_differential input for the fixture chain: selector, the
+/// intermediate's TBS behind a two-byte length, then the leaf's TBS.
+pub fn diff_seed(sel: u8) -> Vec<u8> {
+    let d = diff_pki();
+    let mut out = vec![sel];
+    out.extend((d.int_tbs.len() as u16).to_be_bytes());
+    out.extend(&d.int_tbs);
+    out.extend(&d.leaf_tbs);
+    out
+}
+
+/// The extension types of the ClientHello carried in the handshake records of
+/// `stream`, or `None` if no complete hello header can be found. Bounds are
+/// checked throughout: a fuzz harness must not panic on its own parsing.
+pub fn client_hello_extension_types(stream: &[u8]) -> Option<Vec<u16>> {
+    let mut hs = Vec::new();
+    let mut i = 0usize;
+    while i + 5 <= stream.len() {
+        let len = usize::from(u16::from_be_bytes([stream[i + 3], stream[i + 4]]));
+        let end = (i + 5 + len).min(stream.len());
+        if stream[i] == 22 {
+            hs.extend_from_slice(&stream[i + 5..end]);
+        }
+        i += 5 + len;
+    }
+    let body = hs.get(4..)?;
+    let at = |p: usize| body.get(p).copied().map(usize::from);
+    let u16_at = |p: usize| Some(at(p)? << 8 | at(p + 1)?);
+    let mut p = 2 + 32;
+    p += 1 + at(p)?;
+    p += 2 + u16_at(p)?;
+    p += 1 + at(p)?;
+    let ext_len = u16_at(p)?;
+    let start = p + 2;
+    let stop = (start + ext_len).min(body.len());
+    let mut q = start;
+    let mut types = Vec::new();
+    while q + 4 <= stop {
+        types.push(u16_at(q)? as u16);
+        q += 4 + u16_at(q + 2)?;
+    }
+    Some(types)
+}

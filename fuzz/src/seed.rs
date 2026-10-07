@@ -120,6 +120,29 @@ fn main() {
         "plain-clienthello",
         &frame_chunks(&[&fixed_hello]),
     );
+    // The same hello for both servers at once, whole and fragmented, without
+    // ECH GREASE: the comparison skips hellos with ECH, which the fixed
+    // engine does not implement.
+    let mut dc = (*client_config()).clone();
+    dc.ech_configs = None;
+    dc.ech_grease = false;
+    let plain_hello = Connection::client(Arc::new(dc), NAME).unwrap().take_tls();
+    write(
+        "hello_differential",
+        "plain-clienthello",
+        &frame_chunks(&[&plain_hello]),
+    );
+    let (head, tail) = plain_hello.split_at(7);
+    write(
+        "hello_differential",
+        "fragmented-clienthello",
+        &frame_chunks(&[head, tail]),
+    );
+    // The differential chain: through the intermediate and from the root,
+    // for server and client usage.
+    for sel in 0..4u8 {
+        write("pki_differential", &format!("chain-{sel}"), &diff_seed(sel));
+    }
 
     // The fixed-capacity client's view: the server's reply to its (fixed-DRBG,
     // so reproducible) ClientHello, from an owned server.

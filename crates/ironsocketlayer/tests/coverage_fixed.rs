@@ -1443,18 +1443,27 @@ fn malformed_client_hellos_are_refused() {
             "TLS 1.3 not offered",
         ),
         (
-            "SNI entry of another type",
+            "two host names in SNI",
             client_hello(
                 1,
                 &suites,
                 &base(
-                    &[ext(0, &v16(&[&[1u8][..], &v16(b"server.test")].concat()))],
+                    &[ext(
+                        0,
+                        &v16(&[
+                            &[0u8][..],
+                            &v16(b"server.test"),
+                            &[0u8][..],
+                            &v16(b"other.test"),
+                        ]
+                        .concat()),
+                    )],
                     &[P256],
                 ),
             ),
             d,
             ErrorKind::IllegalParameter,
-            "SNI name type",
+            "two host names in SNI",
         ),
         (
             "repeated share",

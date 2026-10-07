@@ -79,3 +79,17 @@ path = "fuzz_targets/quic_server.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pki_differential"
+path = "fuzz_targets/pki_differential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hello_differential"
+path = "fuzz_targets/hello_differential.rs"
+test = false
+doc = false
+bench = false

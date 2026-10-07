@@ -3,6 +3,23 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## Unreleased
+
+### Fixed
+- Found by differential fuzzing of the two engines:
+  - the fixed-capacity engine ignored a malformed
+    `signature_algorithms_cert`; it checks its syntax as the owned engine
+    does;
+  - the fixed-capacity server refused a server_name entry of a type other
+    than host_name; it skips it, as the owned engine does (RFC 6066 §3);
+  - the fixed-capacity engine refuses a record header announcing more than
+    2^14 + 256 bytes at once, not when the body would have arrived.
+
+### Verification
+- Two differential fuzz targets: `pki_differential` (the two path
+  validators on re-signed, mutated chains with name constraints) and
+  `hello_differential` (the two servers on the same client flight).
+
 ## 0.3.0 (2026-10-06)
 
 Features that make the safe path the default for agents, and conformance

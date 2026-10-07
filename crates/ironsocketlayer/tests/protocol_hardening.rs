@@ -982,3 +982,124 @@ fn an_empty_application_data_record_before_keys_is_refused() {
     assert_eq!(e.kind(), ErrorKind::UnexpectedMessage, "{e}");
     assert!(!s.take_tls().is_empty(), "an alert");
 }
+
+/// REQ-FIX-006: both servers refuse a ClientHello whose
+/// signature_algorithms_cert is malformed; the fixed engine, which does not
+/// use the extension, used to ignore it. Found by the hello_differential
+/// fuzz target.
+#[test]
+fn both_engines_refuse_a_malformed_signature_algorithms_cert() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = server_config(&pki);
+    let ch = ClientHello {
+        random: [7; 32],
+        session_id: vec![1; 32],
+        suites: vec![SUITE],
+        server_name: Some("server.test".into()),
+        groups: vec![NamedGroup::X25519],
+        sig_algs: vec![SignatureScheme::EcdsaSecp256r1Sha256],
+        sig_algs_cert: Some(vec![SignatureScheme::EcdsaSecp256r1Sha256]),
+        versions: vec![ProtocolVersion::Tls13],
+        key_shares: vec![(
+            NamedGroup::X25519,
+            KeyShare::generate(NamedGroup::X25519, &mut ic_drbg::Rng::from_os().unwrap())
+                .unwrap()
+                .public()
+                .to_vec(),
+        )],
+        ..Default::default()
+    };
+    let mut body = ch.encode().unwrap();
+    // signature_algorithms_cert (0x0032): its list length runs past its body.
+    let at = body
+        .windows(4)
+        .position(|w| w == [0x00, 0x32, 0x00, 0x04])
+        .expect("signature_algorithms_cert");
+    body[at + 4] = 0x24;
+    let m = msgs::frame(HandshakeType::ClientHello, &body).unwrap();
+    let mut rec = vec![22, 3, 1];
+    rec.extend((m.len() as u16).to_be_bytes());
+    rec.extend(&m);
+    let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+    assert_eq!(owned.read_tls(&rec).unwrap_err().kind(), ErrorKind::Decode);
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut fixed =
+        fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default()).unwrap();
+    assert!(fixed.receive(&rec).is_err());
+}
+
+/// REQ-REC-010: a record header announcing more than 2^14 + 256 bytes is
+/// refused on the header alone, by both engines. Found by the
+/// hello_differential fuzz target.
+#[test]
+fn an_oversized_record_header_is_refused_at_once() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = server_config(&pki);
+    let header = [22u8, 3, 3, 0x41, 0x01]; // 16641 bytes
+    let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+    assert_eq!(
+        owned.read_tls(&header).unwrap_err().kind(),
+        ErrorKind::RecordOverflow
+    );
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut fixed =
+        fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default()).unwrap();
+    assert_eq!(
+        fixed.receive(&header).unwrap_err().kind(),
+        ErrorKind::RecordOverflow
+    );
+}
+
+/// REQ-FIX-007: both servers skip a server_name entry of a type other than
+/// host_name and use the host_name entry (RFC 6066 §3). Found by the
+/// hello_differential fuzz target.
+#[test]
+fn both_engines_skip_server_name_entries_of_other_types() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = server_config(&pki);
+    let mut cc = pki.client_config(Profile::Default);
+    cc.common.groups = vec![NamedGroup::X25519];
+    cc.ech_grease = false;
+    let mut hello = Connection::client(Arc::new(cc), "server.test")
+        .unwrap()
+        .take_tls();
+    // server_name: list length 14, host_name (0) "server.test"; retype the
+    // entry by inserting an entry of type 0x18 before it.
+    let sni = [0x00u8, 0x00, 0x00, 0x10, 0x00, 0x0e, 0x00, 0x00, 0x0b];
+    let at = hello
+        .windows(sni.len())
+        .position(|w| w == sni)
+        .expect("server_name");
+    let extra = [0x18u8, 0x00, 0x01, b'x'];
+    // Grow the extension, the list, the extensions block, the handshake
+    // message and the record by the inserted entry.
+    hello.splice(at + 6..at + 6, extra);
+    let grow = |v: &mut Vec<u8>, i: usize, by: u16| {
+        let n = u16::from_be_bytes([v[i], v[i + 1]]) + by;
+        v[i..i + 2].copy_from_slice(&n.to_be_bytes());
+    };
+    grow(&mut hello, at + 2, 4);
+    grow(&mut hello, at + 4, 4);
+    grow(&mut hello, 3, 4);
+    let hs_len = u32::from_be_bytes([0, hello[6], hello[7], hello[8]]) + 4;
+    hello[6..9].copy_from_slice(&hs_len.to_be_bytes()[1..]);
+    // The extensions block length: after version, random, session id,
+    // suites and compression.
+    let body = 9;
+    let mut p = body + 2 + 32;
+    p += 1 + hello[p] as usize;
+    p += 2 + u16::from_be_bytes([hello[p], hello[p + 1]]) as usize;
+    p += 1 + hello[p] as usize;
+    grow(&mut hello, p, 4);
+    let ch = ClientHello::decode(&hello[9..]).unwrap();
+    assert_eq!(ch.server_name.as_deref(), Some("server.test"));
+    let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+    owned.read_tls(&hello).unwrap();
+    let mut b = Buffers::new();
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
+    let mut fixed =
+        fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default()).unwrap();
+    fixed.receive(&hello).unwrap();
+}

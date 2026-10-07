@@ -368,7 +368,7 @@ feed the life-cycle data.
 
 | REQ-CONN-015 | `channel_binding()` returns the RFC 9266 `tls-exporter` value (label `EXPORTER-Channel-Binding`, empty context, 32 bytes), equal at both ends and to OpenSSL's export for the same session, different for every connection, and `invalid-state` before the handshake completes, in the owned, QUIC and fixed engines. | src/conn.rs | Test | tests/agent_safety.rs::channel_binding_is_shared_unique_and_late; tests/quic.rs::both_ends_export_the_same_keying_material; tests/openssl_interop.rs::channel_binding_matches_openssl |
 
-| REQ-REC-010 | A record's legacy_record_version is ignored apart from its major byte, which must be 3 (RFC 8446 §5.1), in both engines; bytes that are not TLS are refused at the first record. | src/record.rs | Test | tests/protocol_hardening.rs::the_legacy_record_version_is_ignored |
+| REQ-REC-010 | A record's legacy_record_version is ignored apart from its major byte, which must be 3 (RFC 8446 §5.1), in both engines; bytes that are not TLS are refused at the first record. | src/record.rs | Test | tests/protocol_hardening.rs::the_legacy_record_version_is_ignored; tests/protocol_hardening.rs::an_oversized_record_header_is_refused_at_once |
 
 | REQ-CONN-016 | A `TlsStream` over TCP whose handshake fails closes gracefully (FIN after its alert, then a bounded drain of at most 250 ms and 64 KiB), so the peer reads the alert instead of a connection reset. | src/stream.rs | Test | tests/stream.rs::a_failed_handshake_delivers_its_alert_despite_unread_bytes |
 
@@ -385,3 +385,7 @@ feed the life-cycle data.
 | REQ-0RTT-007 | After a HelloRetryRequest, a server skips rejected 0-RTT records only until the second ClientHello (RFC 8446 §4.2.10); a record after it that does not decrypt is bad_record_mac. | src/server.rs | Test | tests/early_data.rs::skipping_early_data_ends_at_the_second_client_hello; tests/early_data.rs::a_hello_retry_request_ends_early_data |
 
 | REQ-0RTT-008 | An application-data record before any keys, including an empty one, is skipped only while rejected 0-RTT data is being skipped; otherwise it is unexpected_message. | src/conn.rs | Test | tests/protocol_hardening.rs::an_empty_application_data_record_before_keys_is_refused |
+
+| REQ-FIX-006 | The fixed-capacity engine checks the syntax of signature_algorithms_cert in a ClientHello and a CertificateRequest, as the owned engine does, though it does not use the extension. | src/fixed.rs | Test | tests/protocol_hardening.rs::both_engines_refuse_a_malformed_signature_algorithms_cert |
+
+| REQ-FIX-007 | The fixed-capacity server takes the host_name entry of a server_name list and skips entries of other types (RFC 6066 §3), as the owned engine does; an empty list and two host names are refused. | src/fixed.rs | Test | tests/protocol_hardening.rs::both_engines_skip_server_name_entries_of_other_types; tests/coverage_fixed.rs::malformed_client_hellos_are_refused |
