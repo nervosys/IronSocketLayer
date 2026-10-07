@@ -1,4 +1,4 @@
-![IronSocketLayer](media/images/banner_01.jpg)
+![IronSocketLayer](media/images/banner_02.jpg)
 
 **Agentic-first TLS 1.3 and QUIC-TLS in pure Rust, over [IronCrypto](https://github.com/nervosys/IronCrypto), with a machine-readable ontology.**
 
