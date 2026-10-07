@@ -1304,6 +1304,46 @@ fn both_clients_refuse_a_change_cipher_spec_before_the_server_hello() {
     );
 }
 
+/// REQ-FIX-014: both servers handle alerts alike: none between the
+/// fragments of a handshake message (unexpected_message), close_notify
+/// before the handshake completes is a failure, and user_canceled alone is
+/// ignored. Found by the hello_differential fuzz target.
+#[test]
+fn both_engines_handle_alerts_alike() {
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
+    let sc = server_config(&pki);
+    // Two bytes of a ClientHello header, then an alert.
+    let fragment = [22u8, 3, 3, 0, 2, 1, 0];
+    let user_canceled = [21u8, 3, 3, 0, 2, 1, 90];
+    let close_notify = [21u8, 3, 3, 0, 2, 1, 0];
+    let cases: [(Vec<u8>, Option<ErrorKind>); 3] = [
+        (
+            [&fragment[..], &user_canceled].concat(),
+            Some(ErrorKind::UnexpectedMessage),
+        ),
+        (close_notify.to_vec(), Some(ErrorKind::HandshakeFailure)),
+        (user_canceled.to_vec(), None),
+    ];
+    for (input, want) in cases {
+        let mut owned = Connection::server(Arc::new(sc.clone())).unwrap();
+        assert_eq!(
+            owned.read_tls(&input).err().map(|e| e.kind()),
+            want,
+            "owned {input:02x?}"
+        );
+        let mut b = Buffers::new();
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let mut fixed =
+            fixed::Connection::server(&sc, &mut rng, b.storage(), fixed::Limits::default())
+                .unwrap();
+        assert_eq!(
+            fixed.receive(&input).err().map(|e| e.kind()),
+            want,
+            "fixed {input:02x?}"
+        );
+    }
+}
+
 /// REQ-FIX-007: both servers skip a server_name entry of a type other than
 /// host_name and use the host_name entry (RFC 6066 §3). Found by the
 /// hello_differential fuzz target.

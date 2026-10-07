@@ -36,6 +36,10 @@ versions may change the API.
     ignores it, as the owned server and OpenSSL do (RFC 8446 §4.2.2 forbids
     the client to send one but gives the server no duty to refuse it), and
     still refuses one in a second ClientHello it did not ask for.
+  - the fixed-capacity engine handles alerts as the owned engine does: an
+    alert between the fragments of a handshake message is refused, a
+    close_notify before the handshake completes is a failure rather than a
+    clean close, and user_canceled is ignored rather than fatal.
 
 ### Verification
 - Three differential fuzz targets: `pki_differential` (the two path

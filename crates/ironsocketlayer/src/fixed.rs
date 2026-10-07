@@ -715,14 +715,27 @@ impl<'a> Connection<'a> {
                 self.app_len = end;
                 Ok(())
             }
-            ContentType::Alert if n == 2 => {
-                if body[1] == 0 {
+            // REQ-FIX-014: alerts are handled as the owned engine handles
+            // them. None may come between the fragments of a handshake
+            // message (RFC 8446 §5.1); close_notify before the handshake
+            // completes is a failure, not a clean close; user_canceled is
+            // ignored, a close_notify following it (§6.1).
+            ContentType::Alert if self.hs_len != 0 => Err(Error::new(
+                ErrorKind::UnexpectedMessage,
+                "record interleaved with a fragmented handshake message",
+            )),
+            ContentType::Alert if n == 2 => match body[1] {
+                0 if self.is_connected() => {
                     self.peer_closed = true;
                     Ok(())
-                } else {
-                    Err(Error::new(ErrorKind::PeerAlert, "peer sent TLS alert"))
                 }
-            }
+                0 => Err(Error::new(
+                    ErrorKind::HandshakeFailure,
+                    "peer closed during the handshake",
+                )),
+                90 => Ok(()),
+                _ => Err(Error::new(ErrorKind::PeerAlert, "peer sent TLS alert")),
+            },
             _ => Err(unexpected()),
         }
     }
