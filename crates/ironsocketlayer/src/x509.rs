@@ -1593,6 +1593,70 @@ impl RootStore {
         Ok(())
     }
 
+    /// Add a trust anchor given as a name and a key, for roots that are
+    /// distributed that way and not as certificates. `REQ-X509-079`.
+    ///
+    /// Each argument is one complete DER element: the subject `Name`
+    /// SEQUENCE, the `SubjectPublicKeyInfo` SEQUENCE, and, when the anchor is
+    /// constrained, the `NameConstraints` SEQUENCE (the value of the
+    /// extension). The name must be well formed and not empty, the key one
+    /// this library can verify with, and the constraints well formed, as for
+    /// [`add_der`](Self::add_der); nothing may follow any of them.
+    ///
+    /// The anchor may issue certificates, and its constraints bind every path
+    /// that ends at it. A constraint on a name form this module does not
+    /// evaluate fails such a path closed. Adding an anchor already present
+    /// with the same constraints is a no-op; adding it with different
+    /// constraints is refused, because keeping either set silently would
+    /// drop the other.
+    pub fn add_anchor(
+        &mut self,
+        subject_der: &[u8],
+        spki_der: &[u8],
+        name_constraints_der: Option<&[u8]>,
+    ) -> Result<()> {
+        let mut name = Der::new(subject_der);
+        let rdns = name.expect(T_SEQUENCE)?;
+        name.finish()?;
+        if rdns.is_empty() {
+            return Err(bad("empty trust anchor subject name"));
+        }
+        check_rdn_sequence(rdns)?;
+        check_subject_public_key_info(spki_der)?;
+        PublicKey::from_spki(spki_der)?;
+        let name_constraints = match name_constraints_der {
+            Some(der) => {
+                let mut v = Der::new(der);
+                let body = v.expect(T_SEQUENCE)?;
+                v.finish()?;
+                name_constraint_lists(body)?;
+                Some(body.to_vec())
+            }
+            None => None,
+        };
+        if let Some(a) = self
+            .anchors
+            .iter()
+            .find(|a| a.subject == subject_der && a.spki == spki_der)
+        {
+            if a.name_constraints != name_constraints {
+                return Err(Error::new(
+                    ErrorKind::InvalidConfig,
+                    "trust anchor already present with different name constraints",
+                ));
+            }
+            return Ok(());
+        }
+        self.anchors.push(Anchor {
+            subject: subject_der.to_vec(),
+            spki: spki_der.to_vec(),
+            can_issue: true,
+            ski: None,
+            name_constraints,
+        });
+        Ok(())
+    }
+
     /// Add every `CERTIFICATE` block of a PEM bundle, returning how many were
     /// added. Blocks with other labels, and certificates this module cannot
     /// parse or whose key it cannot use, are skipped; the call fails only if
@@ -8103,6 +8167,164 @@ mod chain_tests {
             )),
             ErrorKind::CertificateUsage
         );
+    }
+
+    /// REQ-X509-079: an anchor given as a name and a key verifies what the
+    /// same root's certificate verifies, with the same report; constraints
+    /// given with it bind the path, though the root's own certificate
+    /// carries none.
+    #[test]
+    fn a_key_form_anchor_verifies_and_constrains() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let root = Certificate::parse(&p.root).unwrap();
+        let mut plain = RootStore::new();
+        plain
+            .add_anchor(root.subject_der(), root.spki_der(), None)
+            .unwrap();
+        assert_eq!(
+            verify_chain(&p.leaf, &[&p.int], &plain, &opts()).unwrap(),
+            verify_chain(&p.leaf, &[&p.int], &p.roots, &opts()).unwrap()
+        );
+        verify_both(&p.leaf, &[&p.int], &plain, &opts()).unwrap();
+
+        // permittedSubtrees { dNSName ".tr" }, as one public root carries.
+        let tr = [
+            0x30, 0x09, 0xa0, 0x07, 0x30, 0x05, 0x82, 0x03, 0x2e, 0x74, 0x72,
+        ];
+        let mut constrained = RootStore::new();
+        constrained
+            .add_anchor(root.subject_der(), root.spki_der(), Some(&tr))
+            .unwrap();
+        let mut r = rng();
+        let mut leaf = |name: &str| {
+            let lk = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+            issue(
+                &params("l", &[name], false),
+                lk.spki(),
+                &p.int,
+                &p.int_key,
+                &mut r,
+            )
+            .unwrap()
+        };
+        let inside = leaf("kamu.gov.tr");
+        let outside = leaf("example.com");
+        verify_both(&inside, &[&p.int], &constrained, &opts()).unwrap();
+        assert_eq!(
+            err(verify_both(&outside, &[&p.int], &constrained, &opts())),
+            ErrorKind::CertificateUsage
+        );
+        // The constraint came from the anchor: without it the name is fine.
+        verify_both(&outside, &[&p.int], &plain, &opts()).unwrap();
+
+        // A key that did not sign the path is not an anchor for it.
+        let other = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
+        let mut wrong = RootStore::new();
+        wrong
+            .add_anchor(root.subject_der(), other.spki(), None)
+            .unwrap();
+        assert!(verify_both(&p.leaf, &[&p.int], &wrong, &opts()).is_err());
+    }
+
+    /// REQ-X509-079: a key-form anchor is checked as a certificate's fields
+    /// are, a repeat is a no-op, and the same anchor under different
+    /// constraints is refused.
+    #[test]
+    fn a_key_form_anchor_is_checked_when_added() {
+        let p = pki([KeyKind::EcdsaP256; 3]);
+        let root = Certificate::parse(&p.root).unwrap();
+        let (subject, spki) = (root.subject_der().to_vec(), root.spki_der().to_vec());
+        let tr = alloc::vec![0x30, 0x09, 0xa0, 0x07, 0x30, 0x05, 0x82, 0x03, 0x2e, 0x74, 0x72];
+        let trailing = |der: &[u8]| [der, &[0u8][..]].concat();
+        let x25519 = [
+            &[
+                0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00,
+            ][..],
+            &[0x11; 32][..],
+        ]
+        .concat();
+
+        let mut roots = RootStore::new();
+        let cases = [
+            (
+                "subject with trailing bytes",
+                trailing(&subject),
+                spki.clone(),
+                None,
+            ),
+            (
+                "subject that is not a SEQUENCE",
+                alloc::vec![0x31, 0x00],
+                spki.clone(),
+                None,
+            ),
+            ("empty subject", alloc::vec![0x30, 0x00], spki.clone(), None),
+            (
+                "subject without its header",
+                subject[2..].to_vec(),
+                spki.clone(),
+                None,
+            ),
+            (
+                "key with trailing bytes",
+                subject.clone(),
+                trailing(&spki),
+                None,
+            ),
+            (
+                "key without its header",
+                subject.clone(),
+                spki[2..].to_vec(),
+                None,
+            ),
+            (
+                "key this library cannot verify with",
+                subject.clone(),
+                x25519,
+                None,
+            ),
+            (
+                "constraints with trailing bytes",
+                subject.clone(),
+                spki.clone(),
+                Some(trailing(&tr)),
+            ),
+            (
+                "constraints without their header",
+                subject.clone(),
+                spki.clone(),
+                Some(tr[2..].to_vec()),
+            ),
+            (
+                "constraints with no subtrees",
+                subject.clone(),
+                spki.clone(),
+                Some(alloc::vec![0x30, 0x00]),
+            ),
+        ];
+        for (what, s, k, nc) in cases {
+            assert!(roots.add_anchor(&s, &k, nc.as_deref()).is_err(), "{what}");
+            assert!(roots.is_empty(), "{what}");
+        }
+
+        roots.add_anchor(&subject, &spki, Some(&tr)).unwrap();
+        roots.add_anchor(&subject, &spki, Some(&tr)).unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(
+            roots.add_anchor(&subject, &spki, None).unwrap_err().kind(),
+            ErrorKind::InvalidConfig
+        );
+        let uk = [
+            0x30, 0x09, 0xa0, 0x07, 0x30, 0x05, 0x82, 0x03, 0x2e, 0x75, 0x6b,
+        ];
+        assert_eq!(
+            roots
+                .add_anchor(&subject, &spki, Some(&uk))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidConfig
+        );
+        assert_eq!(roots.len(), 1);
     }
 
     #[test]

@@ -17,6 +17,14 @@ versions may change the API.
   both. The fixed-capacity engine already wiped its application storage.
   What the caller reads into its own buffer is the caller's to wipe.
 
+### Added
+- `RootStore::add_anchor(subject_der, spki_der, name_constraints_der)`: a
+  trust anchor given as a name and a key, for roots distributed that way
+  and not as certificates (REQ-X509-079). Each argument is one complete
+  DER element (the `Name`, the `SubjectPublicKeyInfo`, and the
+  `NameConstraints` SEQUENCE). The anchor's constraints bind every path
+  that ends at it; the same anchor under different constraints is refused.
+
 ### Changed
 - A connection that fails discards application data received but not yet
   read: `recv` returns nothing after a failure, where it used to return
