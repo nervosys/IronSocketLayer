@@ -29,7 +29,7 @@ use ic_core::traits::RandomSource;
 
 use crate::client::ClientHs;
 use crate::config::{ClientConfig, Common, ServerConfig};
-use crate::crypto::{Hash, HashAlg, Output};
+use crate::crypto::{Hash, HashAlg, Output, SecretVec};
 use crate::enums::{AlertDescription, CipherSuite, ContentType, HandshakeType, KeyUpdateRequest};
 use crate::error::{Error, ErrorKind, Result};
 use crate::key_schedule;
@@ -37,6 +37,7 @@ use crate::msgs;
 use crate::record::{self, Protector, MAX_PLAINTEXT};
 use crate::report::{HandshakeState, SessionReport, Side};
 use crate::server::ServerHs;
+use crate::wipe::WipeBuf;
 
 /// Encryption level (RFC 9001 §4.1.4). TLS over TCP uses the same stages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -178,7 +179,7 @@ pub(crate) enum Transport {
     Tls {
         read: Option<Protector>,
         write: Option<Protector>,
-        incoming: Vec<u8>,
+        incoming: WipeBuf,
         outgoing: Vec<u8>,
         ccs_sent: bool,
         ccs_allowed: bool,
@@ -206,7 +207,8 @@ pub(crate) struct Core {
     /// A KeyUpdate answering the peer's request has been sent, and no
     /// application data since.
     pub(crate) key_update_answered: bool,
-    pub(crate) app_in: VecDeque<u8>,
+    /// Received application data not yet read. `REQ-CONN-017`.
+    pub(crate) app_in: WipeBuf,
     pub(crate) report: SessionReport,
     pub(crate) state: HandshakeState,
     pub(crate) suite: Option<CipherSuite>,
@@ -322,7 +324,7 @@ impl Core {
             None => Transport::Tls {
                 read: None,
                 write: None,
-                incoming: Vec::new(),
+                incoming: WipeBuf::new(),
                 outgoing: Vec::new(),
                 ccs_sent: false,
                 ccs_allowed: false,
@@ -360,7 +362,7 @@ impl Core {
             hs_buf: Vec::new(),
             ccs_seen: 0,
             key_update_answered: false,
-            app_in: VecDeque::new(),
+            app_in: WipeBuf::new(),
             report,
             state: HandshakeState::Start,
             suite: None,
@@ -561,6 +563,12 @@ impl Core {
             }
             self.set_state(HandshakeState::Failed);
             self.report.event("event:failed", e.id());
+        }
+        // REQ-CONN-017: a failed connection keeps no application data, read
+        // or not, and no record it was opening.
+        self.app_in.wipe();
+        if let Transport::Tls { incoming, .. } = &mut self.transport {
+            incoming.wipe();
         }
         e
     }
@@ -826,7 +834,7 @@ impl Connection {
                 continue;
             }
             let rec = match &mut self.core.transport {
-                Transport::Tls { incoming, .. } => match record::take_record(incoming)? {
+                Transport::Tls { incoming, .. } => match take_record(incoming)? {
                     Some(r) => r,
                     None => return Ok(()),
                 },
@@ -860,7 +868,7 @@ impl Connection {
                 }
                 continue;
             }
-            let (inner_ty, content) = match &mut self.core.transport {
+            let (inner_ty, content, n) = match &mut self.core.transport {
                 Transport::Tls { read: Some(p), .. } => {
                     if ty != ContentType::ApplicationData {
                         return Err(Error::new(
@@ -878,13 +886,14 @@ impl Connection {
                             ));
                         }
                     }
-                    let mut body = rec.body;
-                    let len = body.len();
-                    match p.open(&rec.header, &mut body) {
+                    // REQ-CONN-017: the copy is wiped when it is dropped,
+                    // delivered or not.
+                    let mut body = SecretVec::new(rec.body);
+                    let len = body.get().len();
+                    match p.open(&rec.header, body.get_mut()) {
                         Ok((inner, n)) => {
                             self.core.skip_early_budget = 0;
-                            body.truncate(n);
-                            (inner, body)
+                            (inner, body, n)
                         }
                         // REQ-0RTT-004: rejected 0-RTT records are skipped,
                         // within a bound, and nothing else is.
@@ -919,11 +928,12 @@ impl Connection {
                             "plaintext record exceeds 2^14",
                         ));
                     }
-                    (ty, rec.body)
+                    let len = rec.body.len();
+                    (ty, SecretVec::new(rec.body), len)
                 }
                 Transport::Quic { .. } => return Ok(()),
             };
-            self.deliver(inner_ty, &content)?;
+            self.deliver(inner_ty, &content.get()[..n])?;
         }
     }
 
@@ -1010,7 +1020,7 @@ impl Connection {
         else {
             return Ok(false);
         };
-        let Some((header, len)) = record::peek_record(incoming)? else {
+        let Some((header, len)) = record::peek_record(incoming.as_slice())? else {
             return Ok(false);
         };
         if header[0] != ContentType::ApplicationData.to_wire()
@@ -1021,21 +1031,26 @@ impl Connection {
             return Ok(false);
         }
         let end = record::HEADER_LEN + len;
-        let (inner, n) = p.open(&header, &mut incoming[record::HEADER_LEN..end])?;
-        let content = &incoming[record::HEADER_LEN..record::HEADER_LEN + n];
+        // REQ-CONN-017: the record is opened where it lies, and wiped there
+        // once its content has been handed on.
+        let (inner, n) = p.open(
+            &header,
+            &mut incoming.as_mut_slice()[record::HEADER_LEN..end],
+        )?;
+        let content = &incoming.as_slice()[record::HEADER_LEN..record::HEADER_LEN + n];
         if inner == ContentType::ApplicationData {
             core.report.bytes_received += n as u64;
             // REQ-CONN-012.
             if core.app_in.len().saturating_add(n) > core.common.max_buffered_plaintext {
                 return Err(unread_overflow());
             }
-            core.app_in.extend(content.iter());
-            incoming.drain(..end);
+            core.app_in.extend_from_slice(content);
+            incoming.consume(end);
             return Ok(true);
         }
-        let content = content.to_vec();
-        incoming.drain(..end);
-        self.deliver(inner, &content)?;
+        let content = SecretVec::new(content.to_vec());
+        incoming.consume(end);
+        self.deliver(inner, content.get())?;
         Ok(true)
     }
 
@@ -1127,16 +1142,13 @@ impl Connection {
     }
 
     /// Read decrypted application data into `buf`, returning how much.
+    ///
+    /// The bytes are wiped from the connection as they are handed over, and
+    /// whatever was not read is wiped when the connection fails or is
+    /// dropped: after either, the only copies are the caller's. A failed
+    /// connection therefore has nothing left to read. `REQ-CONN-017`.
     pub fn recv(&mut self, buf: &mut [u8]) -> usize {
-        let n = buf.len().min(self.core.app_in.len());
-        // Two slice copies rather than a byte-at-a-time drain: this is the
-        // bulk receive path.
-        let (front, back) = self.core.app_in.as_slices();
-        let k = n.min(front.len());
-        buf[..k].copy_from_slice(&front[..k]);
-        buf[k..n].copy_from_slice(&back[..n - k]);
-        self.core.app_in.drain(..n);
-        n
+        self.core.app_in.read(buf)
     }
 
     /// Bytes of application data waiting in [`Connection::recv`].
@@ -1435,8 +1447,77 @@ mod tests {
         }
     }
 
-    /// `recv` copies from both halves of the receive ring: odd-sized reads
-    /// interleaved with writes wrap it, and every byte arrives once, in order.
+    /// Whether `storage` holds a run of the plaintext the tests below send.
+    fn holds_plaintext(storage: &[u8]) -> bool {
+        storage.windows(16).any(|w| w == [0xa5; 16])
+    }
+
+    fn incoming_storage(conn: &Connection) -> &[u8] {
+        match &conn.core.transport {
+            Transport::Tls { incoming, .. } => incoming.storage(),
+            Transport::Quic { .. } => unreachable!(),
+        }
+    }
+
+    /// REQ-CONN-017: received application data is in the connection only
+    /// until it is read. The record buffer keeps none of it once a record is
+    /// opened, and the receive queue keeps exactly what has not been read.
+    #[test]
+    fn received_plaintext_is_wiped_as_it_is_read() {
+        let (mut c, mut s) = pair();
+        c.send(&[0xa5; 50_000]).unwrap();
+        let wire = c.take_tls();
+        // Pieces that end inside records, so some wait in the record buffer.
+        for chunk in wire.chunks(7000) {
+            s.read_tls(chunk).unwrap();
+            assert!(
+                !holds_plaintext(incoming_storage(&s)),
+                "an opened record was left in the record buffer"
+            );
+        }
+        assert_eq!(s.available(), 50_000);
+
+        let mut buf = [0u8; 20_000];
+        assert_eq!(s.recv(&mut buf), 20_000);
+        assert_eq!(buf, [0xa5; 20_000]);
+        let left = s.core.app_in.storage().iter().filter(|b| **b != 0).count();
+        assert_eq!(left, 30_000, "bytes already read were left in the queue");
+
+        assert_eq!(s.recv(&mut buf), 20_000);
+        assert_eq!(s.recv(&mut buf), 10_000);
+        assert_eq!(s.recv(&mut buf), 0);
+        assert!(s.core.app_in.storage().iter().all(|b| *b == 0));
+        assert!(incoming_storage(&s).iter().all(|b| *b == 0));
+    }
+
+    /// REQ-CONN-017: a connection that fails keeps no application data, read
+    /// or unread, and has none to give.
+    #[test]
+    fn a_failed_connection_keeps_no_plaintext() {
+        let (mut c, mut s) = pair();
+        c.send(&[0xa5; 50_000]).unwrap();
+        s.read_tls(&c.take_tls()).unwrap();
+        assert_eq!(s.available(), 50_000);
+        assert!(holds_plaintext(s.core.app_in.storage()));
+
+        // A good record and a forged one in the same read.
+        c.send(&[0xa5; 1000]).unwrap();
+        c.send(&[0xa5; 1000]).unwrap();
+        let mut wire = c.take_tls();
+        let last = wire.len() - 1;
+        wire[last] ^= 1;
+        assert_eq!(
+            s.read_tls(&wire).unwrap_err().kind(),
+            ErrorKind::BadRecordMac
+        );
+        assert_eq!(s.available(), 0);
+        assert_eq!(s.recv(&mut [0u8; 16]), 0);
+        assert!(s.core.app_in.storage().iter().all(|b| *b == 0));
+        assert!(incoming_storage(&s).iter().all(|b| *b == 0));
+    }
+
+    /// Odd-sized reads interleaved with writes make the receive queue slide
+    /// and grow, and every byte arrives once, in order.
     #[test]
     fn recv_is_exact_across_ring_wraparound() {
         let (mut c, mut s) = pair();
@@ -2167,9 +2248,21 @@ impl Core {
         if self.app_in.len().saturating_add(content.len()) > self.common.max_buffered_plaintext {
             return Err(unread_overflow());
         }
-        self.app_in.extend(content.iter());
+        self.app_in.extend_from_slice(content);
         Ok(())
     }
+}
+
+/// Take one complete record off the front of `incoming`, wiping it there.
+/// `REQ-REC-004`.
+fn take_record(incoming: &mut WipeBuf) -> Result<Option<record::RawRecord>> {
+    let Some((header, len)) = record::peek_record(incoming.as_slice())? else {
+        return Ok(None);
+    };
+    let end = record::HEADER_LEN + len;
+    let body = incoming.as_slice()[record::HEADER_LEN..end].to_vec();
+    incoming.consume(end);
+    Ok(Some(record::RawRecord { header, body }))
 }
 
 /// Record a path shown good by current CRLs.

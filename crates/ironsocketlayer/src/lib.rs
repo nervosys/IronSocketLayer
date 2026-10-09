@@ -26,6 +26,7 @@ pub mod resumption;
 pub mod server;
 #[cfg(feature = "std")]
 pub mod stream;
+mod wipe;
 pub mod x509;
 
 pub use conn::{Connection, Level};

@@ -14,6 +14,8 @@
 
 use alloc::vec::Vec;
 
+use ic_core::Zeroize;
+
 use crate::crypto::{self, AeadAlg, AeadKey, HashAlg, Output, NONCE_LEN, TAG_LEN};
 use crate::enums::{CipherSuite, ContentType};
 use crate::error::{Error, ErrorKind, Result};
@@ -168,7 +170,12 @@ impl Protector {
         let mut tag = [0u8; TAG_LEN];
         let body = &mut out[start + HEADER_LEN..];
         // REQ-REC-002, REQ-REC-003.
-        self.key.seal(&nonce, &header, body, &mut tag)?;
+        if let Err(e) = self.key.seal(&nonce, &header, body, &mut tag) {
+            // Leave no plaintext in the output if it was not protected.
+            body.zeroize();
+            out.truncate(start);
+            return Err(e);
+        }
         out.extend_from_slice(&tag);
         Ok(())
     }

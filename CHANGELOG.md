@@ -5,6 +5,24 @@ versions may change the API.
 
 ## Unreleased
 
+### Security
+- Received application data no longer outlives its reading (REQ-CONN-017).
+  `Connection` kept it in ordinary buffers: bytes already read stayed in
+  the allocation, a buffer that grew left its old storage behind unwiped,
+  and dropping the connection freed the rest unwiped, so a response
+  carrying a token or a derived key left copies in freed memory. A record
+  is now wiped from the record buffer once opened, bytes are wiped from
+  the receive queue as `recv` hands them over, outgrown storage is wiped
+  before it is freed, and a connection that fails or is dropped wipes
+  both. The fixed-capacity engine already wiped its application storage.
+  What the caller reads into its own buffer is the caller's to wipe.
+
+### Changed
+- A connection that fails discards application data received but not yet
+  read: `recv` returns nothing after a failure, where it used to return
+  what had arrived before it. Read what you need before feeding more
+  records, or treat a failure as the loss of the unread data.
+
 ### Fixed
 - The published packages' own tests now run from the package alone:
   `isl-cli` 0.3.2's tests read a key from the `ironsocketlayer` crate and
