@@ -111,6 +111,10 @@ in-memory tests are backed by handshakes with independent implementations:
   MLKEM1024, TLS_AES_256_GCM_SHA384 and mldsa87. The client verifies an
   OpenSSL-generated ML-DSA-87 certificate, and OpenSSL verifies an
   all-ML-DSA-87 chain IronSocketLayer issued.
+* **CNSA 1.0 with OpenSSL 3.5** (`tests/openssl_cnsa1.rs`): `profile:cnsa-1`
+  with the FIPS gate on verifies an RSA-3072 chain OpenSSL signed with
+  sha384WithRSAEncryption, as RFC 9151 section 5.2 requires, and the server
+  signs the handshake with rsa_pss_rsae_sha384.
 * **Published vectors**: RFC 9001 Appendix A (Initial secrets, packet key and
   IV, header protection for AES and ChaCha20), RFC 9180 Appendix A.1.1 (HPKE)
   and the RFC 8446 HelloRetryRequest constant.
@@ -133,6 +137,7 @@ Both interop suites are `#[ignore]`d by default because they need the network or
 $ cargo test -p ironsocketlayer --test interop -- --ignored
 $ cargo test -p ironsocketlayer --test openssl_interop -- --ignored --test-threads=1
 $ cargo test -p ironsocketlayer --test openssl_cnsa2 -- --ignored
+$ cargo test -p ironsocketlayer --test openssl_cnsa1 -- --ignored
 ```
 
 ## Using it

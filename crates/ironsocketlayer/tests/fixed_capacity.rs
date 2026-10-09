@@ -220,6 +220,62 @@ fn fixed_retry_revocation_and_named_profiles_do_not_allocate() {
     }
 }
 
+/// REQ-CFG-008: the fixed-capacity client applies CNSA 1.0's RSA key rule
+/// to the chain a server presents, as the owned client does: a 2048-bit RSA
+/// certificate riding along is policy-violation, a 3072-bit one is not.
+#[test]
+fn fixed_client_applies_the_cnsa1_rsa_key_rule() {
+    use ironsocketlayer::crypto::sign::SigningKey;
+    use ironsocketlayer::x509::{self, CertificateParams};
+
+    ironsocketlayer::policy::enable_fips().unwrap();
+    let pki = Pki::with_kinds(KeyKind::EcdsaP384, KeyKind::EcdsaP384, "server.test");
+    for (bits, accepted) in [(2048usize, false), (3072, true)] {
+        let mut rng = ic_drbg::Rng::from_os().unwrap();
+        let key = SigningKey::rsa(ic_rsa::generate(bits, &mut rng).unwrap()).unwrap();
+        let stray = x509::self_signed(
+            &CertificateParams {
+                subject_cn: "Stray RSA CA",
+                dns_names: &[],
+                ip_addresses: &[],
+                not_before: now() - 3600,
+                not_after: now() + 3600,
+                is_ca: true,
+                path_len: None,
+                usage: &[],
+                serial: [7; 16],
+            },
+            &key,
+            &mut rng,
+        )
+        .unwrap();
+        let mut cc = pki.client_config(Profile::Cnsa1);
+        cc.tickets = None;
+        let mut sc = pki.server_config(Profile::Cnsa1);
+        sc.tickets = None;
+        sc.identities[0].chain.push(stray);
+        let mut cb = Buffers::new();
+        let mut sb = Buffers::new();
+        let mut cr = ic_drbg::Rng::from_os().unwrap();
+        let mut sr = ic_drbg::Rng::from_os().unwrap();
+        let mut c =
+            Connection::client(&cc, "server.test", &mut cr, cb.storage(), Limits::default())
+                .unwrap();
+        let mut s = Connection::server(&sc, &mut sr, sb.storage(), Limits::default()).unwrap();
+        let outcome = pump(&mut c, &mut s, 4096);
+        if accepted {
+            outcome.unwrap();
+        } else {
+            let e = outcome.unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::PolicyViolation, "{e}");
+            assert_eq!(
+                e.context(),
+                "CNSA 1.0 allows RSA moduli of 3072 or 4096 bits only"
+            );
+        }
+    }
+}
+
 #[test]
 fn fixed_engine_interoperates_with_owned_engine_in_both_directions() {
     let pki = Pki::new(KeyKind::EcdsaP384, "server.test");

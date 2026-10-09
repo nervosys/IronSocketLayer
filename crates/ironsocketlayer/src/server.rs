@@ -462,7 +462,7 @@ impl ServerHs {
             .first()
             .ok_or(Error::new(ErrorKind::Decode, "empty chain"))?;
         let now = core.now();
-        match self
+        let post_quantum = match self
             .verification()
             .ok_or(Error::new(ErrorKind::Internal, "verification"))?
         {
@@ -479,10 +479,7 @@ impl ServerHs {
                 };
                 let report = x509::verify_chain(leaf, &inter, roots, &opts)?;
                 conn::note_crl(core, report.crl_checked);
-                Ok(
-                    !report.schemes.is_empty()
-                        && report.schemes.iter().all(|s| s.is_post_quantum()),
-                )
+                !report.schemes.is_empty() && report.schemes.iter().all(|s| s.is_post_quantum())
             }
             PeerVerification::PinnedSpki { sha256, .. } => {
                 let opts = x509::VerifyOptions {
@@ -495,9 +492,14 @@ impl ServerHs {
                     require_crl: false,
                 };
                 crate::client::check_pinned(leaf, sha256, &opts)?;
-                Ok(true)
+                true
             }
-        }
+        };
+        crate::policy::check_chain_keys(
+            self.config.common.profile,
+            chain.iter().map(Vec::as_slice),
+        )?;
+        Ok(post_quantum)
     }
 
     /// Decrypt an ECH outer hello, returning the inner hello and its
@@ -1259,6 +1261,10 @@ impl ServerHs {
                 self.client_pq_chain = true;
             }
         }
+        crate::policy::check_chain_keys(
+            self.config.common.profile,
+            cert.chain.iter().map(Vec::as_slice),
+        )?;
         conn::describe_peer(core, leaf);
         core.report.peer_chain_len = cert.chain.len();
         core.peer_chain = cert.chain;

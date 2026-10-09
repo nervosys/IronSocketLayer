@@ -262,10 +262,21 @@ impl Profile {
                 S::RsaPkcs1Sha384,
                 S::RsaPkcs1Sha512,
             ],
-            Self::Cnsa1 => &[S::EcdsaSecp384r1Sha384, S::RsaPssRsaeSha384],
+            Self::Cnsa1 => &[
+                S::EcdsaSecp384r1Sha384,
+                S::RsaPssRsaeSha384,
+                S::RsaPkcs1Sha384,
+            ],
             Self::DalA => &[S::EcdsaSecp384r1Sha384],
             Self::Cnsa2 => &[S::MlDsa87],
         }
+    }
+
+    /// Whether this is a CNSA profile, whose TLS profiles (RFC 9151 for
+    /// CNSA 1.0, draft-becker-cnsa2-tls-profile for 2.0) forbid early data
+    /// and authentication by an external PSK alone. `REQ-CFG-007`.
+    pub const fn is_cnsa(self) -> bool {
+        matches!(self, Self::Cnsa1 | Self::Cnsa2)
     }
 
     /// Whether the IronCrypto FIPS module gate is enforced.
@@ -850,6 +861,21 @@ impl ClientConfig {
     /// Check the configuration.
     pub fn validate(&self) -> Result<()> {
         self.common.validate()?;
+        // REQ-CFG-007.
+        if self.common.profile.is_cnsa() {
+            if self.early_data {
+                return Err(Error::new(
+                    ErrorKind::InvalidConfig,
+                    "the CNSA profiles forbid early data",
+                ));
+            }
+            if self.external_psk.is_some() {
+                return Err(Error::new(
+                    ErrorKind::InvalidConfig,
+                    "the CNSA profiles require certificate authentication, not an external PSK alone",
+                ));
+            }
+        }
         // REQ-CONN-013: requirements that cannot be checked in time, or met.
         if !self.common.required_properties.is_empty() && self.early_data {
             return Err(Error::new(
@@ -1068,6 +1094,21 @@ impl ServerConfig {
                 ErrorKind::InvalidConfig,
                 "server has neither a certificate nor an external PSK",
             ));
+        }
+        // REQ-CFG-007.
+        if self.common.profile.is_cnsa() {
+            if self.early_data.is_some() {
+                return Err(Error::new(
+                    ErrorKind::InvalidConfig,
+                    "the CNSA profiles forbid early data",
+                ));
+            }
+            if !self.external_psks.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::InvalidConfig,
+                    "the CNSA profiles require certificate authentication, not an external PSK alone",
+                ));
+            }
         }
         // REQ-CONN-013: requirements that cannot be checked in time, or met
         // during the handshake. On-demand authentication happens after it:

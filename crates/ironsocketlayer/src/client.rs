@@ -1067,6 +1067,10 @@ impl ClientHs {
                 self.pq_chain = true;
             }
         }
+        crate::policy::check_chain_keys(
+            self.config.common.profile,
+            cert.chain.iter().map(Vec::as_slice),
+        )?;
         conn::describe_peer(core, leaf);
         core.report.peer_chain_len = cert.chain.len();
         core.peer_chain = cert.chain;

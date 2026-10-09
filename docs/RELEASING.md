@@ -32,6 +32,7 @@ $ cargo +1.88 build -p ironsocketlayer -p isl-cli   # the declared rust-version
 $ cargo test -p ironsocketlayer --test openssl_interop -- --ignored --test-threads=1
 $ cargo test -p ironsocketlayer --test openssl_fixed -- --ignored --test-threads=1
 $ cargo test -p ironsocketlayer --test openssl_cnsa2 -- --ignored
+$ cargo test -p ironsocketlayer --test openssl_cnsa1 -- --ignored
 $ cargo test -p ironsocketlayer --test interop -- --ignored   # needs the network
 $ sh scripts/qemu-m4.sh                           # needs qemu-system-arm
 ```

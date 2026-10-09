@@ -106,6 +106,7 @@ $ cargo clippy --workspace --all-targets
 $ cargo build -p ironsocketlayer --no-default-features --target thumbv7em-none-eabihf
 $ cargo test -p ironsocketlayer --test openssl_interop -- --ignored --test-threads=1   # OpenSSL 3.5+
 $ cargo test -p ironsocketlayer --test openssl_cnsa2 -- --ignored
+$ cargo test -p ironsocketlayer --test openssl_cnsa1 -- --ignored
 $ cargo test -p ironsocketlayer --test interop -- --ignored                          # network
 $ sh scripts/tlsfuzzer.sh ~/tlsfuzzer-work                                           # Linux
 $ sh scripts/tls-anvil.sh ~/tls-anvil-work                                            # Linux, Docker

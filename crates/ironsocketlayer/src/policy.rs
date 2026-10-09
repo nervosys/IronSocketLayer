@@ -89,6 +89,18 @@ pub fn fips_gate(c: &Common) -> Result<()> {
     Ok(())
 }
 
+/// Rules a profile places on the keys of the certificates a peer presented,
+/// beyond what path validation enforces. `REQ-CFG-008`.
+pub(crate) fn check_chain_keys<'a>(
+    profile: crate::config::Profile,
+    certs: impl Iterator<Item = &'a [u8]>,
+) -> Result<()> {
+    match profile {
+        crate::config::Profile::Cnsa1 => crate::x509::check_cnsa1_rsa_keys(certs),
+        _ => Ok(()),
+    }
+}
+
 /// Service indicators for the algorithms a session negotiated.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Indicators {

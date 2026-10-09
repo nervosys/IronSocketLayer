@@ -2012,6 +2012,10 @@ impl<'a> Connection<'a> {
                 )
             }
         };
+        crate::policy::check_chain_keys(
+            self.common().profile,
+            (0..self.chain_len).filter_map(|i| self.peer_certificate(i)),
+        )?;
         self.report.peer_chain_min_bits = Some(bits);
         self.report.peer_chain_schemes = schemes;
         self.pq_chain = pq;

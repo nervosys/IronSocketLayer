@@ -1805,6 +1805,43 @@ pub struct ChainReport {
     pub crl_checked: bool,
 }
 
+/// `REQ-CFG-008`: RFC 9151 section 5.2 supports RSA with a modulus of 3072
+/// or 4096 bits only, and an odd exponent above 2^16 (this library's own
+/// bound keeps it at or below 2^32). Checks each certificate a peer
+/// presented under the CNSA 1.0 profile; one that does not parse was already
+/// ignored by path validation and is ignored here.
+pub(crate) fn check_cnsa1_rsa_keys<'a>(certs: impl Iterator<Item = &'a [u8]>) -> Result<()> {
+    for der in certs {
+        let Ok(cert) = Certificate::parse(der) else {
+            continue;
+        };
+        let Ok(key) = cert.subject_public_key() else {
+            continue;
+        };
+        check_cnsa1_rsa_key(&key)?;
+    }
+    Ok(())
+}
+
+/// `REQ-CFG-008`: the rule for one key; a key that is not RSA passes.
+fn check_cnsa1_rsa_key(key: &PublicKey<'_>) -> Result<()> {
+    if let PublicKey::Rsa { exponent, .. } = key {
+        if !matches!(rsa_bits(key), Some(3072 | 4096)) {
+            return Err(Error::new(
+                ErrorKind::PolicyViolation,
+                "CNSA 1.0 allows RSA moduli of 3072 or 4096 bits only",
+            ));
+        }
+        if *exponent <= 1 << 16 || *exponent % 2 == 0 {
+            return Err(Error::new(
+                ErrorKind::PolicyViolation,
+                "CNSA 1.0 requires an odd RSA exponent above 2^16",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn rsa_bits(key: &PublicKey<'_>) -> Option<usize> {
     match key {
         PublicKey::Rsa { modulus, .. } => {
@@ -8325,6 +8362,49 @@ mod chain_tests {
             ErrorKind::InvalidConfig
         );
         assert_eq!(roots.len(), 1);
+    }
+
+    /// REQ-CFG-008: RFC 9151 section 5.2. Only 3072- and 4096-bit moduli,
+    /// counted without leading zeros, and only an odd exponent above 2^16.
+    #[test]
+    fn cnsa1_rsa_keys_are_3072_or_4096_bits_with_a_large_odd_exponent() {
+        let modulus = |bits: usize, leading_zero: bool| {
+            let mut m = alloc::vec![0xffu8; bits.div_ceil(8)];
+            if !bits.is_multiple_of(8) {
+                m[0] = 0xff >> (8 - bits % 8);
+            }
+            if leading_zero {
+                m.insert(0, 0);
+            }
+            m
+        };
+        let check = |bits, leading_zero, exponent| {
+            let m = modulus(bits, leading_zero);
+            check_cnsa1_rsa_key(&PublicKey::Rsa {
+                modulus: &m,
+                exponent,
+            })
+        };
+        for bits in [3072usize, 4096] {
+            for leading_zero in [false, true] {
+                check(bits, leading_zero, 65_537).unwrap();
+            }
+        }
+        for bits in [2048usize, 3071, 3073, 3584, 4095, 4097, 8192] {
+            let e = check(bits, true, 65_537).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::PolicyViolation, "{bits}");
+            assert!(e.context().contains("3072 or 4096"), "{bits}");
+        }
+        check(3072, false, 65_539).unwrap();
+        check(4096, false, u64::from(u32::MAX)).unwrap();
+        for exponent in [3u64, 17, 65_535, 65_536, 65_538] {
+            let e = check(3072, false, exponent).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::PolicyViolation, "{exponent}");
+            assert!(e.context().contains("exponent"), "{exponent}");
+        }
+        // The rule is about RSA: other keys pass.
+        let p384 = SigningKey::generate(KeyKind::EcdsaP384, &mut rng()).unwrap();
+        check_cnsa1_rsa_key(&PublicKey::from_spki(p384.spki()).unwrap()).unwrap();
     }
 
     #[test]

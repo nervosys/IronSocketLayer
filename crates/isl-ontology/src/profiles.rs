@@ -152,6 +152,7 @@ pub const CNSA1_GROUPS: &[&str] = &["group:secp384r1"];
 pub const CNSA1_SIGSCHEMES: &[&str] = &[
     "sigscheme:ecdsa-secp384r1-sha384",
     "sigscheme:rsa-pss-rsae-sha384",
+    "sigscheme:rsa-pkcs1-sha384",
 ];
 
 /// `profile:cnsa-2` suites.
@@ -234,7 +235,7 @@ pub static PROFILES: &[Profile] = &[
         fips_gate: true,
         post_quantum_required: false,
         min_rsa_bits: 3072,
-        rationale: "CNSA 1.0 fixes a single parameter set; it is the transitional baseline until CNSA 2.0.",
+        rationale: "CNSA 1.0 as profiled for TLS 1.3 by RFC 9151: one suite, P-384, and SHA-384 signatures, with PKCS#1 v1.5 on certificates only (section 5.2). RSA keys on a peer's chain must be 3072 or 4096 bits with an exponent above 2^16; early data and authentication by an external PSK alone are refused. It is the transitional baseline until CNSA 2.0.",
         notes: NOT_VALIDATED,
     },
     Profile {
