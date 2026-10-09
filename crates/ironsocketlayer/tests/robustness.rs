@@ -232,3 +232,38 @@ fn random_bytes_into_every_decoder_never_panic() {
         let _ = ironsocketlayer::crypto::sign::SigningKey::from_pkcs8_der(&buf);
     }
 }
+
+/// REQ-REC-013: a record a peer fills with all-ones bytes fails
+/// authentication under every suite and key; it never panics.
+///
+/// IronCrypto 0.2.5 to 0.2.19 overflowed in Poly1305 on such input
+/// (GHSA-xr22-8pqp-gwfh): with overflow checks on, about one key in twenty
+/// panicked on a kilobyte, before authentication. A thousand keys per suite
+/// make a regression certain to show.
+#[test]
+fn records_of_all_ones_fail_authentication_under_every_key() {
+    use ironsocketlayer::crypto::Output;
+    use ironsocketlayer::record::{suite_params, Protector, IMPLEMENTED_SUITES};
+    use ironsocketlayer::ErrorKind;
+
+    let mut rng = XorShift(0x0123_4567_89ab_cdef);
+    for &suite in IMPLEMENTED_SUITES {
+        let secret_len = suite_params(suite).unwrap().1.len();
+        for _ in 0..1000 {
+            let secret: Vec<u8> = (0..secret_len).map(|_| rng.next() as u8).collect();
+            let mut read = Protector::new(suite, &Output::from_slice(&secret).unwrap()).unwrap();
+            // Four blocks at once is where the defect was; a full record is
+            // the most a peer can send.
+            for len in [64usize, 1024, 16_384] {
+                let total = len + 16;
+                let header = [0x17, 3, 3, (total >> 8) as u8, total as u8];
+                let mut body = vec![0xffu8; total];
+                assert_eq!(
+                    read.open(&header, &mut body).unwrap_err().kind(),
+                    ErrorKind::BadRecordMac,
+                    "{suite:?}, {len} bytes"
+                );
+            }
+        }
+    }
+}

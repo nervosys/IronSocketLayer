@@ -224,6 +224,9 @@ impl Protector {
 
     /// Deprotect a record body in place, returning the inner type and the
     /// length of the content (at the front of `body`).
+    ///
+    /// `REQ-REC-013`: whatever bytes a peer sends, this returns; a record
+    /// that does not authenticate is `bad_record_mac`.
     pub fn open(
         &mut self,
         header: &[u8; HEADER_LEN],
