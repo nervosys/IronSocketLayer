@@ -13,7 +13,7 @@ members = [
 exclude = ["bench", "fuzz", "embedded"]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-or-later"
@@ -27,12 +27,14 @@ categories = ["cryptography", "network-programming", "no-std"]
 publish = true
 
 [workspace.dependencies]
-isl-ontology = { path = "crates/isl-ontology", version = "0.3.2", default-features = false }
-ironsocketlayer = { path = "crates/ironsocketlayer", version = "0.3.2", default-features = false }
+isl-ontology = { path = "crates/isl-ontology", version = "0.3.3", default-features = false }
+ironsocketlayer = { path = "crates/ironsocketlayer", version = "0.3.3", default-features = false }
 
 # IronCrypto supplies every cryptographic primitive. Nothing in this workspace
 # implements a cipher, hash, MAC, KDF, key agreement, KEM or signature itself.
-# 0.2.15 is the minimum, and the release 0.3.2 was tested against.
+# 0.2.20 is the minimum: 0.2.5 to 0.2.19 have a Poly1305 defect a peer can
+# reach through ChaCha20-Poly1305 records (GHSA-xr22-8pqp-gwfh). The release
+# 0.3.3 was tested against 0.2.20.
 # 0.2.11 is the first IronCrypto release with ic-hpke (ECH's HPKE) and ML-DSA
 # PKCS#8 in ic-pkix, both used here instead of local code.
 # 0.2.10 is the first IronCrypto release whose ML-DSA decodes its secret
@@ -40,21 +42,21 @@ ironsocketlayer = { path = "crates/ironsocketlayer", version = "0.3.2", default-
 # 26-34 KB of stack per session on Cortex-M4); 0.2.8 added curve
 # tables that never allocate and ic_ec::prepare(); 0.2.5 added ML-KEM-512,
 # ML-DSA-44 and P-521 keys in ic-pkix. All are used here.
-ic-core = { path = "../IronCrypto/crates/ic-core", version = ">=0.2.15, <0.3", default-features = false }
-ic-hash = { path = "../IronCrypto/crates/ic-hash", version = ">=0.2.15, <0.3", default-features = false }
-ic-mac = { path = "../IronCrypto/crates/ic-mac", version = ">=0.2.15, <0.3", default-features = false }
-ic-kdf = { path = "../IronCrypto/crates/ic-kdf", version = ">=0.2.15, <0.3", default-features = false }
-ic-cipher = { path = "../IronCrypto/crates/ic-cipher", version = ">=0.2.15, <0.3", default-features = false }
-ic-drbg = { path = "../IronCrypto/crates/ic-drbg", version = ">=0.2.15, <0.3", default-features = false }
-ic-ec = { path = "../IronCrypto/crates/ic-ec", version = ">=0.2.15, <0.3", default-features = false }
-ic-rsa = { path = "../IronCrypto/crates/ic-rsa", version = ">=0.2.15, <0.3", default-features = false }
-ic-pkix = { path = "../IronCrypto/crates/ic-pkix", version = ">=0.2.15, <0.3", default-features = false }
-ic-hpke = { path = "../IronCrypto/crates/ic-hpke", version = ">=0.2.15, <0.3", default-features = false }
-ic-mlkem = { path = "../IronCrypto/crates/ic-mlkem", version = ">=0.2.15, <0.3", default-features = false }
-ic-mldsa = { path = "../IronCrypto/crates/ic-mldsa", version = ">=0.2.15, <0.3", default-features = false }
-ic-fips = { path = "../IronCrypto/crates/ic-fips", version = ">=0.2.15, <0.3", default-features = false }
-ic-ontology = { path = "../IronCrypto/crates/ic-ontology", version = ">=0.2.15, <0.3", default-features = false }
-ic-json = { path = "../IronCrypto/crates/ic-json", version = ">=0.2.15, <0.3" }
+ic-core = { path = "../IronCrypto/crates/ic-core", version = ">=0.2.20, <0.3", default-features = false }
+ic-hash = { path = "../IronCrypto/crates/ic-hash", version = ">=0.2.20, <0.3", default-features = false }
+ic-mac = { path = "../IronCrypto/crates/ic-mac", version = ">=0.2.20, <0.3", default-features = false }
+ic-kdf = { path = "../IronCrypto/crates/ic-kdf", version = ">=0.2.20, <0.3", default-features = false }
+ic-cipher = { path = "../IronCrypto/crates/ic-cipher", version = ">=0.2.20, <0.3", default-features = false }
+ic-drbg = { path = "../IronCrypto/crates/ic-drbg", version = ">=0.2.20, <0.3", default-features = false }
+ic-ec = { path = "../IronCrypto/crates/ic-ec", version = ">=0.2.20, <0.3", default-features = false }
+ic-rsa = { path = "../IronCrypto/crates/ic-rsa", version = ">=0.2.20, <0.3", default-features = false }
+ic-pkix = { path = "../IronCrypto/crates/ic-pkix", version = ">=0.2.20, <0.3", default-features = false }
+ic-hpke = { path = "../IronCrypto/crates/ic-hpke", version = ">=0.2.20, <0.3", default-features = false }
+ic-mlkem = { path = "../IronCrypto/crates/ic-mlkem", version = ">=0.2.20, <0.3", default-features = false }
+ic-mldsa = { path = "../IronCrypto/crates/ic-mldsa", version = ">=0.2.20, <0.3", default-features = false }
+ic-fips = { path = "../IronCrypto/crates/ic-fips", version = ">=0.2.20, <0.3", default-features = false }
+ic-ontology = { path = "../IronCrypto/crates/ic-ontology", version = ">=0.2.20, <0.3", default-features = false }
+ic-json = { path = "../IronCrypto/crates/ic-json", version = ">=0.2.20, <0.3" }
 
 [profile.release]
 opt-level = 3

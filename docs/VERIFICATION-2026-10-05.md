@@ -448,3 +448,22 @@ the Rust 1.88 build passed; `openssl_interop` (14), `openssl_fixed` (5),
 QEMU Cortex-M4 run passed (largest session stack 34,412 bytes). On Linux
 (WSL Debian, rustc 1.95.0): 679 passed. TLS-Anvil:
 [VERIFICATION-2026-10-07-tls-anvil.md](VERIFICATION-2026-10-07-tls-anvil.md).
+
+### Release 0.3.3
+
+Wiping of received application data (REQ-CONN-017), key-form trust anchors
+(REQ-X509-079) and a raised IronCrypto minimum, 0.2.20 (published), which
+fixes the Poly1305 defect GHSA-xr22-8pqp-gwfh. The regression test for it
+(REQ-REC-013) was run from outside the repository against the published
+ironsocketlayer 0.3.2: with every IronCrypto crate at 0.2.19 it panics in
+`ic-cipher` ("attempt to multiply with overflow"); at 0.2.20 it passes.
+On Windows, over IronCrypto 0.2.20: 688 tests passed; fmt, clippy, the
+Cortex-M4 `no_std` build and the Rust 1.88 build passed; `openssl_interop`
+(14), `openssl_fixed` (5), `openssl_cnsa2` (1) and live interop (6) passed
+against OpenSSL 3.5.7; the QEMU Cortex-M4 run passed (largest session stack
+34,428 bytes). On Linux (WSL Debian, rustc 1.95.0): 688 passed. Fuzzing over
+0.2.20: `tls_server` 80,423 runs and `tls_client` 32,308 runs, 151 s each,
+no findings (and 143,675 and 53,240 runs earlier, after the record-buffer
+change); the fixed-capacity targets were not re-run. Bulk receive
+throughput measured before and after the wipes: no difference outside
+run-to-run noise.

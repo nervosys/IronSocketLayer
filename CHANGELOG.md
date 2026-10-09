@@ -3,9 +3,26 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## Unreleased
+## 0.3.3 (2026-10-09)
+
+Received application data is wiped from the connection once read, and a
+trust anchor can be given as a name and a key. One behaviour change: a
+connection that fails discards application data not yet read. One API
+addition, `RootStore::add_anchor`. Requires IronCrypto 0.2.20 or later,
+below 0.3, which fixes a Poly1305 defect a peer could reach.
 
 ### Security
+- The minimum IronCrypto is now 0.2.20. IronCrypto 0.2.5 to 0.2.19 have a
+  Poly1305 defect (GHSA-xr22-8pqp-gwfh) that a peer reaches by sending
+  ChaCha20-Poly1305 records of large byte values, before either side is
+  authenticated: a build with overflow checks on panics (and aborts under
+  `panic = "abort"`, as the `isl` binary is built); a build without them
+  computes a wrong tag. Releases 0.1.0 to 0.3.2 admit those versions.
+  `profile:default` and `profile:post-quantum` offer ChaCha20-Poly1305; the
+  FIPS, CNSA and DAL-A profiles do not. No code here changed for this;
+  a regression test now opens all-ones records under a thousand keys per
+  suite (REQ-REC-013). If you cannot upgrade, pin IronCrypto 0.2.20 in
+  your lock file (`cargo update`).
 - Received application data no longer outlives its reading (REQ-CONN-017).
   `Connection` kept it in ordinary buffers: bytes already read stayed in
   the allocation, a buffer that grew left its old storage behind unwiped,
