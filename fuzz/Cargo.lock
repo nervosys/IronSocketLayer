@@ -45,18 +45,18 @@ dependencies = [
 
 [[package]]
 name = "ic-cipher"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-core"
-version = "0.2.15"
+version = "0.2.19"
 
 [[package]]
 name = "ic-drbg"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "ic-ec"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "ic-fips"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -84,23 +84,25 @@ dependencies = [
  "ic-hash",
  "ic-hpke",
  "ic-kdf",
+ "ic-lms",
  "ic-mac",
  "ic-mldsa",
  "ic-mlkem",
  "ic-ontology",
  "ic-rsa",
+ "ic-slhdsa",
 ]
 
 [[package]]
 name = "ic-hash"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-hpke"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -111,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "ic-kdf"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -119,8 +121,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-lms"
+version = "0.2.19"
+dependencies = [
+ "ic-core",
+ "ic-hash",
+]
+
+[[package]]
 name = "ic-mac"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -129,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mldsa"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -137,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mlkem"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -145,24 +155,33 @@ dependencies = [
 
 [[package]]
 name = "ic-ontology"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-pkix"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-rsa"
-version = "0.2.15"
+version = "0.2.19"
 dependencies = [
  "ic-core",
  "ic-hash",
+]
+
+[[package]]
+name = "ic-slhdsa"
+version = "0.2.19"
+dependencies = [
+ "ic-core",
+ "ic-hash",
+ "ic-mac",
 ]
 
 [[package]]
