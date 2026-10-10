@@ -3,6 +3,48 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## 0.3.4 (2026-10-09)
+
+The CNSA profiles compared, clause by clause, with their TLS profiles:
+RFC 9151 for `profile:cnsa-1` and draft-becker-cnsa2-tls-profile-05 for
+`profile:cnsa-2`. The algorithm lists already agreed; the differences were
+in what the profiles let through.
+
+### Fixed
+- `profile:cnsa-1` refused RSA chains whose certificates are signed with
+  PKCS#1 v1.5 and SHA-384 (`sha384WithRSAEncryption`), which RFC 9151 §5.2
+  says MUST be supported in TLS 1.3 and is how most RSA certificates are
+  signed. `rsa_pkcs1_sha384` is now in the profile, for certificates only;
+  the handshake still signs with RSASSA-PSS. Checked against an RSA-3072
+  chain issued by OpenSSL (REQ-CFG-008).
+
+- `SigningKey::sign_into` (the fixed-capacity engine's signing path) checked
+  the caller's storage against the DER encoding's bound for the curve, not
+  against the signature, so for P-521 it refused 139 bytes, which is as
+  long as a P-521 signature gets. It now encodes into scratch storage and
+  measures. Found while moving the certificate code to IronPKI; the bound
+  is corrected in IronCrypto after 0.2.20, where it grows by one byte, so
+  the old check would have refused one byte more.
+
+### Changed
+- Under `profile:cnsa-1`, an RSA key on any certificate a peer presents
+  must have a modulus of 3072 or 4096 bits and an odd exponent above 2^16
+  (RFC 9151 §5.2); otherwise the handshake fails with `policy-violation`.
+  It used to accept any size from 3072 to 4096 bits and any odd exponent
+  from 3 (REQ-CFG-008). The rule covers the certificates presented, not
+  the trust anchors, which are the operator's configuration.
+- A configuration under `profile:cnsa-1` or `profile:cnsa-2` no longer
+  validates with early data enabled or with an external PSK. Both TLS
+  profiles forbid early data, and both require certificate authentication:
+  this library's external PSK authenticates in place of certificates, and
+  RFC 8773, which combines the two, is not implemented (REQ-CFG-007).
+
+### Not covered
+- The certificate profiles the two documents defer to (RFC 8603 and
+  draft-jenkins-cnsa2-pkix-profile) were not compared.
+- A caller can still widen `common.suites`, `groups` or `schemes` after
+  choosing a CNSA profile; the profile name does not change when they do.
+
 ## 0.3.3 (2026-10-09)
 
 Received application data is wiped from the connection once read, and a

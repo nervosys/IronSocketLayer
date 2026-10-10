@@ -467,3 +467,24 @@ no findings (and 143,675 and 53,240 runs earlier, after the record-buffer
 change); the fixed-capacity targets were not re-run. Bulk receive
 throughput measured before and after the wipes: no difference outside
 run-to-run noise.
+
+### Release 0.3.4
+
+The CNSA profiles brought into line with RFC 9151 and
+draft-becker-cnsa2-tls-profile-05 (REQ-CFG-007, REQ-CFG-008), over
+IronCrypto 0.2.20 (published). On Windows: 691 tests passed; fmt, clippy,
+the Cortex-M4 `no_std` build and the Rust 1.88 build passed;
+`openssl_interop` (14), `openssl_fixed` (5), `openssl_cnsa2` (1), the new
+`openssl_cnsa1` (1) and live interop (6) passed against OpenSSL 3.5.7; the
+QEMU Cortex-M4 run passed (largest session stack 34,436 bytes). On Linux
+(WSL Debian, rustc 1.95.0): 691 passed. Fuzzing, 121 s each, no findings:
+`tls_server` 134,026 runs, `tls_client` 36,740, `fixed_server` 162,995,
+`fixed_client` 42,708. Eleven checks removed one at a time each made a test
+fail. After those runs, four test-only clippy findings were fixed, and
+`SigningKey::sign_into` was changed to measure an ECDSA signature instead
+of comparing storage with the encoding's bound. Re-run after that change:
+the 691 tests on Windows, clippy, the `no_std` build, `openssl_fixed` (5)
+and the QEMU run (largest session stack 34,540 bytes, 104 more than
+before, for the scratch encoding); restoring the old comparison makes
+`sign_into_refuses_a_foreign_scheme_and_short_storage` fail. The other
+interop suites, the Linux run and the fuzz runs were not repeated.
