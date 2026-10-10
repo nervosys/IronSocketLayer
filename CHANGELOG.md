@@ -3,7 +3,7 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## 0.4.0 (unreleased)
+## 0.4.0 (2026-10-10)
 
 The certificate code is now [IronPKI](https://github.com/nervosys/IronPKI),
 a separate crate that IronPrivacyGuard shares. `ironsocketlayer::x509` is

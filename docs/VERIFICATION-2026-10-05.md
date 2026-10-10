@@ -489,10 +489,11 @@ before, for the scratch encoding); restoring the old comparison makes
 `sign_into_refuses_a_foreign_scheme_and_short_storage` fail. The other
 interop suites, the Linux run and the fuzz runs were not repeated.
 
-### Release 0.4.0 (prepared, not released)
+### Release 0.4.0
 
-The certificate code replaced by IronPKI 0.1.0 (local, unpublished, at
-160243d), over IronCrypto 0.2.22. On Windows: 475 tests passed (221 moved to
+The certificate code replaced by IronPKI 0.1.0 (published 2026-10-10 from
+d4938d3; the runs below were first made against it at 160243d, which differs
+only in its release notes and export record), over IronCrypto 0.2.22. On Windows: 475 tests passed (221 moved to
 IronPKI with the code they test); fmt, clippy, the Cortex-M4 `no_std` build
 and the Rust 1.88 build passed; `openssl_interop` (14), `openssl_fixed` (5),
 `openssl_cnsa2` (1), `openssl_cnsa1` (1) and live interop (6) passed against
@@ -517,6 +518,15 @@ ML-DSA wrappers take under 300 bytes together.
 Each key family now signs in its own `#[inline(never)]` function, as each
 already verified in one. Measured again: ML-DSA-44 30,572, ML-DSA-65 32,132,
 ML-DSA-87 34,516; the largest session stack is 34,516 bytes, with no
-allocation after initialization. After that change: 475 tests on Windows,
-the `no_std` build and `openssl_fixed` (5) passed again; the other interop
-suites, the Linux run and the fuzz runs were not repeated.
+allocation after initialization.
+
+The whole list was then run again on the release commit, against the
+published IronPKI 0.1.0. On Windows: 475 tests passed; fmt, clippy, the
+Cortex-M4 `no_std` build and the Rust 1.88 build passed; `openssl_interop`
+(14), `openssl_fixed` (5), `openssl_cnsa2` (1), `openssl_cnsa1` (1) and live
+interop (6) passed against OpenSSL 3.5.7; the QEMU Cortex-M4 run passed
+(largest session stack 34,516 bytes). On Linux (WSL Debian, rustc 1.95.0):
+475 passed. Fuzzing, 61 s each, no findings: `tls_server` 78,043 runs,
+`tls_client` 26,562, `fixed_server` 193,803, `fixed_client` 47,777; the two
+certificate targets were not repeated, their code being unchanged since the
+91 s runs above.
