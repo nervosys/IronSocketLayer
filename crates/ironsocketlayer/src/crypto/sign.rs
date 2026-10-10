@@ -549,6 +549,57 @@ fn ecdsa_der_into<const N: usize>(fixed: &[u8], out: &mut [u8]) -> Result<usize>
     Ok(n)
 }
 
+#[inline(never)]
+fn sign_p256(sk: &[u8; 32], message: &[u8], out: &mut [u8]) -> Result<usize> {
+    let mut sig = [0u8; 64];
+    ic_ec::EcdsaP256Sha256::sign(sk, message, &mut sig)?;
+    ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(64) }>(&sig, out)
+}
+
+#[inline(never)]
+fn sign_p384(sk: &[u8; 48], message: &[u8], out: &mut [u8]) -> Result<usize> {
+    let mut sig = [0u8; 96];
+    ic_ec::EcdsaP384Sha384::sign(sk, message, &mut sig)?;
+    ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(96) }>(&sig, out)
+}
+
+#[inline(never)]
+fn sign_p521(sk: &[u8; 66], message: &[u8], out: &mut [u8]) -> Result<usize> {
+    let mut sig = [0u8; 132];
+    ic_ec::p521::EcdsaP521Sha512::sign(sk, message, &mut sig)?;
+    ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(132) }>(&sig, out)
+}
+
+#[inline(never)]
+fn sign_ed25519(key: &ic_ec::Ed25519Key, message: &[u8], out: &mut [u8]) -> Result<usize> {
+    let sig = out
+        .get_mut(..64)
+        .ok_or(Error::new(ErrorKind::CapacityExceeded, "signature storage"))?;
+    key.sign(message, sig)?;
+    Ok(64)
+}
+
+#[inline(never)]
+fn sign_rsa_pss(
+    key: &ic_rsa::RsaPrivateKey,
+    scheme: SignatureScheme,
+    message: &[u8],
+    rng: &mut dyn RandomSource,
+    out: &mut [u8],
+) -> Result<usize> {
+    let sig = out
+        .get_mut(..key.size())
+        .ok_or(Error::new(ErrorKind::CapacityExceeded, "signature storage"))?;
+    let mut rng = RngRef(rng);
+    match scheme {
+        SignatureScheme::RsaPssRsaeSha256 => ic_rsa::PssSha256::sign(key, message, &mut rng, sig)?,
+        SignatureScheme::RsaPssRsaeSha384 => ic_rsa::PssSha384::sign(key, message, &mut rng, sig)?,
+        SignatureScheme::RsaPssRsaeSha512 => ic_rsa::PssSha512::sign(key, message, &mut rng, sig)?,
+        _ => return Err(Error::new(ErrorKind::InvalidConfig, "TLS RSA scheme")),
+    }
+    Ok(sig.len())
+}
+
 impl SigningKey {
     /// Sign into caller storage using the initialized key. `REQ-FIX-002`.
     /// No allocation occurs; `out` must accommodate the scheme's largest signature.
@@ -567,42 +618,15 @@ impl SigningKey {
         }
         let capacity = || Error::new(ErrorKind::CapacityExceeded, "signature storage");
         match &self.inner {
-            KeyImpl::P256(sk) => {
-                let mut sig = [0u8; 64];
-                ic_ec::EcdsaP256Sha256::sign(sk.get(), message, &mut sig)?;
-                ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(64) }>(&sig, out)
-            }
-            KeyImpl::P384(sk) => {
-                let mut sig = [0u8; 96];
-                ic_ec::EcdsaP384Sha384::sign(sk.get(), message, &mut sig)?;
-                ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(96) }>(&sig, out)
-            }
-            KeyImpl::P521(sk) => {
-                let mut sig = [0u8; 132];
-                ic_ec::p521::EcdsaP521Sha512::sign(sk.get(), message, &mut sig)?;
-                ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(132) }>(&sig, out)
-            }
-            KeyImpl::Ed25519(k) => {
-                k.sign(message, out.get_mut(..64).ok_or_else(capacity)?)?;
-                Ok(64)
-            }
-            KeyImpl::Rsa(k) => {
-                let sig = out.get_mut(..k.size()).ok_or_else(capacity)?;
-                let mut rng = RngRef(rng);
-                match scheme {
-                    SignatureScheme::RsaPssRsaeSha256 => {
-                        ic_rsa::PssSha256::sign(k, message, &mut rng, sig)?
-                    }
-                    SignatureScheme::RsaPssRsaeSha384 => {
-                        ic_rsa::PssSha384::sign(k, message, &mut rng, sig)?
-                    }
-                    SignatureScheme::RsaPssRsaeSha512 => {
-                        ic_rsa::PssSha512::sign(k, message, &mut rng, sig)?
-                    }
-                    _ => return Err(Error::new(ErrorKind::InvalidConfig, "TLS RSA scheme")),
-                }
-                Ok(sig.len())
-            }
+            // Each family signs in its own out-of-line function, as each
+            // verifies in one: inlined here, the largest of them (P-521,
+            // about 8 KB on Cortex-M4) would be this frame's size whichever
+            // key is in use, and it sits under ML-DSA signing's own frame.
+            KeyImpl::P256(sk) => sign_p256(sk.get(), message, out),
+            KeyImpl::P384(sk) => sign_p384(sk.get(), message, out),
+            KeyImpl::P521(sk) => sign_p521(sk.get(), message, out),
+            KeyImpl::Ed25519(k) => sign_ed25519(k, message, out),
+            KeyImpl::Rsa(k) => sign_rsa_pss(k, scheme, message, rng, out),
             KeyImpl::MlDsa(p, sk) => {
                 // Storage first: a refusal draws nothing from the rng.
                 if out.len() < with_mldsa!(*p, m, m::SIGNATURE_LEN) {

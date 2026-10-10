@@ -501,11 +501,22 @@ OpenSSL 3.5.7. On Linux (WSL Debian, rustc 1.95.0): 475 passed. Fuzzing,
 `tls_server` 127,637, `tls_client` 33,691, `fixed_server` 232,825,
 `fixed_client` 45,643.
 
-**A regression to resolve before release.** The QEMU Cortex-M4 run passed
-with no allocation after initialization, but the largest session stack rose
-from 34,540 to 42,492 bytes. Only the ML-DSA sessions grew, by about 7 to 8
-KB each (ML-DSA-44 30,724 to 37,980; ML-DSA-65 32,028 to 40,108; ML-DSA-87
-34,412 to 42,492); the classical sessions did not. Certificate signatures
-are now verified through IronCrypto's `ic_sig::verify` where this crate's
-own `verify` was used before, which is where the difference is expected to
-be; it has not been located.
+**A stack regression, found and fixed.** With the certificate code moved,
+the largest Cortex-M4 session stack first measured 42,492 bytes against
+0.3.4's 34,540: every ML-DSA session had grown by 7 to 8 KB and no classical
+one had. Frame sizes read from the two firmware images (llvm-objdump, each
+function's prologue) showed where. `SigningKey::sign_into` had a frame of
+8,072 bytes where it had been small, because the ECDSA signers had been
+inlined into it. Issuance in the harness used to call the allocating `sign`
+as well, so each signer had two callers and stayed out of line; issuance now
+signs through `ic_core::sig::Signer`, which calls `sign_into`, so each signer
+had one caller and fat LTO inlined it. That frame sits under ML-DSA signing's
+own. Nothing in IronCrypto or IronPKI was larger: `ic_sig::verify` and its
+ML-DSA wrappers take under 300 bytes together.
+
+Each key family now signs in its own `#[inline(never)]` function, as each
+already verified in one. Measured again: ML-DSA-44 30,572, ML-DSA-65 32,132,
+ML-DSA-87 34,516; the largest session stack is 34,516 bytes, with no
+allocation after initialization. After that change: 475 tests on Windows,
+the `no_std` build and `openssl_fixed` (5) passed again; the other interop
+suites, the Linux run and the fuzz runs were not repeated.
