@@ -8,10 +8,14 @@ use ironsocketlayer::config::{
     ClientAuth, ClientConfig, Identity, IntentPolicy, PeerVerification, Profile, Revocation,
     ServerConfig,
 };
+use ironsocketlayer::crypto::sign::PublicKey;
 use ironsocketlayer::crypto::sign::{KeyKind, SigningKey};
 use ironsocketlayer::crypto::HashAlg;
+use ironsocketlayer::enums::SignatureScheme;
 use ironsocketlayer::report::Property;
-use ironsocketlayer::x509::{self, CertificateParams, RootStore, ServerName, Usage, VerifyOptions};
+use ironsocketlayer::x509::{
+    self, CertificateParams, Limits, Purpose, RootStore, ServerName, VerifyOptions,
+};
 
 /// Largest PEM text accepted.
 pub const MAX_INPUT: usize = 256 * 1024;
@@ -51,7 +55,10 @@ pub fn inspect_certificate(pem: &str) -> Result<Json, String> {
     let t = now();
     let mut out = Vec::new();
     for der in &ders {
-        let c = x509::Certificate::parse(der).map_err(|e| format!("{}: {}", e.id(), e))?;
+        let c = x509::Certificate::parse(der).map_err(|e| {
+            let e = ironsocketlayer::Error::from(e);
+            format!("{}: {}", e.id(), e)
+        })?;
         let not_after = c.not_after();
         out.push(Json::object([
             ("subjectCommonName", opt_str(c.common_name())),
@@ -75,11 +82,16 @@ pub fn inspect_certificate(pem: &str) -> Result<Json, String> {
             ),
             (
                 "key",
-                opt_str(c.subject_public_key().ok().map(|k| k.kind_id())),
+                opt_str(PublicKey::from_spki(c.spki_der()).ok().map(|k| k.kind_id())),
             ),
             (
                 "signatureScheme",
-                opt_str(c.signature_scheme().ok().map(|s| s.id())),
+                opt_str(
+                    c.signature_scheme()
+                        .ok()
+                        .and_then(SignatureScheme::from_algorithm)
+                        .map(|s| s.id()),
+                ),
             ),
             (
                 "spkiSha256",
@@ -111,31 +123,50 @@ pub fn verify_chain(
     capped(roots_pem, "the roots")?;
     let chain = crate::net::pem_blocks(chain_pem, "CERTIFICATE")?;
     let mut roots = RootStore::new();
-    roots
-        .add_pem_bundle(roots_pem)
-        .map_err(|e| format!("roots: {}: {}", e.id(), e))?;
+    roots.add_pem_bundle(roots_pem).map_err(|e| {
+        let e = ironsocketlayer::Error::from(e);
+        format!("roots: {}: {}", e.id(), e)
+    })?;
     let usage = if client {
-        Usage::ClientAuth
+        Purpose::TlsClient
     } else {
-        Usage::ServerAuth
+        Purpose::TlsServer
     };
-    let opts = VerifyOptions::new(now(), usage, ironsocketlayer::crypto::sign::VERIFY_SCHEMES);
+    // An operator's own chain, examined offline: the offline bounds.
+    let opts = VerifyOptions::new(now(), usage, x509::VERIFY_ALGORITHMS, Limits::DEFAULT);
     let ints: Vec<&[u8]> = chain[1..].iter().map(Vec::as_slice).collect();
     let report = match x509::verify_chain(&chain[0], &ints, &roots, &opts) {
         Ok(r) => r,
-        Err(e) => return Ok(error_json(&e)),
+        Err(e) => return Ok(error_json(&e.into())),
     };
     if let Some(n) = name {
         let target = ServerName::parse(n).map_err(|e| format!("name: {e}"))?;
         if let Err(e) = x509::verify_name(&chain[0], &target) {
-            return Ok(error_json(&e));
+            return Ok(error_json(&e.into()));
         }
     }
     Ok(Json::object([
         ("valid", Json::Bool(true)),
         ("depth", Json::num(report.depth as f64)),
-        ("leafKey", Json::str(report.leaf_key)),
-        ("schemes", strings(report.schemes.iter().map(|s| s.id()))),
+        (
+            "leafKey",
+            opt_str(
+                x509::Certificate::parse(&chain[0])
+                    .ok()
+                    .and_then(|c| PublicKey::from_spki(c.spki_der()).ok())
+                    .map(|k| k.kind_id()),
+            ),
+        ),
+        (
+            "schemes",
+            strings(
+                report
+                    .schemes
+                    .iter()
+                    .filter_map(|a| SignatureScheme::from_algorithm(*a))
+                    .map(|s| s.id()),
+            ),
+        ),
         ("anchor", opt_str(report.anchor_subject_cn.as_deref())),
         ("leafNotAfter", Json::num(report.leaf_not_after as f64)),
         (
@@ -185,7 +216,7 @@ fn stand_in_identity(profile: Profile) -> Result<Identity, String> {
             not_after: t + 3600,
             is_ca: false,
             path_len: None,
-            usage: &[Usage::ServerAuth, Usage::ClientAuth],
+            usage: &[Purpose::TlsServer, Purpose::TlsClient],
             serial: [1; 16],
         },
         &key,

@@ -488,3 +488,24 @@ and the QEMU run (largest session stack 34,540 bytes, 104 more than
 before, for the scratch encoding); restoring the old comparison makes
 `sign_into_refuses_a_foreign_scheme_and_short_storage` fail. The other
 interop suites, the Linux run and the fuzz runs were not repeated.
+
+### Release 0.4.0 (prepared, not released)
+
+The certificate code replaced by IronPKI 0.1.0 (local, unpublished, at
+160243d), over IronCrypto 0.2.22. On Windows: 475 tests passed (221 moved to
+IronPKI with the code they test); fmt, clippy, the Cortex-M4 `no_std` build
+and the Rust 1.88 build passed; `openssl_interop` (14), `openssl_fixed` (5),
+`openssl_cnsa2` (1), `openssl_cnsa1` (1) and live interop (6) passed against
+OpenSSL 3.5.7. On Linux (WSL Debian, rustc 1.95.0): 475 passed. Fuzzing,
+91 s each, no findings: `pki` 525,508 runs, `pki_differential` 267,672,
+`tls_server` 127,637, `tls_client` 33,691, `fixed_server` 232,825,
+`fixed_client` 45,643.
+
+**A regression to resolve before release.** The QEMU Cortex-M4 run passed
+with no allocation after initialization, but the largest session stack rose
+from 34,540 to 42,492 bytes. Only the ML-DSA sessions grew, by about 7 to 8
+KB each (ML-DSA-44 30,724 to 37,980; ML-DSA-65 32,028 to 40,108; ML-DSA-87
+34,412 to 42,492); the classical sessions did not. Certificate signatures
+are now verified through IronCrypto's `ic_sig::verify` where this crate's
+own `verify` was used before, which is where the difference is expected to
+be; it has not been located.

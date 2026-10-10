@@ -22,7 +22,7 @@ use crate::key_schedule::{self, MasterStage};
 use crate::msgs::{extension_allowed, ExtensionContext};
 use crate::record::{self, Protector};
 use crate::report::{HandshakeState as State, Property};
-use crate::x509::{self, Certificate, ServerName, Usage, VerifyOptions};
+use crate::x509::{self, Certificate, Purpose, ServerName, VerifyOptions};
 use ic_core::{traits::RandomSource, Zeroize, Zeroizing};
 
 fn capacity(context: &'static str) -> Error {
@@ -1922,13 +1922,19 @@ impl<'a> Connection<'a> {
             return self.transition(State::WaitFinished);
         }
         let (verification, name, usage) = match self.config {
-            Config::Client(c, name) => (&c.verification, Some(name), Usage::ServerAuth),
+            Config::Client(c, name) => (&c.verification, Some(name), Purpose::TlsServer),
             Config::Server(c) => match &c.client_auth {
-                ClientAuth::Optional(v) | ClientAuth::Required(v) => (v, None, Usage::ClientAuth),
+                ClientAuth::Optional(v) | ClientAuth::Required(v) => (v, None, Purpose::TlsClient),
                 _ => return Err(unexpected()),
             },
         };
-        let mut opts = VerifyOptions::new((self.common().clock)(), usage, &self.common().schemes);
+        let algorithms = crate::policy::CertAlgorithms::of(&self.common().schemes);
+        let mut opts = VerifyOptions::new(
+            (self.common().clock)(),
+            usage,
+            algorithms.as_slice(),
+            x509::Limits::ONLINE,
+        );
         opts.min_rsa_bits = self.common().profile.min_rsa_bits();
         opts.crls = self.common().crls.as_deref();
         opts.require_crl = self.common().require_crl;
@@ -2005,9 +2011,11 @@ impl<'a> Connection<'a> {
                     report.depth != 0
                         && report.schemes[..report.depth]
                             .iter()
-                            .all(|s| s.is_some_and(SignatureScheme::is_post_quantum)),
+                            .all(|s| s.is_some_and(crate::policy::is_post_quantum)),
                     false,
-                    report.schemes,
+                    report
+                        .schemes
+                        .map(|s| s.and_then(SignatureScheme::from_algorithm)),
                     revocation,
                 )
             }
@@ -2036,7 +2044,12 @@ impl<'a> Connection<'a> {
         let hash = self.hash()?;
         let mut input = [0u8; 146];
         let n = cv_input(self.is_client(), hash.as_bytes(), &mut input);
-        sign::verify(scheme, &cert.subject_public_key()?, &input[..n], signature)?;
+        sign::verify(
+            scheme,
+            &sign::PublicKey::from_spki(cert.spki_der())?,
+            &input[..n],
+            signature,
+        )?;
         self.pq_chain &= scheme.is_post_quantum();
         self.peer_authenticated = true;
         self.report.peer_signature_scheme = Some(scheme);
@@ -2377,7 +2390,7 @@ mod finished_tests {
                 not_after: now + 3600,
                 is_ca: false,
                 path_len: None,
-                usage: &[Usage::ServerAuth],
+                usage: &[Purpose::TlsServer],
                 serial: [1; 16],
             },
             &key,
@@ -2541,7 +2554,7 @@ mod tests {
     fn params<'a>(
         cn: &'a str,
         dns: &'a [&'a str],
-        usage: &'a [Usage],
+        usage: &'a [Purpose],
         serial: u8,
     ) -> CertificateParams<'a> {
         let t = now();
@@ -2567,7 +2580,7 @@ mod tests {
             x509::self_signed(&params("Fixed Test Root", &[], &[], 1), &ca_key, &mut r).unwrap();
         let server_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
         let server = x509::issue(
-            &params(NAME, &[NAME], &[Usage::ServerAuth], 2),
+            &params(NAME, &[NAME], &[Purpose::TlsServer], 2),
             server_key.spki(),
             &ca,
             &ca_key,
@@ -2576,7 +2589,7 @@ mod tests {
         .unwrap();
         let client_key = SigningKey::generate(KeyKind::EcdsaP256, &mut r).unwrap();
         let client = x509::issue(
-            &params("device", &[], &[Usage::ClientAuth], 3),
+            &params("device", &[], &[Purpose::TlsClient], 3),
             client_key.spki(),
             &ca,
             &ca_key,

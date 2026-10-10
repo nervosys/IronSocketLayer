@@ -28,3 +28,24 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+# One IronCrypto: IronPKI names it by version, and here it is the checkout
+# beside this repository. See the workspace Cargo.toml.
+[patch.crates-io]
+ic-core = { path = "../../../IronCrypto/crates/ic-core" }
+ic-hash = { path = "../../../IronCrypto/crates/ic-hash" }
+ic-mac = { path = "../../../IronCrypto/crates/ic-mac" }
+ic-kdf = { path = "../../../IronCrypto/crates/ic-kdf" }
+ic-cipher = { path = "../../../IronCrypto/crates/ic-cipher" }
+ic-drbg = { path = "../../../IronCrypto/crates/ic-drbg" }
+ic-ec = { path = "../../../IronCrypto/crates/ic-ec" }
+ic-rsa = { path = "../../../IronCrypto/crates/ic-rsa" }
+ic-pkix = { path = "../../../IronCrypto/crates/ic-pkix" }
+ic-hpke = { path = "../../../IronCrypto/crates/ic-hpke" }
+ic-mlkem = { path = "../../../IronCrypto/crates/ic-mlkem" }
+ic-mldsa = { path = "../../../IronCrypto/crates/ic-mldsa" }
+ic-fips = { path = "../../../IronCrypto/crates/ic-fips" }
+ic-ontology = { path = "../../../IronCrypto/crates/ic-ontology" }
+ic-sig = { path = "../../../IronCrypto/crates/ic-sig" }
+ic-lms = { path = "../../../IronCrypto/crates/ic-lms" }
+ic-slhdsa = { path = "../../../IronCrypto/crates/ic-slhdsa" }

@@ -3,7 +3,9 @@
 //! or TLS-encoded bytes outside the handshake itself.
 #![no_main]
 
-use ironsocketlayer::x509::{self, crl::CrlStore, Certificate, ServerName, Usage, VerifyOptions};
+use ironsocketlayer::x509::{
+    self, crl::CrlStore, Certificate, Limits, Purpose, ServerName, VerifyOptions,
+};
 use isl_fuzz::{client_config, pki, NAME, NOW};
 use libfuzzer_sys::fuzz_target;
 
@@ -12,7 +14,16 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let p = pki();
-    let schemes = client_config().common.schemes.clone();
+    let algorithms: Vec<_> = client_config()
+        .common
+        .schemes
+        .iter()
+        .filter_map(|s| s.algorithm())
+        .collect();
+    let limits = Limits {
+        max_path_len: 4,
+        ..Limits::ONLINE
+    };
     match sel % 5 {
         0 => {
             if let Ok(c) = Certificate::parse(body) {
@@ -33,30 +44,16 @@ fuzz_target!(|data: &[u8]| {
         }
         1 => {
             // The input as a leaf, then as an intermediate under a real leaf.
-            let opts = VerifyOptions {
-                now: NOW,
-                usage: Usage::ServerAuth,
-                allowed_schemes: &schemes,
-                max_depth: 4,
-                min_rsa_bits: 2048,
-                crls: None,
-                require_crl: false,
-            };
+            let opts = VerifyOptions::new(NOW, Purpose::TlsServer, &algorithms, limits);
             let _ = x509::verify_chain(body, &[], &p.roots, &opts);
             let _ = x509::verify_chain(&p.leaf, &[body], &p.roots, &opts);
         }
         2 => {
             let mut store = CrlStore::new();
             if store.add_der(body).is_ok() {
-                let opts = VerifyOptions {
-                    now: NOW,
-                    usage: Usage::ServerAuth,
-                    allowed_schemes: &schemes,
-                    max_depth: 4,
-                    min_rsa_bits: 2048,
-                    crls: Some(&store),
-                    require_crl: true,
-                };
+                let mut opts = VerifyOptions::new(NOW, Purpose::TlsServer, &algorithms, limits);
+                opts.crls = Some(&store);
+                opts.require_crl = true;
                 let _ = x509::verify_chain(&p.leaf, &[], &p.roots, &opts);
             }
         }
@@ -68,7 +65,7 @@ fuzz_target!(|data: &[u8]| {
                 ca.subject_der(),
                 ca.spki_der(),
                 NOW,
-                &schemes,
+                &algorithms,
             );
         }
         _ => {

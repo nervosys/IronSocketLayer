@@ -291,7 +291,7 @@ evidence are in [the verification report](docs/VERIFICATION-2026-10-05.md) and
 
 | Crate | |
 |---|---|
-| `crates/ironsocketlayer` | The protocol engine: TLS 1.3, QUIC-TLS, X.509, profiles, reports |
+| `crates/ironsocketlayer` | The protocol engine: TLS 1.3, QUIC-TLS, profiles, reports. X.509 is [IronPKI](https://github.com/nervosys/IronPKI), re-exported as `x509` |
 | `crates/isl-ontology` | The ontology: static, `no_std`, zero dependencies; exporters behind `std` |
 | `crates/isl-cli` | `isl`: command line and MCP server |
 | `bench/` | Handshake and throughput comparison with rustls; outside the workspace |

@@ -96,9 +96,46 @@ pub(crate) fn check_chain_keys<'a>(
     certs: impl Iterator<Item = &'a [u8]>,
 ) -> Result<()> {
     match profile {
-        crate::config::Profile::Cnsa1 => crate::x509::check_cnsa1_rsa_keys(certs),
+        crate::config::Profile::Cnsa1 => Ok(crate::x509::check_cnsa1_rsa_keys(certs)?),
         _ => Ok(()),
     }
+}
+
+/// A profile's signature schemes as the algorithms IronPKI may accept on a
+/// certificate, CRL or OCSP response, held without allocating so that the
+/// fixed-capacity engine can pass them too. A scheme with no such algorithm
+/// is left out, which only narrows what is accepted.
+pub(crate) struct CertAlgorithms {
+    list: [ic_core::sig::SignatureAlgorithm; Self::CAPACITY],
+    len: usize,
+}
+
+impl CertAlgorithms {
+    /// More than every scheme this build verifies.
+    const CAPACITY: usize = 16;
+
+    pub(crate) fn of(schemes: &[SignatureScheme]) -> Self {
+        let mut out = Self {
+            list: [ic_core::sig::SignatureAlgorithm::Ed25519; Self::CAPACITY],
+            len: 0,
+        };
+        for algorithm in schemes.iter().filter_map(|s| s.algorithm()) {
+            if let Some(slot) = out.list.get_mut(out.len) {
+                *slot = algorithm;
+                out.len += 1;
+            }
+        }
+        out
+    }
+
+    pub(crate) fn as_slice(&self) -> &[ic_core::sig::SignatureAlgorithm] {
+        &self.list[..self.len]
+    }
+}
+
+/// Whether a certificate link's algorithm is post-quantum.
+pub(crate) fn is_post_quantum(algorithm: ic_core::sig::SignatureAlgorithm) -> bool {
+    SignatureScheme::from_algorithm(algorithm).is_some_and(|s| s.is_post_quantum())
 }
 
 /// Service indicators for the algorithms a session negotiated.

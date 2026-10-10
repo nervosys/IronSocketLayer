@@ -30,7 +30,7 @@ use crate::msgs::{
 use crate::record::suite_params;
 use crate::report::HandshakeState as S;
 use crate::resumption::{TicketState, PSK_DHE_KE};
-use crate::x509::{self, ServerName, Usage};
+use crate::x509::{self, Purpose, ServerName};
 
 pub(crate) struct ServerHs {
     config: Arc<ServerConfig>,
@@ -404,7 +404,7 @@ impl ServerHs {
                 let input = msgs::certificate_verify_input(false, th.as_bytes());
                 sign::verify(
                     cv.scheme,
-                    &key_cert.subject_public_key()?,
+                    &sign::PublicKey::from_spki(key_cert.spki_der())?,
                     &input,
                     &cv.signature,
                 )?;
@@ -468,29 +468,33 @@ impl ServerHs {
         {
             PeerVerification::Roots(roots) => {
                 let inter: Vec<&[u8]> = chain[1..].iter().map(|c| c.as_slice()).collect();
-                let opts = x509::VerifyOptions {
+                let algorithms = crate::policy::CertAlgorithms::of(&self.config.common.schemes);
+                let mut opts = x509::VerifyOptions::new(
                     now,
-                    usage: Usage::ClientAuth,
-                    allowed_schemes: &self.config.common.schemes,
-                    max_depth: 8,
-                    min_rsa_bits: self.config.common.profile.min_rsa_bits(),
-                    crls: self.config.common.crls.as_deref(),
-                    require_crl: self.config.common.require_crl,
-                };
+                    Purpose::TlsClient,
+                    algorithms.as_slice(),
+                    x509::Limits::ONLINE,
+                );
+                opts.min_rsa_bits = self.config.common.profile.min_rsa_bits();
+                opts.crls = self.config.common.crls.as_deref();
+                opts.require_crl = self.config.common.require_crl;
                 let report = x509::verify_chain(leaf, &inter, roots, &opts)?;
                 conn::note_crl(core, report.crl_checked);
-                !report.schemes.is_empty() && report.schemes.iter().all(|s| s.is_post_quantum())
+                !report.schemes.is_empty()
+                    && report
+                        .schemes
+                        .iter()
+                        .all(|s| crate::policy::is_post_quantum(*s))
             }
             PeerVerification::PinnedSpki { sha256, .. } => {
-                let opts = x509::VerifyOptions {
+                let algorithms = crate::policy::CertAlgorithms::of(&self.config.common.schemes);
+                let mut opts = x509::VerifyOptions::new(
                     now,
-                    usage: Usage::ClientAuth,
-                    allowed_schemes: &self.config.common.schemes,
-                    max_depth: 8,
-                    min_rsa_bits: self.config.common.profile.min_rsa_bits(),
-                    crls: None,
-                    require_crl: false,
-                };
+                    Purpose::TlsClient,
+                    algorithms.as_slice(),
+                    x509::Limits::ONLINE,
+                );
+                opts.min_rsa_bits = self.config.common.profile.min_rsa_bits();
                 crate::client::check_pinned(leaf, sha256, &opts)?;
                 true
             }
@@ -1232,31 +1236,34 @@ impl ServerHs {
         match v {
             PeerVerification::Roots(roots) => {
                 let inter: Vec<&[u8]> = cert.chain[1..].iter().map(|c| c.as_slice()).collect();
-                let opts = x509::VerifyOptions {
+                let algorithms = crate::policy::CertAlgorithms::of(&self.config.common.schemes);
+                let mut opts = x509::VerifyOptions::new(
                     now,
-                    usage: Usage::ClientAuth,
-                    allowed_schemes: &self.config.common.schemes,
-                    max_depth: 8,
-                    min_rsa_bits: self.config.common.profile.min_rsa_bits(),
-                    crls: self.config.common.crls.as_deref(),
-                    require_crl: self.config.common.require_crl,
-                };
+                    Purpose::TlsClient,
+                    algorithms.as_slice(),
+                    x509::Limits::ONLINE,
+                );
+                opts.min_rsa_bits = self.config.common.profile.min_rsa_bits();
+                opts.crls = self.config.common.crls.as_deref();
+                opts.require_crl = self.config.common.require_crl;
                 let report = x509::verify_chain(leaf, &inter, roots, &opts)?;
                 conn::note_crl(core, report.crl_checked);
                 self.client_pq_chain = !report.schemes.is_empty()
-                    && report.schemes.iter().all(|s| s.is_post_quantum());
+                    && report
+                        .schemes
+                        .iter()
+                        .all(|s| crate::policy::is_post_quantum(*s));
                 core.report.peer_chain_min_bits = Some(report.min_classical_bits);
             }
             PeerVerification::PinnedSpki { sha256, .. } => {
-                let opts = x509::VerifyOptions {
+                let algorithms = crate::policy::CertAlgorithms::of(&self.config.common.schemes);
+                let mut opts = x509::VerifyOptions::new(
                     now,
-                    usage: Usage::ClientAuth,
-                    allowed_schemes: &self.config.common.schemes,
-                    max_depth: 8,
-                    min_rsa_bits: self.config.common.profile.min_rsa_bits(),
-                    crls: None,
-                    require_crl: false,
-                };
+                    Purpose::TlsClient,
+                    algorithms.as_slice(),
+                    x509::Limits::ONLINE,
+                );
+                opts.min_rsa_bits = self.config.common.profile.min_rsa_bits();
                 crate::client::check_pinned(leaf, sha256, &opts)?;
                 self.client_pq_chain = true;
             }
@@ -1285,7 +1292,7 @@ impl ServerHs {
             .first()
             .ok_or(Error::new(ErrorKind::Internal, "no chain"))?;
         let cert = x509::Certificate::parse(leaf)?;
-        let key = cert.subject_public_key()?;
+        let key = sign::PublicKey::from_spki(cert.spki_der())?;
         let th = core.transcript.current()?;
         let input = msgs::certificate_verify_input(false, th.as_bytes());
         sign::verify(cv.scheme, &key, &input, &cv.signature)?;
@@ -1434,7 +1441,7 @@ mod tests {
     }
 
     /// A self-signed end-entity certificate for `usage`, and its key.
-    fn certificate(cn: &str, dns: &[&str], usage: Usage) -> (Vec<u8>, SigningKey) {
+    fn certificate(cn: &str, dns: &[&str], usage: Purpose) -> (Vec<u8>, SigningKey) {
         let mut rng = ic_drbg::Rng::from_os().unwrap();
         let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
         let t = now();
@@ -1458,7 +1465,7 @@ mod tests {
     }
 
     fn configs() -> (ClientConfig, ServerConfig) {
-        let (cert, key) = certificate("s.test", &["s.test"], Usage::ServerAuth);
+        let (cert, key) = certificate("s.test", &["s.test"], Purpose::TlsServer);
         let mut roots = RootStore::new();
         roots.add_der(&cert).unwrap();
         let sc = ServerConfig::new(
@@ -1534,7 +1541,7 @@ mod tests {
     #[test]
     fn a_step_up_certificate_verify_must_use_a_requested_scheme() {
         let (cc, sc) = configs();
-        let (agent, agent_key) = certificate("agent", &[], Usage::ClientAuth);
+        let (agent, agent_key) = certificate("agent", &[], Purpose::TlsClient);
         let mut anchors = RootStore::new();
         anchors.add_der(&agent).unwrap();
         let mut cc =

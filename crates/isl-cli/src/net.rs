@@ -73,7 +73,8 @@ fn prepare(profile: Profile) -> Result<(), String> {
 /// Fetch `host`'s ECHConfigList from its DNS HTTPS record, over
 /// DNS-over-HTTPS to Cloudflare's resolver, using IronSocketLayer itself.
 pub fn fetch_ech_config(host: &str) -> Result<Vec<u8>, String> {
-    let roots = RootStore::from_system().map_err(|e| e.to_string())?;
+    let roots =
+        RootStore::from_system().map_err(|e| ironsocketlayer::Error::from(e).to_string())?;
     let config = Arc::new(ClientConfig::new(Profile::Default, roots).map_err(|e| e.to_string())?);
     let resolver = "cloudflare-dns.com";
     let sock =
@@ -202,8 +203,12 @@ pub fn tls_probe(
     let (host, port) = split_target(target)?;
     let profile = parse_profile(profile)?;
     prepare(profile)?;
-    let roots =
-        RootStore::from_system().map_err(|e| format!("{e}; set SSL_CERT_FILE to a PEM bundle"))?;
+    let roots = RootStore::from_system().map_err(|e| {
+        format!(
+            "{}; set SSL_CERT_FILE to a PEM bundle",
+            ironsocketlayer::Error::from(e)
+        )
+    })?;
     let mut config = ClientConfig::new(profile, roots).map_err(|e| e.to_string())?;
     config.common.alpn = alpn_list(alpn);
     if ech {
@@ -491,7 +496,7 @@ mod tests {
     #[test]
     fn a_stalled_connection_does_not_block_the_next() {
         use ironsocketlayer::config::PeerVerification;
-        use ironsocketlayer::x509::{self, CertificateParams, Usage};
+        use ironsocketlayer::x509::{self, CertificateParams, Purpose};
         let key_pem = include_str!("../tests/data/throwaway-p256.pem");
         let key = SigningKey::from_pem(key_pem).unwrap();
         let now = std::time::SystemTime::now()
@@ -512,7 +517,7 @@ mod tests {
                 not_after: now + 3600,
                 is_ca: false,
                 path_len: None,
-                usage: &[Usage::ServerAuth],
+                usage: &[Purpose::TlsServer],
                 serial: [9; 16],
             },
             &key,

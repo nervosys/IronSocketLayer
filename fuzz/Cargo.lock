@@ -45,18 +45,18 @@ dependencies = [
 
 [[package]]
 name = "ic-cipher"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-core"
-version = "0.2.20"
+version = "0.2.22"
 
 [[package]]
 name = "ic-drbg"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "ic-ec"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "ic-fips"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -95,14 +95,14 @@ dependencies = [
 
 [[package]]
 name = "ic-hash"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-hpke"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "ic-kdf"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "ic-lms"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mac"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mldsa"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mlkem"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -155,29 +155,42 @@ dependencies = [
 
 [[package]]
 name = "ic-ontology"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-pkix"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-rsa"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
  "ic-hash",
 ]
 
 [[package]]
+name = "ic-sig"
+version = "0.2.22"
+dependencies = [
+ "ic-core",
+ "ic-ec",
+ "ic-lms",
+ "ic-mldsa",
+ "ic-pkix",
+ "ic-rsa",
+ "ic-slhdsa",
+]
+
+[[package]]
 name = "ic-slhdsa"
-version = "0.2.20"
+version = "0.2.22"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -185,8 +198,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironpki"
+version = "0.1.0"
+dependencies = [
+ "ic-core",
+ "ic-hash",
+ "ic-pkix",
+ "ic-sig",
+]
+
+[[package]]
 name = "ironsocketlayer"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -202,6 +225,7 @@ dependencies = [
  "ic-ontology",
  "ic-pkix",
  "ic-rsa",
+ "ironpki",
  "isl-ontology",
 ]
 
@@ -217,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "isl-ontology"
-version = "0.3.4"
+version = "0.4.0"
 
 [[package]]
 name = "jobserver"

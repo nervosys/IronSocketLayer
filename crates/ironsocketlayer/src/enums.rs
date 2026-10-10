@@ -335,6 +335,52 @@ wire_enum! {
 }
 
 impl SignatureScheme {
+    /// The IronCrypto signature algorithm this scheme is, for the schemes a
+    /// certificate, CRL or OCSP response can be signed with. `None` for a
+    /// scheme this build does not verify.
+    pub const fn algorithm(self) -> Option<ic_core::sig::SignatureAlgorithm> {
+        use ic_core::sig::SignatureAlgorithm as A;
+        Some(match self {
+            Self::EcdsaSecp256r1Sha256 => A::EcdsaP256Sha256,
+            Self::EcdsaSecp384r1Sha384 => A::EcdsaP384Sha384,
+            Self::EcdsaSecp521r1Sha512 => A::EcdsaP521Sha512,
+            Self::Ed25519 => A::Ed25519,
+            Self::RsaPkcs1Sha256 => A::RsaPkcs1Sha256,
+            Self::RsaPkcs1Sha384 => A::RsaPkcs1Sha384,
+            Self::RsaPkcs1Sha512 => A::RsaPkcs1Sha512,
+            Self::RsaPssRsaeSha256 => A::RsaPssSha256,
+            Self::RsaPssRsaeSha384 => A::RsaPssSha384,
+            Self::RsaPssRsaeSha512 => A::RsaPssSha512,
+            Self::MlDsa44 => A::MlDsa44,
+            Self::MlDsa65 => A::MlDsa65,
+            Self::MlDsa87 => A::MlDsa87,
+            _ => return None,
+        })
+    }
+
+    /// The scheme that names `algorithm` in TLS 1.3, if there is one. An
+    /// RSA-PSS algorithm is the `rsa_pss_rsae` scheme: the key is an
+    /// rsaEncryption key.
+    pub const fn from_algorithm(algorithm: ic_core::sig::SignatureAlgorithm) -> Option<Self> {
+        use ic_core::sig::SignatureAlgorithm as A;
+        Some(match algorithm {
+            A::EcdsaP256Sha256 => Self::EcdsaSecp256r1Sha256,
+            A::EcdsaP384Sha384 => Self::EcdsaSecp384r1Sha384,
+            A::EcdsaP521Sha512 => Self::EcdsaSecp521r1Sha512,
+            A::Ed25519 => Self::Ed25519,
+            A::RsaPkcs1Sha256 => Self::RsaPkcs1Sha256,
+            A::RsaPkcs1Sha384 => Self::RsaPkcs1Sha384,
+            A::RsaPkcs1Sha512 => Self::RsaPkcs1Sha512,
+            A::RsaPssSha256 => Self::RsaPssRsaeSha256,
+            A::RsaPssSha384 => Self::RsaPssRsaeSha384,
+            A::RsaPssSha512 => Self::RsaPssRsaeSha512,
+            A::MlDsa44 => Self::MlDsa44,
+            A::MlDsa65 => Self::MlDsa65,
+            A::MlDsa87 => Self::MlDsa87,
+            _ => return None,
+        })
+    }
+
     /// Whether the scheme resists a quantum adversary (ML-DSA).
     pub const fn is_post_quantum(self) -> bool {
         matches!(self, Self::MlDsa44 | Self::MlDsa65 | Self::MlDsa87)

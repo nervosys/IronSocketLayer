@@ -3,6 +3,58 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## 0.4.0 (unreleased)
+
+The certificate code is now [IronPKI](https://github.com/nervosys/IronPKI),
+a separate crate that IronPrivacyGuard shares. `ironsocketlayer::x509` is
+IronPKI's `x509` module re-exported, so most code that only names its types
+keeps compiling; what changed is listed below. Handshake behaviour is
+unchanged. Requires IronPKI 0.1 and IronCrypto 0.2.21 or later, below 0.3.
+
+### Changed (breaking)
+- `x509::Usage` is `x509::Purpose`: `ServerAuth` and `ClientAuth` are
+  `TlsServer` and `TlsClient`. IronPKI adds `TpmEndorsementKey`, which a TLS
+  handshake never uses.
+- `x509::VerifyOptions::new` takes a fourth argument, `x509::Limits`, and
+  has no `max_depth` field: the bounds are `limits`. A handshake passes
+  `Limits::ONLINE`, which is the depth of 8 and the 24 signature checks this
+  crate always used. `isl verify` passes `Limits::DEFAULT`, for a chain the
+  operator chose to examine.
+- The certificate functions return `ironpki::Error`. It converts into this
+  crate's `Error` (`?` and `Error::from` both work) under the same kinds as
+  before: IronPKI's `bad-signature` and `key-algorithm-mismatch` are
+  `decrypt-error` and `illegal-parameter` here.
+- Algorithms in the certificate API are IronCrypto's `SignatureAlgorithm`,
+  not `SignatureScheme`: `VerifyOptions::allowed_schemes`,
+  `ChainReport::schemes`, `Certificate::signature_scheme`, the OCSP and CRL
+  functions. `SignatureScheme::algorithm` and `SignatureScheme::from_algorithm`
+  convert between them.
+- `Certificate::subject_public_key` returns IronCrypto's `ic_sig::PublicKey`,
+  whose `kind_id` has no `key:` prefix. This crate's
+  `crypto::sign::PublicKey::from_spki(cert.spki_der())` gives the type and
+  identifiers it gave before. `ChainReport::leaf_key` likewise has no prefix.
+- Issuance (`x509::self_signed`, `x509::issue`, `ocsp::build_response`,
+  `crl::build`) takes `&dyn ic_core::sig::Signer`. A `&SigningKey` is one; an
+  `Arc<SigningKey>` needs `&*key`.
+- A certificate with a SHA-1 signature algorithm now fails
+  `Certificate::signature_scheme` with `policy-violation`, where it used to
+  return a scheme that path validation then refused with the same error.
+- A chain of more than 64 certificates, or a certificate longer than 64 KiB,
+  is refused with `capacity-exceeded` before it is parsed.
+
+### Added
+- `SigningKey` implements `ic_core::sig::Signer` (REQ-SIG-007), so anything
+  that signs through IronCrypto's trait takes it as it is.
+- `ChainReport::anchor_subject` and `anchor_spki`, and
+  `VerifyOptions::accept_anchor_as_leaf`, from IronPKI.
+- `x509::RootStore::add` takes IronPKI's `TrustAnchor`.
+
+### Moved
+- 138 requirements and the 221 tests that verify them moved to IronPKI with
+  the code, under the identifiers they had here; `docs/TRACEABILITY.md` says
+  which stayed. The fuzz targets `pki` and `pki_differential` still run here,
+  through this crate, against IronPKI's code.
+
 ## 0.3.4 (2026-10-09)
 
 The CNSA profiles compared, clause by clause, with their TLS profiles:

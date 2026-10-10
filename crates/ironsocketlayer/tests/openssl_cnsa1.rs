@@ -95,7 +95,7 @@ fn cnsa1_accepts_an_rsa_chain_signed_with_pkcs1_sha384() {
             .unwrap()
             .signature_scheme()
             .unwrap(),
-        SignatureScheme::RsaPkcs1Sha384
+        ic_core::sig::SignatureAlgorithm::RsaPkcs1Sha384
     );
     let mut roots = RootStore::new();
     roots.add_der(&ca).unwrap();

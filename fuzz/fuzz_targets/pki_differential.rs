@@ -5,7 +5,7 @@
 //! fixture keys, so signatures always verify and every later check runs.
 #![no_main]
 
-use ironsocketlayer::x509::{self, Usage, VerifyOptions};
+use ironsocketlayer::x509::{self, Limits, Purpose, VerifyOptions};
 use isl_fuzz::{client_config, diff_pki, sign_tbs, NOW};
 use libfuzzer_sys::fuzz_target;
 
@@ -21,20 +21,26 @@ fuzz_target!(|data: &[u8]| {
     }
     let (int_tbs, leaf_tbs) = rest.split_at(n);
     let d = diff_pki();
-    let schemes = client_config().common.schemes.clone();
-    let opts = VerifyOptions {
-        now: NOW,
-        usage: if sel & 2 == 0 {
-            Usage::ServerAuth
-        } else {
-            Usage::ClientAuth
-        },
-        allowed_schemes: &schemes,
-        max_depth: 4,
-        min_rsa_bits: 2048,
-        crls: None,
-        require_crl: false,
+    let algorithms: Vec<_> = client_config()
+        .common
+        .schemes
+        .iter()
+        .filter_map(|s| s.algorithm())
+        .collect();
+    let limits = Limits {
+        max_path_len: 4,
+        ..Limits::ONLINE
     };
+    let opts = VerifyOptions::new(
+        NOW,
+        if sel & 2 == 0 {
+            Purpose::TlsServer
+        } else {
+            Purpose::TlsClient
+        },
+        &algorithms,
+        limits,
+    );
     let (leaf, ints) = if sel & 1 == 0 {
         (
             sign_tbs(leaf_tbs, &d.int_key),

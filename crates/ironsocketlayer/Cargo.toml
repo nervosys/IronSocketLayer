@@ -20,7 +20,7 @@ default = ["std"]
 std = [
     "ic-core/std", "ic-hash/std", "ic-mac/std", "ic-kdf/std", "ic-cipher/std",
     "ic-drbg/std", "ic-ec/std", "ic-rsa/std", "ic-pkix/std", "ic-hpke/std", "ic-mlkem/std",
-    "ic-mldsa/std", "ic-fips/std", "ic-ontology/std", "isl-ontology/std",
+    "ic-mldsa/std", "ic-fips/std", "ic-ontology/std", "isl-ontology/std", "ironpki/std",
 ]
 
 [dependencies]
@@ -39,3 +39,4 @@ ic-mlkem = { workspace = true }
 ic-mldsa = { workspace = true }
 ic-fips = { workspace = true }
 ic-ontology = { workspace = true }
+ironpki = { workspace = true }

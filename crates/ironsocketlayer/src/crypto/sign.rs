@@ -604,6 +604,10 @@ impl SigningKey {
                 Ok(sig.len())
             }
             KeyImpl::MlDsa(p, sk) => {
+                // Storage first: a refusal draws nothing from the rng.
+                if out.len() < with_mldsa!(*p, m, m::SIGNATURE_LEN) {
+                    return Err(capacity());
+                }
                 let mut rnd = Zeroizing::new([0u8; 32]);
                 super::fill_random(rng, rnd.get_mut())?;
                 with_mldsa!(*p, m, {
@@ -976,6 +980,63 @@ impl SigningKey {
     }
 }
 
+/// `REQ-SIG-007`: a [`SigningKey`] is an IronCrypto signer, so anything that
+/// signs through `ic_core::sig::Signer` (IronPKI's issuance of certificates,
+/// CRLs and OCSP responses, for one) takes it as it is.
+///
+/// It lists the algorithms of [`SigningKey::schemes`], in that order; signs
+/// into the caller's storage without allocating, as [`SigningKey::sign_into`]
+/// does; and refuses an algorithm it did not list with `InvalidParameter`
+/// and storage that is too short with `InvalidLength`, having written
+/// nothing and drawn nothing from the rng.
+impl ic_core::sig::Signer for SigningKey {
+    fn algorithms(&self) -> &[ic_core::sig::SignatureAlgorithm] {
+        use ic_core::sig::SignatureAlgorithm as A;
+        match &self.inner {
+            KeyImpl::P256(_) => &[A::EcdsaP256Sha256],
+            KeyImpl::P384(_) => &[A::EcdsaP384Sha384],
+            KeyImpl::P521(_) => &[A::EcdsaP521Sha512],
+            KeyImpl::Ed25519(_) => &[A::Ed25519],
+            KeyImpl::Rsa(_) => &[A::RsaPssSha256, A::RsaPssSha384, A::RsaPssSha512],
+            KeyImpl::MlDsa(MlDsa::P44, _) => &[A::MlDsa44],
+            KeyImpl::MlDsa(MlDsa::P65, _) => &[A::MlDsa65],
+            KeyImpl::MlDsa(MlDsa::P87, _) => &[A::MlDsa87],
+        }
+    }
+
+    fn public_key(&self) -> &[u8] {
+        &self.spki
+    }
+
+    fn custody(&self) -> ic_core::sig::Custody {
+        ic_core::sig::Custody::Software
+    }
+
+    fn sign(
+        &self,
+        algorithm: ic_core::sig::SignatureAlgorithm,
+        message: &[u8],
+        rng: &mut dyn RandomSource,
+        out: &mut [u8],
+    ) -> ic_core::Result<usize> {
+        use ic_core::ErrorKind as K;
+        let scheme = SignatureScheme::from_algorithm(algorithm)
+            .filter(|s| self.schemes().contains(s))
+            .ok_or(ic_core::Error::new(
+                K::InvalidParameter,
+                "the key does not sign with this algorithm",
+            ))?;
+        self.sign_into(scheme, message, rng, out)
+            .map_err(|e| match e.kind() {
+                ErrorKind::CapacityExceeded => {
+                    ic_core::Error::new(K::InvalidLength, "signature storage")
+                }
+                ErrorKind::Entropy => ic_core::Error::new(K::EntropyFailure, "random source"),
+                _ => ic_core::Error::new(K::InvalidParameter, "signing failed"),
+            })
+    }
+}
+
 struct RngRef<'a>(&'a mut dyn RandomSource);
 
 impl RandomSource for RngRef<'_> {
@@ -1138,6 +1199,77 @@ mod tests {
         assert_eq!(PublicKey::MlDsa44(&[]).classical_bits(), 128);
         assert_eq!(PublicKey::MlDsa65(&[]).classical_bits(), 192);
         assert_eq!(PublicKey::MlDsa87(&[]).classical_bits(), 256);
+    }
+
+    /// A random source that counts what is drawn from it.
+    struct Counting(ic_drbg::Rng, usize);
+
+    impl RandomSource for Counting {
+        fn fill(&mut self, out: &mut [u8]) -> ic_core::Result<()> {
+            self.1 += out.len();
+            self.0.fill(out)
+        }
+    }
+
+    /// `REQ-SIG-007`: every key signs through `ic_core::sig::Signer` what
+    /// this crate's own `verify` accepts, lists the algorithms of its
+    /// schemes in their order, and gives its SPKI. An algorithm it did not
+    /// list is `InvalidParameter`; storage one byte short is `InvalidLength`
+    /// with nothing drawn from the rng.
+    #[test]
+    fn a_signing_key_is_an_ironcrypto_signer() {
+        use ic_core::sig::{Custody, SignatureAlgorithm as A, Signer};
+        let mut rng = Counting(ic_drbg::Rng::from_os().unwrap(), 0);
+        let mut keys: Vec<SigningKey> = KeyKind::ALL
+            .iter()
+            .map(|k| SigningKey::generate(*k, &mut rng).unwrap())
+            .collect();
+        keys.push(SigningKey::rsa(ic_rsa::generate(2048, &mut rng).unwrap()).unwrap());
+        for key in &keys {
+            let signer: &dyn Signer = key;
+            let listed: Vec<SignatureScheme> = signer
+                .algorithms()
+                .iter()
+                .map(|a| SignatureScheme::from_algorithm(*a).unwrap())
+                .collect();
+            assert_eq!(listed, key.schemes(), "{}", key.kind_id());
+            assert_eq!(signer.public_key(), key.spki());
+            assert_eq!(signer.custody(), Custody::Software);
+
+            let pk = PublicKey::from_spki(signer.public_key()).unwrap();
+            for &algorithm in signer.algorithms() {
+                let mut out = vec![0u8; algorithm.max_signature_len()];
+                let n = signer.sign(algorithm, b"m", &mut rng, &mut out).unwrap();
+                let scheme = SignatureScheme::from_algorithm(algorithm).unwrap();
+                verify(scheme, &pk, b"m", &out[..n]).unwrap();
+
+                rng.1 = 0;
+                let e = signer
+                    .sign(algorithm, b"m", &mut rng, &mut out[..n - 1])
+                    .unwrap_err();
+                assert_eq!(e.kind(), ic_core::ErrorKind::InvalidLength, "{algorithm:?}");
+                assert_eq!(rng.1, 0, "{algorithm:?} drew randomness and then refused");
+            }
+            // PKCS#1 v1.5 is not listed by an RSA key here, and no key
+            // signs with another kind's algorithm.
+            let foreign = if signer.algorithms().contains(&A::Ed25519) {
+                A::EcdsaP256Sha256
+            } else {
+                A::Ed25519
+            };
+            for algorithm in [foreign, A::RsaPkcs1Sha256] {
+                let mut out = vec![0u8; 8192];
+                assert_eq!(
+                    signer
+                        .sign(algorithm, b"m", &mut rng, &mut out)
+                        .unwrap_err()
+                        .kind(),
+                    ic_core::ErrorKind::InvalidParameter,
+                    "{} with {algorithm:?}",
+                    key.kind_id()
+                );
+            }
+        }
     }
 
     /// A random source stuck on one byte value.

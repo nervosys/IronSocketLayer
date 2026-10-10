@@ -21,7 +21,7 @@ fn params<'a>(
     cn: &'a str,
     dns: &'a [&'a str],
     ca: bool,
-    usage: &'a [Usage],
+    usage: &'a [Purpose],
 ) -> CertificateParams<'a> {
     let t = now();
     CertificateParams {
@@ -44,7 +44,7 @@ fn chain() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let ca = x509::self_signed(&params("Test CA", &[], true, &[]), &ca_key, &mut *r).unwrap();
     let key = SigningKey::generate(KeyKind::EcdsaP256, &mut *r).unwrap();
     let leaf = x509::issue(
-        &params("api", &["api.test"], false, &[Usage::ServerAuth]),
+        &params("api", &["api.test"], false, &[Purpose::TlsServer]),
         key.spki(),
         &ca,
         &ca_key,

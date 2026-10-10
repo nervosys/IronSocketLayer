@@ -14,7 +14,7 @@
      │ record         record layer, nonces, limits      │   └───────┬────────────┘
      │ msgs · codec   handshake messages, wire codec    │           │ builtOn
      │ key_schedule   RFC 8446 §7 key schedule, exporter│           ▼
-     │ x509           path validation, names, builder   │   ┌────────────────────┐
+     │ x509           IronPKI, re-exported              │   ┌────────────────────┐
      │ config·policy  profiles, FIPS gate               │   │  ic-ontology       │
      │ report         SessionReport, properties, events │   │  (IronCrypto)      │
      │ crypto/        the only module naming IronCrypto ├──►│                    │

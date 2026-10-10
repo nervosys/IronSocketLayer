@@ -37,7 +37,7 @@ use crate::msgs::{
 use crate::record::suite_params;
 use crate::report::HandshakeState as S;
 use crate::resumption::{PeerSummary, StoredTicket, PSK_DHE_KE};
-use crate::x509::{self, ServerName, Usage};
+use crate::x509::{self, Purpose, ServerName};
 
 /// Owned form of the name the client connects to.
 #[derive(Debug, Clone)]
@@ -1030,36 +1030,39 @@ impl ClientHs {
         match &self.config.verification {
             PeerVerification::Roots(roots) => {
                 let inter: Vec<&[u8]> = cert.chain[1..].iter().map(|c| c.as_slice()).collect();
-                let opts = x509::VerifyOptions {
+                let algorithms = crate::policy::CertAlgorithms::of(&self.config.common.schemes);
+                let mut opts = x509::VerifyOptions::new(
                     now,
-                    usage: Usage::ServerAuth,
-                    allowed_schemes: &self.config.common.schemes,
-                    max_depth: 8,
-                    min_rsa_bits: self.config.common.profile.min_rsa_bits(),
-                    crls: self.config.common.crls.as_deref(),
-                    require_crl: self.config.common.require_crl,
-                };
+                    Purpose::TlsServer,
+                    algorithms.as_slice(),
+                    x509::Limits::ONLINE,
+                );
+                opts.min_rsa_bits = self.config.common.profile.min_rsa_bits();
+                opts.crls = self.config.common.crls.as_deref();
+                opts.require_crl = self.config.common.require_crl;
                 let chain = x509::verify_chain(leaf, &inter, roots, &opts)?;
                 self.name_check(leaf)?;
                 self.check_revocation(core, cert.ocsp.as_deref(), leaf, &chain, now)?;
                 conn::note_crl(core, chain.crl_checked);
-                self.pq_chain =
-                    !chain.schemes.is_empty() && chain.schemes.iter().all(|s| s.is_post_quantum());
+                self.pq_chain = !chain.schemes.is_empty()
+                    && chain
+                        .schemes
+                        .iter()
+                        .all(|s| crate::policy::is_post_quantum(*s));
                 core.report.peer_chain_min_bits = Some(chain.min_classical_bits);
             }
             PeerVerification::PinnedSpki {
                 sha256,
                 check_names,
             } => {
-                let opts = x509::VerifyOptions {
+                let algorithms = crate::policy::CertAlgorithms::of(&self.config.common.schemes);
+                let mut opts = x509::VerifyOptions::new(
                     now,
-                    usage: Usage::ServerAuth,
-                    allowed_schemes: &self.config.common.schemes,
-                    max_depth: 8,
-                    min_rsa_bits: self.config.common.profile.min_rsa_bits(),
-                    crls: None,
-                    require_crl: false,
-                };
+                    Purpose::TlsServer,
+                    algorithms.as_slice(),
+                    x509::Limits::ONLINE,
+                );
+                opts.min_rsa_bits = self.config.common.profile.min_rsa_bits();
                 check_pinned(leaf, sha256, &opts)?;
                 if *check_names {
                     self.name_check(leaf)?;
@@ -1114,7 +1117,7 @@ impl ClientHs {
             &chain.issuer_subject,
             &chain.issuer_spki,
             now,
-            &self.config.common.schemes,
+            crate::policy::CertAlgorithms::of(&self.config.common.schemes).as_slice(),
         )?;
         core.report.revocation = v.status.id();
         core.report.event("event:ocsp-verified", v.status.id());
@@ -1135,14 +1138,17 @@ impl ClientHs {
         // REQ-ECH-003: after rejection the server speaks for the public name.
         if let Some(st) = &self.ech {
             if st.status == EchStatus::Rejected {
-                return x509::verify_name(leaf, &ServerName::Dns(&st.config.public_name));
+                return Ok(x509::verify_name(
+                    leaf,
+                    &ServerName::Dns(&st.config.public_name),
+                )?);
             }
         }
         let name = match &self.name {
             TargetName::Dns(d) => ServerName::Dns(d),
             TargetName::Ip(ip) => ServerName::Ip(*ip),
         };
-        x509::verify_name(leaf, &name)
+        Ok(x509::verify_name(leaf, &name)?)
     }
 
     fn on_certificate_verify(&mut self, core: &mut Core, body: &[u8], msg: &[u8]) -> Result<()> {
@@ -1158,7 +1164,7 @@ impl ClientHs {
             .first()
             .ok_or(Error::new(ErrorKind::Internal, "no chain"))?;
         let cert = x509::Certificate::parse(leaf)?;
-        let key = cert.subject_public_key()?;
+        let key = sign::PublicKey::from_spki(cert.spki_der())?;
         let th = core.transcript.current()?;
         let input = msgs::certificate_verify_input(true, th.as_bytes());
         sign::verify(cv.scheme, &key, &input, &cv.signature)?;
@@ -1493,7 +1499,7 @@ pub(crate) fn check_pinned(
             "peer key is not the pinned key",
         ));
     }
-    x509::check_leaf_fixed(leaf, opts)
+    Ok(x509::check_leaf_fixed(leaf, opts)?)
 }
 
 /// Groups a client sends shares for first, for a given config (used by tests).

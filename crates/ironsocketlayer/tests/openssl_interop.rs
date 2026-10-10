@@ -599,7 +599,7 @@ fn openssl_honours_our_crls() {
 #[test]
 #[ignore = "needs openssl 3.5+ on PATH"]
 fn our_path_validation_honours_openssl_crls() {
-    use ironsocketlayer::x509::{self, crl::CrlStore, Usage, VerifyOptions};
+    use ironsocketlayer::x509::{self, crl::CrlStore, Purpose, VerifyOptions};
     for flag in ['V', 'R'] {
         let dir = workdir(&format!("crl-openssl-{flag}"));
         openssl_ocsp_fixture(&dir, flag, "");
@@ -636,15 +636,16 @@ fn our_path_validation_honours_openssl_crls() {
         let leaf = pem_to_der(&std::fs::read_to_string(dir.join("leaf.pem")).unwrap());
         let mut opts = VerifyOptions::new(
             common::now(),
-            Usage::ServerAuth,
-            ironsocketlayer::crypto::sign::VERIFY_SCHEMES,
+            Purpose::TlsServer,
+            x509::VERIFY_ALGORITHMS,
+            x509::Limits::DEFAULT,
         );
         opts.crls = Some(&crls);
         opts.require_crl = true;
         let r = x509::verify_chain(&leaf, &[], &roots, &opts);
         match flag {
             'R' => assert_eq!(
-                r.unwrap_err().kind(),
+                ironsocketlayer::Error::from(r.unwrap_err()).kind(),
                 ironsocketlayer::ErrorKind::CertificateRevoked
             ),
             _ => assert!(r.unwrap().crl_checked),

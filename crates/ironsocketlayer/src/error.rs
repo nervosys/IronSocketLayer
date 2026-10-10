@@ -408,6 +408,33 @@ impl fmt::Display for Error {
 #[cfg(feature = "std")]
 impl std::error::Error for Error {}
 
+/// An IronPKI error is the same failure under this crate's names, which are
+/// the TLS alerts': a signature that did not verify is `decrypt_error`, and
+/// a key used with an algorithm it is not a key for is `illegal_parameter`.
+impl From<ironpki::Error> for Error {
+    fn from(e: ironpki::Error) -> Self {
+        use ironpki::ErrorKind as K;
+        let kind = match e.kind() {
+            K::BadCertificate => ErrorKind::BadCertificate,
+            K::UnsupportedCertificate => ErrorKind::UnsupportedCertificate,
+            K::CertificateExpired => ErrorKind::CertificateExpired,
+            K::CertificateRevoked => ErrorKind::CertificateRevoked,
+            K::CertificateUsage => ErrorKind::CertificateUsage,
+            K::CertificateNameMismatch => ErrorKind::CertificateNameMismatch,
+            K::UnknownCa => ErrorKind::UnknownCa,
+            K::BadCertificateStatus => ErrorKind::BadCertificateStatus,
+            K::PolicyViolation => ErrorKind::PolicyViolation,
+            K::BadSignature => ErrorKind::DecryptError,
+            K::KeyAlgorithmMismatch => ErrorKind::IllegalParameter,
+            K::InvalidConfig => ErrorKind::InvalidConfig,
+            K::CapacityExceeded => ErrorKind::CapacityExceeded,
+            K::Crypto => ErrorKind::Crypto,
+            _ => ErrorKind::Internal,
+        };
+        Error::new(kind, e.context())
+    }
+}
+
 impl From<ic_core::Error> for Error {
     fn from(e: ic_core::Error) -> Self {
         use ic_core::ErrorKind as K;

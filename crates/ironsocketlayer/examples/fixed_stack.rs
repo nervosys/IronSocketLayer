@@ -24,7 +24,7 @@ use ironsocketlayer::config::{
 use ironsocketlayer::crypto::sign::{KeyKind, SigningKey};
 use ironsocketlayer::enums::{NamedGroup, SignatureScheme};
 use ironsocketlayer::fixed::{Connection, Limits, Storage};
-use ironsocketlayer::x509::{self, CertificateParams, RootStore, Usage};
+use ironsocketlayer::x509::{self, CertificateParams, Purpose, RootStore};
 use std::process::Command;
 
 /// What a probe runs on its measured thread.
@@ -107,7 +107,7 @@ fn cert(
     cn: &str,
     names: &[&str],
     ca: bool,
-    usage: &[Usage],
+    usage: &[Purpose],
     spki: &[u8],
     issuer: Option<(&[u8], &SigningKey)>,
     key: &SigningKey,
@@ -133,7 +133,7 @@ fn cert(
 fn configs(kind: KeyKind, group: NamedGroup) -> (ClientConfig, ServerConfig) {
     let ca_key = SigningKey::generate(kind, &mut rng()).unwrap();
     let ca = cert("Stack Root", &[], true, &[], &[], None, &ca_key);
-    let leaf = |cn: &str, names: &[&str], usage: Usage| {
+    let leaf = |cn: &str, names: &[&str], usage: Purpose| {
         let key = SigningKey::generate(kind, &mut rng()).unwrap();
         let c = cert(
             cn,
@@ -151,10 +151,10 @@ fn configs(kind: KeyKind, group: NamedGroup) -> (ClientConfig, ServerConfig) {
     let mut cc = ClientConfig::new(Profile::Default, roots.clone()).unwrap();
     let mut sc = ServerConfig::new(
         Profile::Default,
-        leaf("server.test", &["server.test"], Usage::ServerAuth),
+        leaf("server.test", &["server.test"], Purpose::TlsServer),
     )
     .unwrap();
-    cc.identity = Some(leaf("device", &[], Usage::ClientAuth));
+    cc.identity = Some(leaf("device", &[], Purpose::TlsClient));
     sc.client_auth = ClientAuth::Required(PeerVerification::Roots(roots));
     cc.tickets = None;
     sc.tickets = None;

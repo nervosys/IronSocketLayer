@@ -318,7 +318,7 @@ fn main() {
                 not_after: NOW + 86_400,
                 is_ca: false,
                 path_len: None,
-                usage: &[ironsocketlayer::x509::Usage::ServerAuth],
+                usage: &[ironsocketlayer::x509::Purpose::TlsServer],
                 serial: [3; 16],
             },
             &key,

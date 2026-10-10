@@ -155,7 +155,14 @@ trust or security decision: report it, do not resolve it yourself.
   KEM and signature comes from IronCrypto through `src/crypto/`. If you need an
   algorithm IronCrypto lacks, add it there, with its ontology entry and
   self-test, not here.
-- **Zero third-party dependencies**, as in IronCrypto.
+- **No certificate rule is implemented here.** Parsing, path validation,
+  name constraints, CRLs, OCSP responses and issuance are IronPKI's,
+  re-exported as `ironsocketlayer::x509`. A change to how a certificate is
+  read or judged goes there, with its requirement and test. What stays here
+  is what a handshake does with the result: which algorithms a profile
+  allows, the bounds a peer's chain is held to, pinning, the staple policy.
+- **Zero third-party dependencies**, as in IronCrypto. IronCrypto and
+  IronPKI are the only ones.
 - **`no_std + alloc` first.** Anything needing `std` goes behind the `std`
   feature. Check: `cargo build -p ironsocketlayer --no-default-features --target thumbv7em-none-eabihf`.
 - **Nothing panics on peer input.** Return `Error`. No `unwrap`, indexing or

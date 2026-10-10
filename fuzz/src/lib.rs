@@ -14,7 +14,7 @@ use ironsocketlayer::config::{
 use ironsocketlayer::crypto::sign::{KeyKind, SigningKey};
 use ironsocketlayer::crypto::HashAlg;
 use ironsocketlayer::ech::EchServer;
-use ironsocketlayer::x509::{self, CertificateParams, RootStore, Usage};
+use ironsocketlayer::x509::{self, CertificateParams, Purpose, RootStore};
 use ironsocketlayer::Result;
 
 /// 2026-09-28T00:00:00Z. Certificates are valid for a day either side.
@@ -84,7 +84,7 @@ pub fn pki() -> &'static Pki {
                 not_after: NOW + 86_400,
                 is_ca: false,
                 path_len: None,
-                usage: &[Usage::ServerAuth],
+                usage: &[Purpose::TlsServer],
                 serial: [2; 16],
             },
             leaf_key.spki(),

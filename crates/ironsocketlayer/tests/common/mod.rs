@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use ironsocketlayer::config::{ClientConfig, Identity, Profile, ServerConfig};
 use ironsocketlayer::crypto::sign::{KeyKind, SigningKey};
-use ironsocketlayer::x509::{self, CertificateParams, RootStore, Usage};
+use ironsocketlayer::x509::{self, CertificateParams, Purpose, RootStore};
 use ironsocketlayer::{Connection, Error};
 
 pub fn now() -> u64 {
@@ -63,7 +63,7 @@ impl Pki {
             server_chain: vec![],
             server_key: Arc::new(SigningKey::generate(server_kind, &mut r).unwrap()),
         };
-        pki.server_chain = vec![pki.issue_leaf(&pki.server_key, name, Usage::ServerAuth)];
+        pki.server_chain = vec![pki.issue_leaf(&pki.server_key, name, Purpose::TlsServer)];
         pki
     }
 
@@ -76,17 +76,17 @@ impl Pki {
             server_chain: vec![],
             server_key: Arc::new(SigningKey::generate(server_kind, &mut r).unwrap()),
         };
-        pki.server_chain = vec![pki.issue_leaf(&pki.server_key, name, Usage::ServerAuth)];
+        pki.server_chain = vec![pki.issue_leaf(&pki.server_key, name, Purpose::TlsServer)];
         pki
     }
 
-    fn issue_leaf(&self, key: &SigningKey, name: &str, usage: Usage) -> Vec<u8> {
+    fn issue_leaf(&self, key: &SigningKey, name: &str, usage: Purpose) -> Vec<u8> {
         let t = now();
         let names = [name];
         x509::issue(
             &CertificateParams {
                 subject_cn: name,
-                dns_names: if usage == Usage::ServerAuth {
+                dns_names: if usage == Purpose::TlsServer {
                     &names
                 } else {
                     &[]
@@ -101,7 +101,7 @@ impl Pki {
             },
             key.spki(),
             &self.ca_cert,
-            &self.ca_key,
+            &*self.ca_key,
             &mut rng(),
         )
         .unwrap()
@@ -117,7 +117,7 @@ impl Pki {
         ironsocketlayer::x509::ocsp::build_response(
             &self.server_chain[0],
             &self.ca_cert,
-            &self.ca_key,
+            &*self.ca_key,
             status,
             this,
             next,
@@ -139,12 +139,12 @@ impl Pki {
                 not_after: t + 86_400,
                 is_ca: false,
                 path_len: None,
-                usage: &[Usage::ServerAuth],
+                usage: &[Purpose::TlsServer],
                 serial: serial(),
             },
             key.spki(),
             &self.ca_cert,
-            &self.ca_key,
+            &*self.ca_key,
             &mut rng(),
         )
         .unwrap();
@@ -157,7 +157,7 @@ impl Pki {
         let revoked: Vec<(&[u8], u64)> = serials.iter().map(|s| (*s, t - 10)).collect();
         x509::crl::build(
             &self.ca_cert,
-            &self.ca_key,
+            &*self.ca_key,
             &revoked,
             t - 60,
             t + 3600,
@@ -192,7 +192,7 @@ impl Pki {
 
     pub fn client_identity(&self, kind: KeyKind, cn: &str) -> Identity {
         let key = SigningKey::generate(kind, &mut rng()).unwrap();
-        let cert = self.issue_leaf(&key, cn, Usage::ClientAuth);
+        let cert = self.issue_leaf(&key, cn, Purpose::TlsClient);
         Identity::new(vec![cert], key).unwrap()
     }
 

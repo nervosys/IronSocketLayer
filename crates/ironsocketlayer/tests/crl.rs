@@ -10,7 +10,7 @@ use ironsocketlayer::crypto::sign::{KeyKind, SigningKey};
 use ironsocketlayer::enums::AlertDescription;
 use ironsocketlayer::report::Property;
 use ironsocketlayer::x509::crl::CrlStore;
-use ironsocketlayer::x509::{self, Certificate, CertificateParams, Usage};
+use ironsocketlayer::x509::{self, Certificate, CertificateParams, Purpose};
 use ironsocketlayer::ErrorKind;
 
 fn store(crl: &[u8]) -> Arc<CrlStore> {
@@ -132,7 +132,7 @@ fn a_revoked_intermediate_revokes_the_path() {
             not_after: t + 86_400,
             is_ca: false,
             path_len: None,
-            usage: &[Usage::ServerAuth],
+            usage: &[Purpose::TlsServer],
             serial: [0x55; 16],
         },
         leaf_key.spki(),

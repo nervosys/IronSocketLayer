@@ -1357,7 +1357,7 @@ mod tests {
     use super::*;
     use crate::config::{ClientConfig, Identity, Profile, ServerConfig};
     use crate::crypto::sign::{KeyKind, SigningKey};
-    use crate::x509::{self, CertificateParams, RootStore, Usage};
+    use crate::x509::{self, CertificateParams, Purpose, RootStore};
 
     fn configs() -> (Arc<ClientConfig>, Arc<ServerConfig>) {
         let mut rng = ic_drbg::Rng::from_os().unwrap();
@@ -1375,7 +1375,7 @@ mod tests {
                 not_after: now + 3600,
                 is_ca: false,
                 path_len: None,
-                usage: &[Usage::ServerAuth],
+                usage: &[Purpose::TlsServer],
                 serial: [1; 16],
             },
             &key,
@@ -2321,7 +2321,7 @@ pub(crate) fn describe_peer(core: &mut Core, leaf: &[u8]) {
         core.report
             .peer_names
             .extend(cert.ip_addresses().iter().map(|ip| alloc::format!("{ip}")));
-        if let Ok(k) = cert.subject_public_key() {
+        if let Ok(k) = crate::crypto::sign::PublicKey::from_spki(cert.spki_der()) {
             core.report.peer_key = Some(k.kind_id());
         }
     }
