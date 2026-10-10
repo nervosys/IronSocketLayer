@@ -533,6 +533,22 @@ pub fn push_tlv(out: &mut Vec<u8>, tag: u8, body: &[u8]) {
     out.extend_from_slice(body);
 }
 
+/// Write a fixed-width ECDSA signature to `out` as DER, without allocating.
+///
+/// The signature is encoded into a scratch buffer of the encoding's bound
+/// and then measured: a real signature can be shorter than that bound (a
+/// P-521 signature is at most 139 bytes, and the bound for 132 bytes of
+/// input is larger), so comparing the caller's buffer with the bound would
+/// refuse storage that is long enough. `REQ-FIX-002`.
+fn ecdsa_der_into<const N: usize>(fixed: &[u8], out: &mut [u8]) -> Result<usize> {
+    let mut der = [0u8; N];
+    let n = ic_pkix::ecdsa_signature::to_der(fixed, &mut der)?;
+    out.get_mut(..n)
+        .ok_or(Error::new(ErrorKind::CapacityExceeded, "signature storage"))?
+        .copy_from_slice(&der[..n]);
+    Ok(n)
+}
+
 impl SigningKey {
     /// Sign into caller storage using the initialized key. `REQ-FIX-002`.
     /// No allocation occurs; `out` must accommodate the scheme's largest signature.
@@ -552,28 +568,19 @@ impl SigningKey {
         let capacity = || Error::new(ErrorKind::CapacityExceeded, "signature storage");
         match &self.inner {
             KeyImpl::P256(sk) => {
-                if out.len() < ic_pkix::ecdsa_signature::max_der_len(64) {
-                    return Err(capacity());
-                }
                 let mut sig = [0u8; 64];
                 ic_ec::EcdsaP256Sha256::sign(sk.get(), message, &mut sig)?;
-                Ok(ic_pkix::ecdsa_signature::to_der(&sig, out)?)
+                ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(64) }>(&sig, out)
             }
             KeyImpl::P384(sk) => {
-                if out.len() < ic_pkix::ecdsa_signature::max_der_len(96) {
-                    return Err(capacity());
-                }
                 let mut sig = [0u8; 96];
                 ic_ec::EcdsaP384Sha384::sign(sk.get(), message, &mut sig)?;
-                Ok(ic_pkix::ecdsa_signature::to_der(&sig, out)?)
+                ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(96) }>(&sig, out)
             }
             KeyImpl::P521(sk) => {
-                if out.len() < ic_pkix::ecdsa_signature::max_der_len(132) {
-                    return Err(capacity());
-                }
                 let mut sig = [0u8; 132];
                 ic_ec::p521::EcdsaP521Sha512::sign(sk.get(), message, &mut sig)?;
-                Ok(ic_pkix::ecdsa_signature::to_der(&sig, out)?)
+                ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(132) }>(&sig, out)
             }
             KeyImpl::Ed25519(k) => {
                 k.sign(message, out.get_mut(..64).ok_or_else(capacity)?)?;
@@ -1169,28 +1176,28 @@ mod tests {
     }
 
     /// `REQ-FIX-002`, `REQ-SIG-001`: signing into caller storage refuses a
-    /// scheme the key cannot produce, and storage shorter than the scheme's
-    /// largest DER signature, before signing; storage of exactly that length
-    /// holds a signature that verifies.
+    /// scheme the key cannot produce, and storage shorter than the signature;
+    /// storage as long as the scheme's longest real signature (72, 104 and
+    /// 139 bytes) holds one that verifies.
     #[test]
     fn sign_into_refuses_a_foreign_scheme_and_short_storage() {
         let mut rng = ic_drbg::Rng::from_os().unwrap();
         let mut out = [0u8; 512];
-        for (kind, scheme, fixed) in [
+        for (kind, scheme, longest) in [
             (
                 KeyKind::EcdsaP256,
                 SignatureScheme::EcdsaSecp256r1Sha256,
-                64,
+                72,
             ),
             (
                 KeyKind::EcdsaP384,
                 SignatureScheme::EcdsaSecp384r1Sha384,
-                96,
+                104,
             ),
             (
                 KeyKind::EcdsaP521,
                 SignatureScheme::EcdsaSecp521r1Sha512,
-                132,
+                139,
             ),
         ] {
             let key = SigningKey::generate(kind, &mut rng).unwrap();
@@ -1201,17 +1208,23 @@ mod tests {
                 ErrorKind::InvalidConfig,
                 "{kind:?}"
             );
-            let max = ic_pkix::ecdsa_signature::max_der_len(fixed);
+            // ECDSA here is deterministic, so the same message signs to
+            // the same length each time.
+            let n = key.sign_into(scheme, b"m", &mut rng, &mut out).unwrap();
+            assert!(n <= longest, "{kind:?}: {n}");
             assert_eq!(
-                key.sign_into(scheme, b"m", &mut rng, &mut out[..max - 1])
+                key.sign_into(scheme, b"m", &mut rng, &mut out[..n - 1])
                     .unwrap_err()
                     .kind(),
                 ErrorKind::CapacityExceeded,
                 "{kind:?}"
             );
-            let n = key
-                .sign_into(scheme, b"m", &mut rng, &mut out[..max])
+            // Storage of the longest real signature is enough, though the
+            // encoding's bound for this width may be larger.
+            let m = key
+                .sign_into(scheme, b"m", &mut rng, &mut out[..longest])
                 .unwrap();
+            assert_eq!(m, n);
             let pk = PublicKey::from_spki(key.spki()).unwrap();
             verify(scheme, &pk, b"m", &out[..n]).unwrap();
         }
