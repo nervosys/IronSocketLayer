@@ -1,5 +1,8 @@
 //! What the CNSA profiles refuse beyond their algorithm lists: RFC 9151 for
 //! `profile:cnsa-1`, draft-becker-cnsa2-tls-profile-05 for `profile:cnsa-2`.
+//! And what they refuse of a chain by their algorithm lists, as the
+//! certificate profiles require: RFC 8603 and
+//! draft-jenkins-cnsa2-pkix-profile-05.
 //!
 //! Approved mode is process-global, so this is its own test binary, with the
 //! module brought up first in its one test.
@@ -191,6 +194,112 @@ fn the_cnsa_profiles_refuse_what_their_tls_profiles_forbid() {
             assert!(s.report().has(Property::MutualAuthentication));
         } else {
             assert_eq!(outcome.unwrap_err().kind(), ErrorKind::PolicyViolation);
+        }
+    }
+
+    // The certificate profiles the two TLS profiles defer to (RFC 8603
+    // section 4; draft-jenkins-cnsa2-pkix-profile-05 section 4) have every
+    // certificate signed with the suite's own algorithm: ECDSA P-384 or RSA
+    // with SHA-384 for CNSA 1.0, ML-DSA-87 for 2.0. A leaf key the profile
+    // allows does not carry a chain whose CA signed with anything else. The
+    // server is under another profile, so that it will present the chain.
+    let presents = |ca: KeyKind, leaf: KeyKind, group| {
+        let p = Pki::with_kinds(ca, leaf, "server.test");
+        let mut sc = p.server_config(Profile::Fips140_3);
+        sc.common.groups = vec![group];
+        sc.common.suites = vec![ironsocketlayer::enums::CipherSuite::TlsAes256GcmSha384];
+        (p, Arc::new(sc))
+    };
+    use ironsocketlayer::enums::NamedGroup;
+    let profile_allows = |profile, leaf| {
+        leaf == if profile == Profile::Cnsa1 {
+            KeyKind::EcdsaP384
+        } else {
+            KeyKind::MlDsa87
+        }
+    };
+    for (profile, group, ca, leaf, accepted) in [
+        (
+            Profile::Cnsa1,
+            NamedGroup::Secp384r1,
+            KeyKind::EcdsaP384,
+            KeyKind::EcdsaP384,
+            true,
+        ),
+        (
+            Profile::Cnsa1,
+            NamedGroup::Secp384r1,
+            KeyKind::EcdsaP256,
+            KeyKind::EcdsaP384,
+            false,
+        ),
+        (
+            Profile::Cnsa1,
+            NamedGroup::Secp384r1,
+            KeyKind::EcdsaP521,
+            KeyKind::EcdsaP384,
+            false,
+        ),
+        (
+            Profile::Cnsa1,
+            NamedGroup::Secp384r1,
+            KeyKind::MlDsa87,
+            KeyKind::EcdsaP384,
+            false,
+        ),
+        (
+            Profile::Cnsa1,
+            NamedGroup::Secp384r1,
+            KeyKind::EcdsaP384,
+            KeyKind::EcdsaP256,
+            false,
+        ),
+        (
+            Profile::Cnsa2,
+            NamedGroup::MlKem1024,
+            KeyKind::MlDsa87,
+            KeyKind::MlDsa87,
+            true,
+        ),
+        (
+            Profile::Cnsa2,
+            NamedGroup::MlKem1024,
+            KeyKind::MlDsa65,
+            KeyKind::MlDsa87,
+            false,
+        ),
+        (
+            Profile::Cnsa2,
+            NamedGroup::MlKem1024,
+            KeyKind::EcdsaP384,
+            KeyKind::MlDsa87,
+            false,
+        ),
+        (
+            Profile::Cnsa2,
+            NamedGroup::MlKem1024,
+            KeyKind::MlDsa87,
+            KeyKind::MlDsa65,
+            false,
+        ),
+    ] {
+        let (p, server) = presents(ca, leaf, group);
+        let outcome = connect(Arc::new(p.client_config(profile)), server, "server.test");
+        let what = format!("{profile:?}: a {leaf:?} leaf under a {ca:?} CA");
+        match outcome {
+            Ok(_) => assert!(accepted, "{what} was accepted"),
+            Err(f) => {
+                assert!(!accepted, "{what}: {:?}", f.client);
+                // A chain signed outside the suite is this client's refusal;
+                // a leaf key outside it leaves the server nothing to sign
+                // with, and the server says so.
+                let expected = if profile_allows(profile, leaf) {
+                    ErrorKind::PolicyViolation
+                } else {
+                    ErrorKind::PeerAlert
+                };
+                assert_eq!(f.client.map(|e| e.kind()), Some(expected), "{what}");
+            }
         }
     }
 }

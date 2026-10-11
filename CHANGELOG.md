@@ -3,6 +3,38 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## Unreleased
+
+### Verification
+- The CNSA profiles were compared with the certificate profiles their TLS
+  profiles defer to: RFC 8603 for `profile:cnsa-1` and
+  draft-jenkins-cnsa2-pkix-profile-05 for `profile:cnsa-2`. No change to
+  the library. What a relying party can check of them was already
+  enforced, and `tests/cnsa.rs` now shows it: a chain whose CA signed with
+  anything but the suite's algorithm (ECDSA P-384 or RSA with SHA-384;
+  ML-DSA-87) is refused with `policy-violation` although the leaf's key is
+  one the profile allows, and a leaf key outside the suite leaves the
+  server nothing to sign with. HashML-DSA and RSA exponents of 2^256 or
+  more are not accepted under any profile.
+
+### Not covered
+- Both certificate profiles require a relying party to be prepared to
+  process `policyMappings`, `policyConstraints` and `inhibitAnyPolicy`
+  (RFC 8603 section 6.2; the draft, section 7.2). IronPKI does not process
+  certificate policies: a path with a critical one of these is refused,
+  and a non-critical one is ignored. A deployment whose CAs use them is
+  not served by either CNSA profile here.
+- "Every CNSA Suite certificate" is to carry a key of the suite. That is
+  held for the certificates a path uses, and for RSA keys on any
+  certificate presented (REQ-CFG-008). A certificate that is presented but
+  not used, with an elliptic-curve or ML-DSA key outside the suite, is not
+  refused for it.
+- What the profiles ask of an issuer is not checked on receipt: that key
+  identifiers are present, that key usage is critical with exactly the
+  listed bits, that a self-signed CA has no path length.
+- OCSP responses built here identify the certificate with a SHA-256 hash;
+  the CNSA 2.0 draft has hashing outside ML-DSA use SHA-384 or SHA-512.
+
 ## 0.4.0 (2026-10-10)
 
 The certificate code is now [IronPKI](https://github.com/nervosys/IronPKI),
