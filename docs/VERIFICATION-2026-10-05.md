@@ -530,3 +530,29 @@ interop (6) passed against OpenSSL 3.5.7; the QEMU Cortex-M4 run passed
 `tls_client` 26,562, `fixed_server` 193,803, `fixed_client` 47,777; the two
 certificate targets were not repeated, their code being unchanged since the
 91 s runs above.
+
+### Release 0.4.1
+
+IronPKI 0.1.3 (published 2026-10-11 from 1cb559f), over IronCrypto 0.2.24:
+certificate policy processing, the CNSA suite-key rule for every
+certificate presented (REQ-CFG-009) and SHA-384 CertIDs in built OCSP
+responses. Run on the release commit. On Windows: 475 tests passed; fmt,
+clippy, the Cortex-M4 `no_std` build and the Rust 1.88 build passed;
+`openssl_interop` (14), `openssl_fixed` (5), `openssl_cnsa2` (1),
+`openssl_cnsa1` (1) and live interop (6) passed against OpenSSL 3.5.7. On
+Linux (WSL Debian, rustc 1.95.0): 475 passed.
+
+The QEMU Cortex-M4 run passed, with no allocation after initialization.
+The largest session stack is 35,980 bytes (ML-DSA-87), 1,464 more than in
+0.4.0: the fixed-capacity engine's path validation now processes
+certificate policies, which it does without allocating.
+
+Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
+83,218 runs, `tls_client` 24,467, `fixed_server` 153,979, `fixed_client`
+34,512, `pki` 401,172, `pki_differential` 179,406. The two certificate
+targets here do not put policy extensions in their fixtures; IronPKI's own
+do, and ran five minutes each before its release.
+
+Mutation checks: with `profile:cnsa-1` back on the RSA-only key rule, and
+with the `profile:cnsa-2` rule dropped, `tests/cnsa.rs` fails; widening
+either profile's schemes fails the same test.

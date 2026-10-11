@@ -3,7 +3,7 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## 0.4.1 (not released)
+## 0.4.1 (2026-10-11)
 
 The CNSA profiles are brought into line with the certificate profiles
 their TLS profiles defer to: RFC 8603 for `profile:cnsa-1` and
