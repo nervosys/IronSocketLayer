@@ -30,7 +30,12 @@ fn psk() -> ExternalPsk {
 /// needs: it only rides along in a Certificate message.
 fn stray_rsa_certificate(bits: usize) -> Vec<u8> {
     let mut rng = ic_drbg::Rng::from_os().unwrap();
-    let key = SigningKey::rsa(ic_rsa::generate(bits, &mut rng).unwrap()).unwrap();
+    stray_certificate(&SigningKey::rsa(ic_rsa::generate(bits, &mut rng).unwrap()).unwrap())
+}
+
+/// A CA certificate for `key`, which nothing on a path needs.
+fn stray_certificate(key: &SigningKey) -> Vec<u8> {
+    let mut rng = ic_drbg::Rng::from_os().unwrap();
     x509::self_signed(
         &CertificateParams {
             subject_cn: "Stray RSA CA",
@@ -43,7 +48,7 @@ fn stray_rsa_certificate(bits: usize) -> Vec<u8> {
             usage: &[],
             serial: [7; 16],
         },
-        &key,
+        key,
         &mut rng,
     )
     .unwrap()
@@ -194,6 +199,73 @@ fn the_cnsa_profiles_refuse_what_their_tls_profiles_forbid() {
             assert!(s.report().has(Property::MutualAuthentication));
         } else {
             assert_eq!(outcome.unwrap_err().kind(), ErrorKind::PolicyViolation);
+        }
+    }
+
+    // REQ-CFG-009: every certificate a peer presents under a CNSA profile
+    // carries a key of the suite, whether the path uses it or not (RFC 8603
+    // section 4.1; draft-jenkins-cnsa2-pkix-profile-05 section 4). The
+    // same certificate riding along under another profile is no objection.
+    let stray = |kind| {
+        stray_certificate(
+            &SigningKey::generate(kind, &mut ic_drbg::Rng::from_os().unwrap()).unwrap(),
+        )
+    };
+    for (profile, p, kind, accepted) in [
+        (Profile::Cnsa1, &pki, KeyKind::EcdsaP384, true),
+        (Profile::Cnsa1, &pki, KeyKind::EcdsaP256, false),
+        (Profile::Cnsa1, &pki, KeyKind::Ed25519, false),
+        (Profile::Cnsa1, &pki, KeyKind::MlDsa87, false),
+        (Profile::Fips140_3, &pki, KeyKind::EcdsaP256, true),
+        (Profile::Cnsa2, &pq, KeyKind::MlDsa87, true),
+        (Profile::Cnsa2, &pq, KeyKind::MlDsa65, false),
+        (Profile::Cnsa2, &pq, KeyKind::EcdsaP384, false),
+    ] {
+        let what = format!("{profile:?}: a {kind:?} key riding along");
+        let extra = stray(kind);
+        // On the server's chain, at the client.
+        let mut chain = p.server_chain.clone();
+        chain.push(extra.clone());
+        let id = Identity {
+            chain,
+            ..p.server_identity()
+        };
+        let server = Arc::new(ServerConfig::new(profile, id).unwrap());
+        let outcome = connect(Arc::new(p.client_config(profile)), server, "server.test");
+        match outcome {
+            Ok(_) => assert!(accepted, "{what} was accepted by the client"),
+            Err(f) => {
+                assert!(!accepted, "{what}: {:?}", f.client);
+                assert_eq!(
+                    f.client.unwrap().kind(),
+                    ErrorKind::PolicyViolation,
+                    "{what}"
+                );
+            }
+        }
+        // On the client's chain, at the server.
+        let leaf_kind = if profile == Profile::Cnsa2 {
+            KeyKind::MlDsa87
+        } else {
+            KeyKind::EcdsaP384
+        };
+        let mut id = p.client_identity(leaf_kind, "agent");
+        id.chain.push(extra);
+        let server = Arc::new(
+            p.server_config(profile)
+                .with_client_auth(ClientAuth::Required(PeerVerification::Roots(p.roots()))),
+        );
+        let client = Arc::new(p.client_config(profile).with_identity(id));
+        match connect(client, server, "server.test") {
+            Ok(_) => assert!(accepted, "{what} was accepted by the server"),
+            Err(f) => {
+                assert!(!accepted, "{what}: {:?}", f.server);
+                assert_eq!(
+                    f.server.unwrap().kind(),
+                    ErrorKind::PolicyViolation,
+                    "{what}"
+                );
+            }
         }
     }
 

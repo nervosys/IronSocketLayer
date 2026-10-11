@@ -455,11 +455,11 @@ fn openssl_verifies_our_staples() {
     std::fs::write(dir.join("resp.der"), &good).unwrap();
 
     // OpenSSL's own OCSP verifier accepts the response and reads its status.
-    // Our CertIDs are SHA-256 (IronCrypto has no SHA-1), so OpenSSL must look
-    // the certificate up by SHA-256 too; its default lookup is SHA-1.
+    // Our CertIDs are SHA-384 (IronCrypto has no SHA-1), so OpenSSL must look
+    // the certificate up by SHA-384 too; its default lookup is SHA-1.
     let out = openssl(
         &[
-            "ocsp", "-respin", "resp.der", "-CAfile", "ca.pem", "-issuer", "ca.pem", "-sha256",
+            "ocsp", "-respin", "resp.der", "-CAfile", "ca.pem", "-issuer", "ca.pem", "-sha384",
             "-cert", "leaf.pem",
         ],
         &dir,

@@ -91,12 +91,18 @@ pub fn fips_gate(c: &Common) -> Result<()> {
 
 /// Rules a profile places on the keys of the certificates a peer presented,
 /// beyond what path validation enforces. `REQ-CFG-008`.
+///
+/// `REQ-CFG-009`: under a CNSA profile every certificate presented carries
+/// a key of the suite, whether the path uses it or not, as the certificate
+/// profiles have it (RFC 8603 section 4.1 for `profile:cnsa-1`;
+/// draft-jenkins-cnsa2-pkix-profile-05 section 4 for `profile:cnsa-2`).
 pub(crate) fn check_chain_keys<'a>(
     profile: crate::config::Profile,
     certs: impl Iterator<Item = &'a [u8]>,
 ) -> Result<()> {
     match profile {
-        crate::config::Profile::Cnsa1 => Ok(crate::x509::check_cnsa1_rsa_keys(certs)?),
+        crate::config::Profile::Cnsa1 => Ok(crate::x509::check_cnsa1_keys(certs)?),
+        crate::config::Profile::Cnsa2 => Ok(crate::x509::check_cnsa2_keys(certs)?),
         _ => Ok(()),
     }
 }
