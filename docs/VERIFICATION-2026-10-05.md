@@ -600,3 +600,23 @@ Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
 79,727 runs, `tls_client` 15,040, `fixed_server` 97,887, `fixed_client`
 25,332, `pki` 319,649, `pki_differential` 132,926.
 
+### Release 0.6.0
+
+IronPKI 0.3.0 (published 2026-10-12 from 6186913): URI alternative names,
+PKCS#10 requests, and `CertificateParams` non-exhaustive, so the struct
+literals here are built with `CertificateParams::new`. Run on the release
+tree in a clean worktree, against worktrees of the published IronCrypto
+0.2.24 (6316a86) and IronPKI 0.3.0: the IronCrypto checkout beside this
+repository had uncommitted work in progress by another session, which a
+first run had picked up and which was set aside. On Windows: 479 tests
+passed; fmt, clippy, the Cortex-M4 `no_std` build and the Rust 1.88 build
+passed; `openssl_interop` (14), `openssl_fixed` (5), `openssl_cnsa2` (1),
+`openssl_cnsa1` (1) and live interop (6) passed against OpenSSL 3.5.7. On
+Linux (WSL Debian, rustc 1.95.0): 479 passed. The QEMU Cortex-M4 run
+passed: largest session stack 35,660 bytes, no allocation after
+initialization. IronEvidence reads `docs/controls.json`.
+
+Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
+77,535 runs, `tls_client` 18,502, `fixed_server` 149,452, `fixed_client`
+43,554, `pki` 665,035, `pki_differential` 406,852.
+

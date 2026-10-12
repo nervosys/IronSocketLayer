@@ -3,7 +3,7 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## 0.6.0 (not released)
+## 0.6.0 (2026-10-12)
 
 Moves onto IronPKI 0.3. One breaking change, IronPKI's: `x509::CertificateParams`
 can no longer be built field by field. Requires IronPKI 0.3.
