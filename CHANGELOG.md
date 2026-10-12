@@ -3,6 +3,46 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## 0.5.0 (not released)
+
+A configuration can say which certificate policies it accepts on a peer's
+path. Two breaking changes, both to types callers build or match by
+field. Requires IronPKI 0.2.
+
+### Added
+- `common.certificate_policies`, a `CertificatePolicies` (REQ-CFG-010):
+  the policy inputs of RFC 5280 section 6.1.1 for a peer's path.
+  `acceptable` names up to 64 policies by the contents of their object
+  identifiers; `require_explicit` requires a valid policy from the start
+  of the path; `inhibit_mapping` and `inhibit_any` inhibit policy mapping
+  and anyPolicy from the start. `CertificatePolicies::require(&[..])` is
+  for "only these policies": naming policies requires none by itself. The
+  default asks nothing, and a handshake then behaves as in 0.4.1.
+- A peer whose path these refuse fails the handshake with
+  `error:certificate-usage`, at a client, at a server (in the handshake
+  and for a certificate requested after it) and in the fixed-capacity
+  engine, which passes them without allocating.
+- `peer_policy` in the session report and in the fixed engine's:
+  whether a policy was required of the peer's path, and which of the
+  configured policies are valid for it, one bit each
+  (`peerPolicyRequired` and `peerPoliciesValid` in the JSON). Absent
+  without a peer path.
+- Under a policy mapping, the policy to name is the one the trust
+  anchor's side knows, not the one the peer's certificate lists.
+
+### Changed
+- `config::Common` has a new public field, so code that builds one field
+  by field no longer compiles. Build a configuration with
+  `ClientConfig::new` or `ServerConfig::new` and set fields after.
+- `x509::VerifyOptions`, `x509::ChainReport` and `x509::FixedChainReport`
+  (IronPKI's) are `#[non_exhaustive]`: build options with
+  `VerifyOptions::new`, and read reports by field.
+
+### Not covered
+- These settings are not applied to a pinned peer, which has no path.
+- `isl check-config` and the `check_config` MCP tool do not read
+  certificate policies from a JSON description yet.
+
 ## 0.4.1 (2026-10-11)
 
 The CNSA profiles are brought into line with the certificate profiles

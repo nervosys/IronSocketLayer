@@ -554,6 +554,67 @@ impl EarlyDataPolicy {
     }
 }
 
+/// What is asked of the certificate policies on a peer's path: the inputs
+/// of RFC 5280 section 6.1.1, which IronPKI evaluates. `REQ-CFG-010`.
+///
+/// The default asks nothing: any policy is acceptable and none is required,
+/// so a peer is refused on policy grounds only where a CA on its own path
+/// requires a policy and none is valid.
+///
+/// A policy is named by the contents of its OBJECT IDENTIFIER, without tag
+/// or length: `[0x2a, 0x03, 0x04]` is 1.2.3.4. Under a policy mapping the
+/// policy to name is the one the trust anchor's side knows, not the one
+/// the peer's own certificate lists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CertificatePolicies {
+    /// The policies accepted, at most [`crate::x509::MAX_ACCEPTABLE`].
+    /// Empty: any policy. Naming policies requires none by itself; see
+    /// [`CertificatePolicies::require`].
+    pub acceptable: Vec<Vec<u8>>,
+    /// Require a valid policy from the start of the peer's path.
+    pub require_explicit: bool,
+    /// Allow no policy mapping anywhere on the peer's path.
+    pub inhibit_mapping: bool,
+    /// Give anyPolicy no meaning anywhere on the peer's path.
+    pub inhibit_any: bool,
+}
+
+impl CertificatePolicies {
+    /// Accept only a peer for whose path one of `acceptable` is valid.
+    pub fn require(acceptable: &[&[u8]]) -> Self {
+        Self {
+            acceptable: acceptable.iter().map(|p| p.to_vec()).collect(),
+            require_explicit: true,
+            ..Self::default()
+        }
+    }
+
+    /// These inputs as IronPKI takes them, borrowing the names through
+    /// `names` so that no engine allocates to pass them.
+    pub(crate) fn options<'s>(
+        &'s self,
+        names: &'s mut [&'s [u8]; crate::x509::MAX_ACCEPTABLE],
+    ) -> Result<crate::x509::PolicyOptions<'s>> {
+        if self.acceptable.len() > names.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "too many acceptable certificate policies",
+            ));
+        }
+        for (slot, policy) in names.iter_mut().zip(&self.acceptable) {
+            *slot = policy;
+        }
+        let names: &'s [&'s [u8]] = names;
+        let mut options = crate::x509::PolicyOptions::any();
+        options.acceptable = &names[..self.acceptable.len()];
+        options.require_explicit = self.require_explicit;
+        options.inhibit_mapping = self.inhibit_mapping;
+        options.inhibit_any = self.inhibit_any;
+        options.validate()?;
+        Ok(options)
+    }
+}
+
 /// Settings shared by both sides.
 #[derive(Clone)]
 pub struct Common {
@@ -600,6 +661,10 @@ pub struct Common {
     /// Refuse a peer unless every certificate on its path is shown good by a
     /// current CRL from its issuer.
     pub require_crl: bool,
+    /// The certificate policies accepted on a peer's path. The default
+    /// names none and requires none. They are not applied to a pinned peer,
+    /// which has no path. `REQ-CFG-010`.
+    pub certificate_policies: CertificatePolicies,
     /// Enforce the FIPS module gate.
     pub fips: bool,
     /// Current time.
@@ -644,6 +709,7 @@ impl Common {
             record_size_limit: None,
             crls: None,
             require_crl: false,
+            certificate_policies: CertificatePolicies::default(),
             fips: profile.requires_fips(),
             #[cfg(feature = "std")]
             clock: system_clock,
@@ -689,6 +755,10 @@ impl Common {
                 "no scheme may sign a TLS 1.3 handshake",
             ));
         }
+        // REQ-CFG-010: policy inputs that could not be evaluated are refused
+        // here, not at the first handshake.
+        self.certificate_policies
+            .options(&mut [&[][..]; crate::x509::MAX_ACCEPTABLE])?;
         if self.alpn.iter().any(|p| p.is_empty() || p.len() > 255) {
             return Err(Error::new(
                 ErrorKind::InvalidConfig,

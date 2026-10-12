@@ -478,8 +478,15 @@ impl ServerHs {
                 opts.min_rsa_bits = self.config.common.profile.min_rsa_bits();
                 opts.crls = self.config.common.crls.as_deref();
                 opts.require_crl = self.config.common.require_crl;
+                let mut names = [&[][..]; x509::MAX_ACCEPTABLE];
+                opts.policy = self
+                    .config
+                    .common
+                    .certificate_policies
+                    .options(&mut names)?;
                 let report = x509::verify_chain(leaf, &inter, roots, &opts)?;
                 conn::note_crl(core, report.crl_checked);
+                core.report.peer_policy = Some(report.policy);
                 !report.schemes.is_empty()
                     && report
                         .schemes
@@ -1246,8 +1253,15 @@ impl ServerHs {
                 opts.min_rsa_bits = self.config.common.profile.min_rsa_bits();
                 opts.crls = self.config.common.crls.as_deref();
                 opts.require_crl = self.config.common.require_crl;
+                let mut names = [&[][..]; x509::MAX_ACCEPTABLE];
+                opts.policy = self
+                    .config
+                    .common
+                    .certificate_policies
+                    .options(&mut names)?;
                 let report = x509::verify_chain(leaf, &inter, roots, &opts)?;
                 conn::note_crl(core, report.crl_checked);
+                core.report.peer_policy = Some(report.policy);
                 self.client_pq_chain = !report.schemes.is_empty()
                     && report
                         .schemes

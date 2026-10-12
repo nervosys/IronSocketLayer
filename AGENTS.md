@@ -122,6 +122,14 @@ If the task needs revocation checking, set `config.revocation =
 Revocation::RequireStaple` and assert `Property::RevocationChecked`; the default
 checks a staple only when the server sends one.
 
+If the peer's certificates must carry a particular certificate policy, name
+it: `config.common.certificate_policies =
+CertificatePolicies::require(&[policy_oid])`, where the policy is the
+contents of its object identifier. The handshake then fails with
+`error:certificate-usage` unless that policy is valid for the peer's whole
+path. Naming a policy without `require` only reports it
+(`report.peer_policy`). Neither applies to a pinned peer.
+
 Assert on properties, not on the absence of errors. A handshake that succeeded
 with classical key exchange is a success for TLS and a failure for a task that
 required post-quantum confidentiality.

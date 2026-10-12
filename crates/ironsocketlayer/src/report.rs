@@ -229,6 +229,12 @@ pub struct SessionReport {
     pub peer_chain_len: usize,
     /// Weakest classical strength along the verified chain, in bits.
     pub peer_chain_min_bits: Option<u16>,
+    /// What certificate policy processing found for the peer's path:
+    /// whether a policy was required, and which of the configuration's
+    /// `certificate_policies.acceptable` are valid for it, one bit each.
+    /// `None` without a peer path: no certificate, or a pinned peer.
+    /// `REQ-CFG-010`.
+    pub peer_policy: Option<crate::x509::PolicyOutcome>,
     /// Properties that hold.
     pub properties: Vec<Property>,
     /// Whether a FIPS profile was enforced.
@@ -349,6 +355,10 @@ impl SessionReport {
             "peerChainMinClassicalBits",
             self.peer_chain_min_bits.map(u64::from),
         );
+        if let Some(policy) = self.peer_policy {
+            o.bool("peerPolicyRequired", policy.required);
+            o.num("peerPoliciesValid", policy.valid);
+        }
         o.raw(
             "properties",
             &json_str_array(self.properties.iter().map(|p| p.id())),

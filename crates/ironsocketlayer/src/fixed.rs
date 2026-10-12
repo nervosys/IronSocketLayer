@@ -107,6 +107,9 @@ pub struct Report<'a> {
     pub alpn: Option<&'a [u8]>,
     /// Weakest verified certificate-path key strength.
     pub peer_chain_min_bits: Option<u16>,
+    /// What certificate policy processing found for the peer's path; `None`
+    /// for a pinned peer. `REQ-CFG-010`.
+    pub peer_policy: Option<x509::PolicyOutcome>,
     /// Failure, retained permanently.
     pub error: Option<Error>,
     /// No FIPS 140-3 validation or DO-178C certification is claimed.
@@ -396,6 +399,7 @@ impl<'a> Connection<'a> {
                 peer_chain_schemes: [None; 8],
                 alpn: None,
                 peer_chain_min_bits: None,
+                peer_policy: None,
                 error: None,
                 validated: false,
                 properties: 0,
@@ -1938,10 +1942,12 @@ impl<'a> Connection<'a> {
         opts.min_rsa_bits = self.common().profile.min_rsa_bits();
         opts.crls = self.common().crls.as_deref();
         opts.require_crl = self.common().require_crl;
+        let mut names = [&[][..]; x509::MAX_ACCEPTABLE];
+        opts.policy = self.common().certificate_policies.options(&mut names)?;
         let leaf = self.peer_certificate(0).ok_or(unexpected())?;
         x509::check_leaf_fixed(leaf, &opts)?;
         let cert = Certificate::parse(leaf)?;
-        let (bits, pq, pinned, schemes, revoked_checked) = match verification {
+        let (bits, pq, pinned, schemes, revoked_checked, policy) = match verification {
             PeerVerification::PinnedSpki {
                 sha256,
                 check_names,
@@ -1968,6 +1974,7 @@ impl<'a> Connection<'a> {
                     true,
                     [None; 8],
                     false,
+                    None,
                 )
             }
             PeerVerification::Roots(roots) => {
@@ -2017,6 +2024,7 @@ impl<'a> Connection<'a> {
                         .schemes
                         .map(|s| s.and_then(SignatureScheme::from_algorithm)),
                     revocation,
+                    Some(report.policy),
                 )
             }
         };
@@ -2025,6 +2033,7 @@ impl<'a> Connection<'a> {
             (0..self.chain_len).filter_map(|i| self.peer_certificate(i)),
         )?;
         self.report.peer_chain_min_bits = Some(bits);
+        self.report.peer_policy = policy;
         self.report.peer_chain_schemes = schemes;
         self.pq_chain = pq;
         self.peer_pinned = pinned;

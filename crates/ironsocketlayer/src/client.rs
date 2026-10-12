@@ -1040,6 +1040,12 @@ impl ClientHs {
                 opts.min_rsa_bits = self.config.common.profile.min_rsa_bits();
                 opts.crls = self.config.common.crls.as_deref();
                 opts.require_crl = self.config.common.require_crl;
+                let mut names = [&[][..]; x509::MAX_ACCEPTABLE];
+                opts.policy = self
+                    .config
+                    .common
+                    .certificate_policies
+                    .options(&mut names)?;
                 let chain = x509::verify_chain(leaf, &inter, roots, &opts)?;
                 self.name_check(leaf)?;
                 self.check_revocation(core, cert.ocsp.as_deref(), leaf, &chain, now)?;
@@ -1050,6 +1056,7 @@ impl ClientHs {
                         .iter()
                         .all(|s| crate::policy::is_post_quantum(*s));
                 core.report.peer_chain_min_bits = Some(chain.min_classical_bits);
+                core.report.peer_policy = Some(chain.policy);
             }
             PeerVerification::PinnedSpki {
                 sha256,
