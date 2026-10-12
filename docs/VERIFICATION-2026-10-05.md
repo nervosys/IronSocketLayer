@@ -556,3 +556,30 @@ do, and ran five minutes each before its release.
 Mutation checks: with `profile:cnsa-1` back on the RSA-only key rule, and
 with the `profile:cnsa-2` rule dropped, `tests/cnsa.rs` fails; widening
 either profile's schemes fails the same test.
+
+### Release 0.5.0
+
+`common.certificate_policies` (REQ-CFG-010), over IronPKI 0.2.0 (published
+2026-10-11 from ce13cab) and IronCrypto 0.2.24. The runs were made on
+955f068; the release commit differs from it in the changelog's date and
+this record only. On Windows: 479 tests passed; fmt, clippy, the Cortex-M4
+`no_std` build and the Rust 1.88 build passed; `openssl_interop` (14),
+`openssl_fixed` (5), `openssl_cnsa2` (1), `openssl_cnsa1` (1) and live
+interop (6) passed against OpenSSL 3.5.7. On Linux (WSL Debian, rustc
+1.95.0): 479 passed.
+
+The QEMU Cortex-M4 run passed, with no allocation after initialization;
+the largest session stack is 35,660 bytes (ML-DSA-87). The fixed-capacity
+engine passes the configured policies to path validation through a stack
+array.
+
+Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
+44,016 runs, `tls_client` 14,792, `fixed_server` 157,561, `fixed_client`
+31,516, `pki` 418,693, `pki_differential` 227,414. The fuzz targets here
+do not vary the policy setting; IronPKI's differential target does, and
+ran before its release.
+
+Mutation checks: 17 breaks, one for each place the setting is passed to
+path validation, recorded in a report, validated or serialised; each fails
+a test in `tests/certificate_policies.rs`.
+

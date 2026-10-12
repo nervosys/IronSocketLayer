@@ -3,7 +3,7 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## 0.5.0 (not released)
+## 0.5.0 (2026-10-11)
 
 A configuration can say which certificate policies it accepts on a peer's
 path. Two breaking changes, both to types callers build or match by
