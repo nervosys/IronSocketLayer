@@ -165,7 +165,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "check_config",
-            description: "Build the configuration a JSON object describes with the library's own constructors and validation (no network), and report whether it is valid (with error id and action if not), the profile, the required properties and the relaxations (safe defaults given up). Keys: side (client|server), intent (+ fips, postQuantum, mutual) or profile, require (property ids), revocation, earlyData, echGrease, echConfigs, identity (client), clientAuth, sniFallback, selfieGuard, externalPsk (server).",
+            description: "Build the configuration a JSON object describes with the library's own constructors and validation (no network), and report whether it is valid (with error id and action if not), the profile, the required properties and the relaxations (safe defaults given up). Keys: side (client|server), intent (+ fips, postQuantum, mutual) or profile, require (property ids), revocation, earlyData, echGrease, echConfigs, identity (client), clientAuth, sniFallback, selfieGuard, externalPsk (server), certificatePolicies (an object: acceptable, a list of policy identifiers in dotted decimal; requireExplicit; inhibitMapping; inhibitAny).",
             schema: || schema(vec![("config", Json::object([("type", Json::str("object")), ("description", Json::str("The configuration to check."))]))], &["config"]),
             call: |a| crate::offline::check_config(a.get("config").ok_or("missing required object argument 'config'")?),
         },

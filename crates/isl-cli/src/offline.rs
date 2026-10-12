@@ -234,6 +234,82 @@ fn property(id: &str) -> Result<Property, String> {
         .ok_or_else(|| format!("unknown property '{id}'"))
 }
 
+/// The contents of an OBJECT IDENTIFIER written in dotted decimal, as
+/// `CertificatePolicies` names a policy: "1.2.3.4" is `2a 03 04`.
+fn oid_contents(dotted: &str) -> Result<Vec<u8>, String> {
+    let bad = || format!("'{dotted}' is not an object identifier in dotted decimal");
+    let arcs = dotted
+        .split('.')
+        .map(|arc| {
+            // Digits only: `parse` alone would take a sign, and refuses "".
+            if !arc.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(bad());
+            }
+            arc.parse::<u64>().map_err(|_| bad())
+        })
+        .collect::<Result<Vec<u64>, String>>()?;
+    let (first, second) = match arcs[..] {
+        [first, second, ..] if first < 2 && second < 40 || first == 2 => (first, second),
+        _ => return Err(bad()),
+    };
+    let head = first.checked_mul(40).and_then(|v| v.checked_add(second));
+    let mut out = Vec::new();
+    for arc in core::iter::once(head.ok_or_else(bad)?).chain(arcs[2..].iter().copied()) {
+        let groups = (64 - arc.leading_zeros()).div_ceil(7).max(1);
+        for i in (0..groups).rev() {
+            let more = if i == 0 { 0 } else { 0x80 };
+            out.push((arc >> (7 * i) & 0x7f) as u8 | more);
+        }
+    }
+    Ok(out)
+}
+
+/// The `certificatePolicies` object of a description: `acceptable`, a list
+/// of policies in dotted decimal, and the flags `requireExplicit`,
+/// `inhibitMapping` and `inhibitAny`.
+fn certificate_policies(
+    cfg: &Json,
+) -> Result<Option<ironsocketlayer::config::CertificatePolicies>, String> {
+    const KEYS: &[&str] = &[
+        "acceptable",
+        "requireExplicit",
+        "inhibitMapping",
+        "inhibitAny",
+    ];
+    let described = match cfg.get("certificatePolicies") {
+        None | Some(Json::Null) => return Ok(None),
+        Some(object @ Json::Object(map)) => {
+            if let Some(k) = map.keys().find(|k| !KEYS.contains(&k.as_str())) {
+                return Err(format!(
+                    "unknown key '{k}' in 'certificatePolicies'; expected one of: {}",
+                    KEYS.join(", ")
+                ));
+            }
+            object
+        }
+        Some(_) => return Err("'certificatePolicies' must be an object".into()),
+    };
+    let acceptable = match described.get("acceptable") {
+        None | Some(Json::Null) => Vec::new(),
+        Some(Json::Array(items)) => items
+            .iter()
+            .map(|v| {
+                oid_contents(
+                    v.as_str()
+                        .ok_or("'acceptable' must be a list of object identifiers")?,
+                )
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        Some(_) => return Err("'acceptable' must be a list of object identifiers".into()),
+    };
+    Ok(Some(ironsocketlayer::config::CertificatePolicies {
+        acceptable,
+        require_explicit: boolean(described, "requireExplicit")?.unwrap_or(false),
+        inhibit_mapping: boolean(described, "inhibitMapping")?.unwrap_or(false),
+        inhibit_any: boolean(described, "inhibitAny")?.unwrap_or(false),
+    }))
+}
+
 /// Build the configuration a JSON description names, with the real
 /// constructors and validation, and say whether it is valid, why not, and
 /// what it requires and gives up.
@@ -243,7 +319,9 @@ fn property(id: &str) -> Result<Property, String> {
 /// `revocation` (`off`, `if-stapled`, `require-staple`); `earlyData`,
 /// `echGrease`, `echConfigs`, `identity` (client); `clientAuth` (`none`,
 /// `optional`, `required`, `on-demand`), `sniFallback`, `selfieGuard`,
-/// `externalPsk` (server).
+/// `externalPsk` (server); `certificatePolicies`, an object of `acceptable`
+/// (policies in dotted decimal), `requireExplicit`, `inhibitMapping` and
+/// `inhibitAny`, for the peer's path (either side).
 pub fn check_config(cfg: &Json) -> Result<Json, String> {
     if !matches!(cfg, Json::Object(_)) {
         return Err("the configuration must be a JSON object".into());
@@ -267,6 +345,7 @@ pub fn check_config(cfg: &Json) -> Result<Json, String> {
         "sniFallback",
         "selfieGuard",
         "externalPsk",
+        "certificatePolicies",
     ];
     const BOOLS: &[&str] = &[
         "fips",
@@ -317,6 +396,7 @@ pub fn check_config(cfg: &Json) -> Result<Json, String> {
         ),
         Some(_) => return Err("'require' must be a list of property ids".into()),
     };
+    let policies = certificate_policies(cfg)?;
     let built: ironsocketlayer::Result<(Json, Json, Json, Json)> = match side {
         "client" => (|| {
             let pin = PeerVerification::pin_spki(b"check-config");
@@ -328,6 +408,9 @@ pub fn check_config(cfg: &Json) -> Result<Json, String> {
             c.verification = pin;
             if let Some(r) = &required {
                 c.common.required_properties = r.clone();
+            }
+            if let Some(p) = &policies {
+                c.common.certificate_policies = p.clone();
             }
             if let Some(r) = text(cfg, "revocation") {
                 c.revocation = match r {
@@ -390,6 +473,9 @@ pub fn check_config(cfg: &Json) -> Result<Json, String> {
             if let Some(r) = &required {
                 s.common.required_properties = r.clone();
             }
+            if let Some(p) = &policies {
+                s.common.certificate_policies = p.clone();
+            }
             let roots = || PeerVerification::pin_spki(b"check-config");
             if let Some(a) = text(cfg, "clientAuth") {
                 s.client_auth = match a {
@@ -440,6 +526,19 @@ pub fn check_config(cfg: &Json) -> Result<Json, String> {
             map.insert("profile".into(), profile);
             map.insert("relaxations".into(), relaxations);
             map.insert("required".into(), required);
+            if let Some(p) = &policies {
+                // What was understood, so that a caller can see a policy
+                // was read as the one it meant.
+                map.insert(
+                    "certificatePolicies".into(),
+                    Json::object([
+                        ("acceptable", Json::Number(p.acceptable.len() as f64)),
+                        ("requireExplicit", Json::Bool(p.require_explicit)),
+                        ("inhibitMapping", Json::Bool(p.inhibit_mapping)),
+                        ("inhibitAny", Json::Bool(p.inhibit_any)),
+                    ]),
+                );
+            }
             Ok(Json::Object(map))
         }
         Err(e) => Ok(error_json(&e)),

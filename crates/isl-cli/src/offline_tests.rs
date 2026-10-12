@@ -173,8 +173,72 @@ fn check_config_builds_and_judges_configurations() {
         Some("profile:cnsa-2"),
         "{v:?}"
     );
+    // Certificate policies for the peer's path, on either side.
+    for side in ["client", "server"] {
+        let v = check(&format!(
+            r#"{{"side":"{side}","certificatePolicies":{{"acceptable":["1.2.3.4","2.16.840.1.101.3.2.1.48.1"],"requireExplicit":true}}}}"#
+        ));
+        assert!(valid(&v), "{v:?}");
+        let p = v.get("certificatePolicies").unwrap();
+        assert_eq!(p.get("acceptable").and_then(Json::as_i64), Some(2), "{v:?}");
+        assert_eq!(p.get("requireExplicit"), Some(&Json::Bool(true)));
+        assert_eq!(p.get("inhibitAny"), Some(&Json::Bool(false)));
+    }
+    assert!(check(r#"{"side":"client"}"#)
+        .get("certificatePolicies")
+        .is_none());
+    // More policies than can be evaluated: built, and judged invalid.
+    let many: Vec<String> = (0..65).map(|i| format!("\"1.2.3.{i}\"")).collect();
+    for side in ["client", "server"] {
+        let v = check(&format!(
+            r#"{{"side":"{side}","certificatePolicies":{{"acceptable":[{}]}}}}"#,
+            many.join(",")
+        ));
+        assert!(!valid(&v), "{side}: {v:?}");
+    }
+    // Dotted decimal becomes the identifier's contents.
+    for (dotted, contents) in [
+        ("1.2.3.4", &[0x2a, 0x03, 0x04][..]),
+        ("2.5.29.32.0", &[0x55, 0x1d, 0x20, 0x00]),
+        (
+            "2.16.840.1.101.3.2.1.48.1",
+            &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x02, 0x01, 0x30, 0x01],
+        ),
+        ("0.0", &[0x00]),
+        ("2.999.3", &[0x88, 0x37, 0x03]),
+        (
+            "1.2.18446744073709551615",
+            &[
+                0x2a, 0x81, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+            ],
+        ),
+    ] {
+        assert_eq!(oid_contents(dotted).as_deref(), Ok(contents), "{dotted}");
+    }
+    for bad in [
+        "",
+        "1",
+        "1.",
+        ".1.2",
+        "1..2",
+        "3.1",
+        "1.40",
+        "1.2.x",
+        "1.2.-3",
+        "1.2.+3",
+        "1.2.18446744073709551616",
+        "2.18446744073709551615",
+    ] {
+        assert!(oid_contents(bad).is_err(), "{bad}");
+    }
     // Malformed descriptions are errors, not panics.
     for bad in [
+        r#"{"side":"client","certificatePolicies":true}"#,
+        r#"{"side":"client","certificatePolicies":{"acceptable":"1.2.3"}}"#,
+        r#"{"side":"client","certificatePolicies":{"acceptable":[1]}}"#,
+        r#"{"side":"client","certificatePolicies":{"acceptable":["one.two"]}}"#,
+        r#"{"side":"client","certificatePolicies":{"requireExplicit":"yes"}}"#,
+        r#"{"side":"client","certificatePolicies":{"require":true}}"#,
         r#"[]"#,
         r#"{}"#,
         r#"{"side":"proxy"}"#,

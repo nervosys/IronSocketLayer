@@ -3,6 +3,15 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## Unreleased
+
+### Added
+- `isl check-config` and the `check_config` MCP tool read
+  `certificatePolicies` from a description: `acceptable`, a list of policy
+  identifiers in dotted decimal, and `requireExplicit`, `inhibitMapping`
+  and `inhibitAny`. The configuration is built and validated with them,
+  and the answer says what was understood.
+
 ## 0.5.0 (2026-10-11)
 
 A configuration can say which certificate policies it accepts on a peer's
