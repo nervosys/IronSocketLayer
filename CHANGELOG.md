@@ -12,6 +12,16 @@ versions may change the API.
   and `inhibitAny`. The configuration is built and validated with them,
   and the answer says what was understood.
 
+### Fixed
+- With IronPKI 0.2.1, which 0.5.0 picks up on a dependency update:
+  certificate policy processing no longer refuses ordinary paths as too
+  involved (five certificates of 30 policies each with 64 policies
+  configured was enough), and a crafted chain under a trusted anchor can
+  no longer make one policy evaluation take 170 ms or more; it is bounded
+  at about 15 ms. A certificate that lists a policy twice, or whose policy
+  qualifiers are malformed, no longer parses. 0.4.1 stays on IronPKI
+  0.1.3, which has both defects; neither accepts a path it should not.
+
 ## 0.5.0 (2026-10-11)
 
 A configuration can say which certificate policies it accepts on a peer's
