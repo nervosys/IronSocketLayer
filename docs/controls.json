@@ -1,0 +1,82 @@
+{
+  "schema": "ironsecurity-controls/1",
+  "project": "IronSocketLayer",
+  "description": "TLS 1.3 and QUIC-TLS for the IronSecurity stack, in Rust over IronCrypto, with certificate validation by IronPKI and machine-readable reports of what each connection established. A library; it is not an information system.",
+  "version": "0.5.0",
+  "fipsValidated": false,
+  "controls": [
+    {
+      "framework": "sp800-53",
+      "id": "SC-8",
+      "title": "Transmission Confidentiality and Integrity",
+      "bearing": "IronSocketLayer protects the data an application sends over a connection it makes or accepts with TLS 1.3 or QUIC-TLS.",
+      "compliance": {
+        "state": "partial",
+        "evidence": ["crates/ironsocketlayer/src/record.rs", "crates/ironsocketlayer/src/conn.rs", "crates/ironsocketlayer/tests/openssl_interop.rs", "docs/TRACEABILITY.md"],
+        "gap": "Only data the caller sends through IronSocketLayer is protected; whether every transmission does is the system's. The cryptography is IronCrypto's, which is not CMVP validated (see SC-13)."
+      }
+    },
+    {
+      "framework": "sp800-53",
+      "id": "SC-8(1)",
+      "title": "Transmission Confidentiality and Integrity | Cryptographic Protection",
+      "bearing": "Every record is protected with an AEAD cipher under keys from an authenticated TLS 1.3 handshake, so disclosure is prevented and changes are detected.",
+      "compliance": {
+        "state": "partial",
+        "evidence": ["crates/ironsocketlayer/src/record.rs", "crates/ironsocketlayer/src/client.rs", "crates/ironsocketlayer/src/server.rs", "crates/ironsocketlayer/tests/robustness.rs"],
+        "gap": "The cryptographic mechanisms are IronCrypto's, which is not CMVP validated (see SC-13)."
+      }
+    },
+    {
+      "framework": "sp800-53",
+      "id": "SC-13",
+      "title": "Cryptographic Protection",
+      "bearing": "IronSocketLayer uses cryptography to protect data in transit and to authenticate peers.",
+      "compliance": {
+        "state": "unmet",
+        "reason": "All of IronSocketLayer's cryptography comes from IronCrypto, which is not CMVP validated. Its FIPS profile restricts a connection to FIPS-approved algorithms and enforces IronCrypto's approved-mode gate; that is not validation."
+      }
+    },
+    {
+      "framework": "sp800-53",
+      "id": "SC-23",
+      "title": "Session Authenticity",
+      "bearing": "IronSocketLayer authenticates the peer of each connection by certificate path validation or a pinned key, and binds the session's keys to that authentication through the TLS 1.3 handshake transcript.",
+      "compliance": {
+        "state": "met",
+        "evidence": ["crates/ironsocketlayer/src/client.rs", "crates/ironsocketlayer/src/server.rs", "crates/ironsocketlayer/src/conn.rs", "crates/ironsocketlayer/tests/handshake.rs", "crates/ironsocketlayer/tests/agent_safety.rs"]
+      }
+    },
+    {
+      "framework": "cmmc",
+      "id": "SC.L2-3.13.8",
+      "title": "Implement cryptographic mechanisms to prevent unauthorized disclosure of CUI during transmission unless otherwise protected by alternative physical safeguards",
+      "bearing": "IronSocketLayer protects data a caller sends through it with TLS 1.3 or QUIC-TLS.",
+      "compliance": {
+        "state": "partial",
+        "evidence": ["crates/ironsocketlayer/src/record.rs", "crates/ironsocketlayer/src/conn.rs", "crates/ironsocketlayer/tests/openssl_interop.rs"],
+        "gap": "Whether CUI is sent only through IronSocketLayer is the system's, and the cryptography is not FIPS validated (see SC.L2-3.13.11)."
+      }
+    },
+    {
+      "framework": "cmmc",
+      "id": "SC.L2-3.13.11",
+      "title": "Employ FIPS-validated cryptography when used to protect the confidentiality of CUI",
+      "bearing": "IronSocketLayer's cryptography protects the confidentiality of data in transit.",
+      "compliance": {
+        "state": "unmet",
+        "reason": "IronCrypto, which provides all of IronSocketLayer's cryptography, is not CMVP validated."
+      }
+    },
+    {
+      "framework": "cmmc",
+      "id": "SC.L2-3.13.15",
+      "title": "Protect the authenticity of communications sessions",
+      "bearing": "IronSocketLayer authenticates each connection's peer and binds the session's keys to that authentication.",
+      "compliance": {
+        "state": "met",
+        "evidence": ["crates/ironsocketlayer/src/client.rs", "crates/ironsocketlayer/src/server.rs", "crates/ironsocketlayer/tests/handshake.rs", "crates/ironsocketlayer/tests/agent_safety.rs"]
+      }
+    }
+  ]
+}

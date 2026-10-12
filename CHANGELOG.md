@@ -11,6 +11,12 @@ versions may change the API.
   identifiers in dotted decimal, and `requireExplicit`, `inhibitMapping`
   and `inhibitAny`. The configuration is built and validated with them,
   and the answer says what was understood.
+- `docs/controls.json` (`ironsecurity-controls/1`): the project's own
+  statement of how it stands against SP 800-53 SC-8, SC-8(1), SC-13 and
+  SC-23 and CMMC SC.L2-3.13.8, 3.13.11 and 3.13.15, for IronEvidence's
+  OSCAL document. Only session authenticity is claimed as met; SC-13 and
+  3.13.11 are unmet, IronCrypto not being CMVP validated. It is a claim,
+  not an assessment.
 
 ### Fixed
 - With IronPKI 0.2.1, which 0.5.0 picks up on a dependency update:
