@@ -583,3 +583,20 @@ Mutation checks: 17 breaks, one for each place the setting is passed to
 path validation, recorded in a report, validated or serialised; each fails
 a test in `tests/certificate_policies.rs`.
 
+### Release 0.5.1
+
+`isl check-config` reads certificate policies, `docs/controls.json`, and
+IronPKI 0.2.1 or later required, over IronPKI 0.2.2 (published 2026-10-12
+from 9a269dc) and IronCrypto 0.2.24. Run on the release commit's tree. On
+Windows: 479 tests passed; fmt, clippy, the Cortex-M4 `no_std` build and the
+Rust 1.88 build passed; `openssl_interop` (14), `openssl_fixed` (5),
+`openssl_cnsa2` (1), `openssl_cnsa1` (1) and live interop (6) passed against
+OpenSSL 3.5.7. On Linux (WSL Debian, rustc 1.95.0): 479 passed. The QEMU
+Cortex-M4 run passed: largest session stack 35,660 bytes, no allocation
+after initialization. IronEvidence reads `docs/controls.json`: seven
+statements.
+
+Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
+79,727 runs, `tls_client` 15,040, `fixed_server` 97,887, `fixed_client`
+25,332, `pki` 319,649, `pki_differential` 132,926.
+

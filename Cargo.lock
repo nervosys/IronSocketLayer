@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "ironpki"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "ironsocketlayer"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "isl-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ic-core",
  "ic-fips",
@@ -207,4 +207,4 @@ dependencies = [
 
 [[package]]
 name = "isl-ontology"
-version = "0.5.0"
+version = "0.5.1"

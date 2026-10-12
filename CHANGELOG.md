@@ -3,7 +3,11 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## Unreleased
+## 0.5.1 (2026-10-12)
+
+`isl check-config` reads certificate policies, the project publishes its
+control mappings, and IronPKI 0.2.1 or later is required, for its fixes to
+certificate policy processing. No API change.
 
 ### Added
 - `isl check-config` and the `check_config` MCP tool read
@@ -25,8 +29,9 @@ versions may change the API.
   configured was enough), and a crafted chain under a trusted anchor can
   no longer make one policy evaluation take 170 ms or more; it is bounded
   at about 15 ms. A certificate that lists a policy twice, or whose policy
-  qualifiers are malformed, no longer parses. 0.4.1 stays on IronPKI
-  0.1.3, which has both defects; neither accepts a path it should not.
+  qualifiers are malformed, no longer parses. 0.5.1 requires it. 0.4.1
+  gets the same fixes from IronPKI 0.1.4 on a dependency update. Neither
+  defect accepted a path it should not.
 
 ## 0.5.0 (2026-10-11)
 
