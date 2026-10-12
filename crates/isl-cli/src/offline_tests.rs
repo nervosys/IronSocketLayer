@@ -24,16 +24,13 @@ fn params<'a>(
     usage: &'a [Purpose],
 ) -> CertificateParams<'a> {
     let t = now();
-    CertificateParams {
-        subject_cn: cn,
-        dns_names: dns,
-        ip_addresses: &[],
-        not_before: t - 60,
-        not_after: t + 86_400,
-        is_ca: ca,
-        path_len: if ca { Some(0) } else { None },
-        usage,
-        serial: [7; 16],
+    {
+        let mut params = CertificateParams::new(cn, t - 60, t + 86_400, [7; 16]);
+        params.dns_names = dns;
+        params.is_ca = ca;
+        params.path_len = if ca { Some(0) } else { None };
+        params.usage = usage;
+        params
     }
 }
 

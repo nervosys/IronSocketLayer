@@ -3,6 +3,25 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## 0.6.0 (not released)
+
+Moves onto IronPKI 0.3. One breaking change, IronPKI's: `x509::CertificateParams`
+can no longer be built field by field. Requires IronPKI 0.3.
+
+### Changed
+- `x509::CertificateParams` is `#[non_exhaustive]`. Build it with
+  `CertificateParams::new(subject_cn, not_before, not_after, serial)` and set
+  the other fields after.
+
+### Added, from IronPKI 0.3
+- `x509::Certificate::uri_names` and `x509::CertificateParams::uris`: URI
+  alternative names, read and issued.
+- `x509::request`: PKCS#10 certificate requests, read, verified and made.
+
+### Not covered
+- The session report's `peer_names` still lists DNS names and addresses
+  only, not URIs.
+
 ## 0.5.1 (2026-10-12)
 
 `isl check-config` reads certificate policies, the project publishes its

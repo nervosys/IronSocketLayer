@@ -509,16 +509,11 @@ mod tests {
             .new_rng()
             .unwrap();
         let cert = x509::self_signed(
-            &CertificateParams {
-                subject_cn: "localhost",
-                dns_names: &["localhost"],
-                ip_addresses: &[],
-                not_before: now - 60,
-                not_after: now + 3600,
-                is_ca: false,
-                path_len: None,
-                usage: &[Purpose::TlsServer],
-                serial: [9; 16],
+            &{
+                let mut params = CertificateParams::new("localhost", now - 60, now + 3600, [9; 16]);
+                params.dns_names = &["localhost"];
+                params.usage = &[Purpose::TlsServer];
+                params
             },
             &key,
             &mut *rng,

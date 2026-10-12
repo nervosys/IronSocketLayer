@@ -1460,16 +1460,11 @@ mod tests {
         let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
         let t = now();
         let cert = x509::self_signed(
-            &CertificateParams {
-                subject_cn: cn,
-                dns_names: dns,
-                ip_addresses: &[],
-                not_before: t - 60,
-                not_after: t + 3600,
-                is_ca: false,
-                path_len: None,
-                usage: &[usage],
-                serial: [3; 16],
+            &{
+                let mut params = CertificateParams::new(cn, t - 60, t + 3600, [3; 16]);
+                params.dns_names = dns;
+                params.usage = core::slice::from_ref(&usage);
+                params
             },
             &key,
             &mut rng,

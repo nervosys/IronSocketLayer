@@ -37,16 +37,11 @@ fn stray_rsa_certificate(bits: usize) -> Vec<u8> {
 fn stray_certificate(key: &SigningKey) -> Vec<u8> {
     let mut rng = ic_drbg::Rng::from_os().unwrap();
     x509::self_signed(
-        &CertificateParams {
-            subject_cn: "Stray RSA CA",
-            dns_names: &[],
-            ip_addresses: &[],
-            not_before: now() - 3600,
-            not_after: now() + 3600,
-            is_ca: true,
-            path_len: None,
-            usage: &[],
-            serial: [7; 16],
+        &{
+            let mut params =
+                CertificateParams::new("Stray RSA CA", now() - 3600, now() + 3600, [7; 16]);
+            params.is_ca = true;
+            params
         },
         key,
         &mut rng,

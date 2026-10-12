@@ -310,16 +310,16 @@ fn main() {
     ] {
         let key = ironsocketlayer::crypto::sign::SigningKey::generate(kind, &mut *r).unwrap();
         let cert = ironsocketlayer::x509::self_signed(
-            &ironsocketlayer::x509::CertificateParams {
-                subject_cn: NAME,
-                dns_names: &[NAME],
-                ip_addresses: &[],
-                not_before: NOW - 86_400,
-                not_after: NOW + 86_400,
-                is_ca: false,
-                path_len: None,
-                usage: &[ironsocketlayer::x509::Purpose::TlsServer],
-                serial: [3; 16],
+            &{
+                let mut params = ironsocketlayer::x509::CertificateParams::new(
+                    NAME,
+                    NOW - 86_400,
+                    NOW + 86_400,
+                    [3; 16],
+                );
+                params.dns_names = &[NAME];
+                params.usage = &[ironsocketlayer::x509::Purpose::TlsServer];
+                params
             },
             &key,
             &mut *r,

@@ -105,16 +105,11 @@ fn a_revoked_intermediate_revokes_the_path() {
     let t = now();
     let int_key = SigningKey::generate(KeyKind::EcdsaP384, &mut rng).unwrap();
     let int = x509::issue(
-        &CertificateParams {
-            subject_cn: "Issuing CA",
-            dns_names: &[],
-            ip_addresses: &[],
-            not_before: t - 60,
-            not_after: t + 86_400,
-            is_ca: true,
-            path_len: Some(0),
-            usage: &[],
-            serial: [0x44; 16],
+        &{
+            let mut params = CertificateParams::new("Issuing CA", t - 60, t + 86_400, [0x44; 16]);
+            params.is_ca = true;
+            params.path_len = Some(0);
+            params
         },
         int_key.spki(),
         ca,
@@ -124,16 +119,11 @@ fn a_revoked_intermediate_revokes_the_path() {
     .unwrap();
     let leaf_key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng).unwrap();
     let leaf = x509::issue(
-        &CertificateParams {
-            subject_cn: "server.test",
-            dns_names: &["server.test"],
-            ip_addresses: &[],
-            not_before: t - 60,
-            not_after: t + 86_400,
-            is_ca: false,
-            path_len: None,
-            usage: &[Purpose::TlsServer],
-            serial: [0x55; 16],
+        &{
+            let mut params = CertificateParams::new("server.test", t - 60, t + 86_400, [0x55; 16]);
+            params.dns_names = &["server.test"];
+            params.usage = &[Purpose::TlsServer];
+            params
         },
         leaf_key.spki(),
         &int,

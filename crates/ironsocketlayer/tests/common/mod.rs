@@ -42,16 +42,16 @@ impl Pki {
         let ca_key = SigningKey::generate(ca_kind, &mut r).unwrap();
         let t = now();
         let ca_cert = x509::self_signed(
-            &CertificateParams {
-                subject_cn: "IronSocketLayer Test Root",
-                dns_names: &[],
-                ip_addresses: &[],
-                not_before: t - 3600,
-                not_after: t + 86_400,
-                is_ca: true,
-                path_len: Some(1),
-                usage: &[],
-                serial: serial(),
+            &{
+                let mut params = CertificateParams::new(
+                    "IronSocketLayer Test Root",
+                    t - 3600,
+                    t + 86_400,
+                    serial(),
+                );
+                params.is_ca = true;
+                params.path_len = Some(1);
+                params
             },
             &ca_key,
             &mut r,
@@ -84,20 +84,15 @@ impl Pki {
         let t = now();
         let names = [name];
         x509::issue(
-            &CertificateParams {
-                subject_cn: name,
-                dns_names: if usage == Purpose::TlsServer {
+            &{
+                let mut params = CertificateParams::new(name, t - 3600, t + 86_400, serial());
+                params.dns_names = if usage == Purpose::TlsServer {
                     &names
                 } else {
                     &[]
-                },
-                ip_addresses: &[],
-                not_before: t - 3600,
-                not_after: t + 86_400,
-                is_ca: false,
-                path_len: None,
-                usage: &[usage],
-                serial: serial(),
+                };
+                params.usage = core::slice::from_ref(&usage);
+                params
             },
             key.spki(),
             &self.ca_cert,
@@ -131,16 +126,11 @@ impl Pki {
         let key = SigningKey::generate(KeyKind::EcdsaP256, &mut rng()).unwrap();
         let t = now();
         let cert = x509::issue(
-            &CertificateParams {
-                subject_cn: names[0],
-                dns_names: names,
-                ip_addresses: &[],
-                not_before: t - 3600,
-                not_after: t + 86_400,
-                is_ca: false,
-                path_len: None,
-                usage: &[Purpose::TlsServer],
-                serial: serial(),
+            &{
+                let mut params = CertificateParams::new(names[0], t - 3600, t + 86_400, serial());
+                params.dns_names = names;
+                params.usage = &[Purpose::TlsServer];
+                params
             },
             key.spki(),
             &self.ca_cert,

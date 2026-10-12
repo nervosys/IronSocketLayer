@@ -160,16 +160,13 @@ fn cert(
     issuer: Option<(&[u8], &SigningKey)>,
     key: &SigningKey,
 ) -> Vec<u8> {
-    let params = CertificateParams {
-        subject_cn: cn,
-        dns_names: names,
-        ip_addresses: &[],
-        not_before: NOW - 3600,
-        not_after: NOW + 86_400,
-        is_ca: ca,
-        path_len: if ca { Some(1) } else { None },
-        usage,
-        serial: [SEED.fetch_add(1, Ordering::Relaxed) as u8 | 1; 16],
+    let params = {
+        let mut params = CertificateParams::new(cn, NOW - 3600, NOW + 86_400, [SEED.fetch_add(1, Ordering::Relaxed) as u8 | 1; 16]);
+        params.dns_names = names;
+        params.is_ca = ca;
+        params.path_len = if ca { Some(1) } else { None };
+        params.usage = usage;
+        params
     };
     match issuer {
         None => x509::self_signed(&params, key, &mut rng()).unwrap(),

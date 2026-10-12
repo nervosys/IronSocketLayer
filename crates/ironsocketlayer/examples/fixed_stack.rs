@@ -113,16 +113,14 @@ fn cert(
     key: &SigningKey,
 ) -> Vec<u8> {
     let t = now();
-    let params = CertificateParams {
-        subject_cn: cn,
-        dns_names: names,
-        ip_addresses: &[],
-        not_before: t - 3600,
-        not_after: t + 86_400,
-        is_ca: ca,
-        path_len: if ca { Some(1) } else { None },
-        usage,
-        serial: rng().random_array().unwrap(),
+    let params = {
+        let mut params =
+            CertificateParams::new(cn, t - 3600, t + 86_400, rng().random_array().unwrap());
+        params.dns_names = names;
+        params.is_ca = ca;
+        params.path_len = if ca { Some(1) } else { None };
+        params.usage = usage;
+        params
     };
     match issuer {
         None => x509::self_signed(&params, key, &mut rng()).unwrap(),

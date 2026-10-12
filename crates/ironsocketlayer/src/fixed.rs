@@ -2391,16 +2391,12 @@ mod finished_tests {
             .unwrap()
             .as_secs();
         let cert = x509::self_signed(
-            &CertificateParams {
-                subject_cn: "server.test",
-                dns_names: &["server.test"],
-                ip_addresses: &[],
-                not_before: now - 3600,
-                not_after: now + 3600,
-                is_ca: false,
-                path_len: None,
-                usage: &[Purpose::TlsServer],
-                serial: [1; 16],
+            &{
+                let mut params =
+                    CertificateParams::new("server.test", now - 3600, now + 3600, [1; 16]);
+                params.dns_names = &["server.test"];
+                params.usage = &[Purpose::TlsServer];
+                params
             },
             &key,
             &mut rng,
@@ -2567,16 +2563,13 @@ mod tests {
         serial: u8,
     ) -> CertificateParams<'a> {
         let t = now();
-        CertificateParams {
-            subject_cn: cn,
-            dns_names: dns,
-            ip_addresses: &[],
-            not_before: t - 3600,
-            not_after: t + 86_400,
-            is_ca: usage.is_empty(),
-            path_len: if usage.is_empty() { Some(1) } else { None },
-            usage,
-            serial: [serial; 16],
+        {
+            let mut params = CertificateParams::new(cn, t - 3600, t + 86_400, [serial; 16]);
+            params.dns_names = dns;
+            params.is_ca = usage.is_empty();
+            params.path_len = if usage.is_empty() { Some(1) } else { None };
+            params.usage = usage;
+            params
         }
     }
 

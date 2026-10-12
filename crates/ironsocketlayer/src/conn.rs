@@ -1367,16 +1367,11 @@ mod tests {
             .unwrap()
             .as_secs();
         let cert = x509::self_signed(
-            &CertificateParams {
-                subject_cn: "s.test",
-                dns_names: &["s.test"],
-                ip_addresses: &[],
-                not_before: now - 60,
-                not_after: now + 3600,
-                is_ca: false,
-                path_len: None,
-                usage: &[Purpose::TlsServer],
-                serial: [1; 16],
+            &{
+                let mut params = CertificateParams::new("s.test", now - 60, now + 3600, [1; 16]);
+                params.dns_names = &["s.test"];
+                params.usage = &[Purpose::TlsServer];
+                params
             },
             &key,
             &mut rng,

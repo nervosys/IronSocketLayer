@@ -208,16 +208,12 @@ fn stand_in_identity(profile: Profile) -> Result<Identity, String> {
     let key = SigningKey::generate(kind, rng).map_err(|e| e.to_string())?;
     let t = now();
     let cert = x509::self_signed(
-        &CertificateParams {
-            subject_cn: "check-config",
-            dns_names: &["check-config.invalid"],
-            ip_addresses: &[],
-            not_before: t.saturating_sub(60),
-            not_after: t + 3600,
-            is_ca: false,
-            path_len: None,
-            usage: &[Purpose::TlsServer, Purpose::TlsClient],
-            serial: [1; 16],
+        &{
+            let mut params =
+                CertificateParams::new("check-config", t.saturating_sub(60), t + 3600, [1; 16]);
+            params.dns_names = &["check-config.invalid"];
+            params.usage = &[Purpose::TlsServer, Purpose::TlsClient];
+            params
         },
         &key,
         rng,
