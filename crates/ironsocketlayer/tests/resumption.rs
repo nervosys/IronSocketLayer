@@ -252,7 +252,9 @@ fn only_psk_with_key_exchange_is_offered_or_accepted() {
         .unwrap();
     hello[at + 5] = 0x00;
     let end = hello.len();
-    let th = HashAlg::Sha256.digest(&hello[5..end - binders_len]);
+    let th = HashAlg::Sha256
+        .digest(&hello[5..end - binders_len])
+        .unwrap();
     let binder = EarlyStage::new(HashAlg::Sha256, Some(ticket.psk.as_bytes()))
         .unwrap()
         .resumption_binder(th.as_bytes())

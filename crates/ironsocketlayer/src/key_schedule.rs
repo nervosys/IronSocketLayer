@@ -33,7 +33,7 @@ pub fn derive_secret(
     crypto::expand_label_secret(alg, secret, label, transcript_hash)
 }
 
-fn empty_hash(alg: HashAlg) -> Output {
+fn empty_hash(alg: HashAlg) -> Result<Output> {
     alg.digest(&[])
 }
 
@@ -93,7 +93,7 @@ impl EarlyStage {
             self.alg,
             self.early_secret.as_bytes(),
             label,
-            empty_hash(self.alg).as_bytes(),
+            empty_hash(self.alg)?.as_bytes(),
         )?;
         finished_mac(self.alg, binder_key.as_bytes(), truncated_transcript_hash)
     }
@@ -115,7 +115,7 @@ impl EarlyStage {
             self.alg,
             self.early_secret.as_bytes(),
             b"derived",
-            empty_hash(self.alg).as_bytes(),
+            empty_hash(self.alg)?.as_bytes(),
         )?;
         let handshake_secret = crypto::hkdf_extract(self.alg, derived.as_bytes(), shared_secret)?;
         Ok(HandshakeStage {
@@ -158,7 +158,7 @@ impl HandshakeStage {
             self.alg,
             self.handshake_secret.as_bytes(),
             b"derived",
-            empty_hash(self.alg).as_bytes(),
+            empty_hash(self.alg)?.as_bytes(),
         )?;
         let zeros = Output::zeros(self.alg.len());
         let master_secret = crypto::hkdf_extract(self.alg, derived.as_bytes(), zeros.as_bytes())?;
@@ -263,8 +263,8 @@ pub fn export(
     context: &[u8],
     out: &mut [u8],
 ) -> Result<()> {
-    let secret = derive_secret(alg, exporter_master, label, empty_hash(alg).as_bytes())?;
-    let ctx_hash = alg.digest(context);
+    let secret = derive_secret(alg, exporter_master, label, empty_hash(alg)?.as_bytes())?;
+    let ctx_hash = alg.digest(context)?;
     crypto::hkdf_expand_label(
         alg,
         secret.as_bytes(),
@@ -282,7 +282,7 @@ mod tests {
     fn stages_differ_and_are_deterministic() {
         let alg = HashAlg::Sha256;
         let hs = KeySchedule::handshake(alg, &[7u8; 32]).unwrap();
-        let h = alg.digest(b"hello");
+        let h = alg.digest(b"hello").unwrap();
         let c = hs.client_traffic(h.as_bytes()).unwrap();
         let s = hs.server_traffic(h.as_bytes()).unwrap();
         assert_ne!(c.as_bytes(), s.as_bytes());
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn binders_bind_the_psk_and_the_transcript() {
         let alg = HashAlg::Sha256;
-        let th = alg.digest(b"truncated hello");
+        let th = alg.digest(b"truncated hello").unwrap();
         let a = EarlyStage::new(alg, Some(&[1u8; 32])).unwrap();
         let b = EarlyStage::new(alg, Some(&[2u8; 32])).unwrap();
         let ba = a.resumption_binder(th.as_bytes()).unwrap();
@@ -311,7 +311,7 @@ mod tests {
             ba.as_bytes(),
             b.resumption_binder(th.as_bytes()).unwrap().as_bytes()
         );
-        let other = alg.digest(b"another hello");
+        let other = alg.digest(b"another hello").unwrap();
         assert_ne!(
             ba.as_bytes(),
             a.resumption_binder(other.as_bytes()).unwrap().as_bytes()
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn external_and_resumption_binders_are_separated() {
         let alg = HashAlg::Sha256;
-        let th = alg.digest(b"hello");
+        let th = alg.digest(b"hello").unwrap();
         let e = EarlyStage::new(alg, Some(&[9u8; 32])).unwrap();
         assert_ne!(
             e.external_binder(th.as_bytes()).unwrap().as_bytes(),
@@ -344,7 +344,7 @@ mod tests {
     fn finished_rejects_a_single_flipped_bit() {
         let alg = HashAlg::Sha384;
         let key = [1u8; 48];
-        let th = alg.digest(b"t");
+        let th = alg.digest(b"t").unwrap();
         let mac = finished_mac(alg, &key, th.as_bytes()).unwrap();
         verify_finished(alg, &key, th.as_bytes(), mac.as_bytes()).unwrap();
         let mut bad = mac.as_bytes().to_vec();

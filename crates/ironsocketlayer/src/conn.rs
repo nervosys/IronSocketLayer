@@ -111,7 +111,7 @@ impl Transcript {
             Some(h) if h.alg() == alg => {
                 let mut h = h.clone();
                 h.update(extra);
-                Ok(h.finish())
+                h.finish()
             }
             Some(_) => Err(Error::new(
                 ErrorKind::Internal,
@@ -121,16 +121,19 @@ impl Transcript {
                 let mut h = Hash::new(alg);
                 h.update(&self.pending);
                 h.update(extra);
-                Ok(h.finish())
+                h.finish()
             }
         }
     }
 
     pub(crate) fn current(&self) -> Result<Output> {
-        self.hash.as_ref().map(|h| h.peek()).ok_or(Error::new(
-            ErrorKind::Internal,
-            "transcript hash not started",
-        ))
+        self.hash
+            .as_ref()
+            .ok_or(Error::new(
+                ErrorKind::Internal,
+                "transcript hash not started",
+            ))?
+            .peek()
     }
 
     /// Replace ClientHello1 with `message_hash` after a HelloRetryRequest (§4.4.1).

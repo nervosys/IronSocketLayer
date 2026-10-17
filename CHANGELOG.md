@@ -3,6 +3,47 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## 0.7.0 (not released)
+
+Moves onto IronCrypto 0.3 and IronPKI 0.4. Requires IronCrypto 0.3.1 or
+later, below 0.4. Breaking: IronCrypto's types appear in this crate's
+interface, and three functions that hash now return a `Result`.
+
+### Changed
+- IronCrypto 0.3's hashes and MACs refuse once the module is in its error
+  state, so what hashes here returns a `Result` too: `crypto::Hash::finish`
+  and `peek`, `crypto::HashAlg::digest`, and
+  `config::PeerVerification::pin_spki`. `ClientConfig::pinned` already
+  returned one. A transcript hash, Finished MAC, binder or key pin is never
+  made from a module that failed.
+- REQ-ERR-002: a refusal because IronCrypto is in its error state, or
+  failed its self-tests, is `error:fips-module` (`recovery:fix-environment`,
+  not retryable) wherever it arises. A random source refused for that
+  reason was `error:entropy`, which is retryable, so an agent would retry
+  forever; and a record that a failed module could not open was
+  `error:bad-record-mac`, which blames the peer, sends it an alert, and
+  could have a rejected 0-RTT record skipped for it.
+
+### From IronCrypto 0.3.0 and 0.3.1
+- ChaCha20 could reuse keystream on AVX2 CPUs in IronCrypto 0.2.7 to
+  0.2.24, for a message whose blocks pass counter `2^32 - 1`. No
+  IronSocketLayer path reaches it: QUIC header protection masks five bytes,
+  and TLS records and QUIC packets are far below the 256 GiB a
+  ChaCha20-Poly1305 message needs.
+- Ed25519 signing no longer branches on a secret under LTO; this applies to
+  an Ed25519 identity key.
+- Vector registers are cleared and dead stack is scrubbed after code that
+  handles secrets.
+
+### Verification
+- `tests/error_state.rs`: once IronCrypto is in its error state, no
+  connection is made, an established connection sends nothing and opens
+  nothing, including a record sealed before, and no hash or key pin is
+  made; every refusal is `error:fips-module`. With either mapping above
+  reverted, the test fails.
+- The bench's rustls is 0.23.46, past RUSTSEC-2026-0346 to -0349. The bench
+  is not part of the library and is not published.
+
 ## 0.6.0 (2026-10-12)
 
 Moves onto IronPKI 0.3. One breaking change, IronPKI's: `x509::CertificateParams`

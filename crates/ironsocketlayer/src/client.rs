@@ -1499,7 +1499,7 @@ pub(crate) fn check_pinned(
     opts: &x509::VerifyOptions<'_>,
 ) -> Result<()> {
     let cert = x509::Certificate::parse(leaf)?;
-    let d = HashAlg::Sha256.digest(cert.spki_der());
+    let d = HashAlg::Sha256.digest(cert.spki_der())?;
     if !pins.iter().any(|p| ic_core::ct::verify(p, d.as_bytes())) {
         return Err(Error::new(
             ErrorKind::UnknownCa,

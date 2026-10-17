@@ -60,6 +60,9 @@ pub fn inspect_certificate(pem: &str) -> Result<Json, String> {
             format!("{}: {}", e.id(), e)
         })?;
         let not_after = c.not_after();
+        let spki_sha256 = HashAlg::Sha256
+            .digest(c.spki_der())
+            .map_err(|e| format!("{}: {}", e.id(), e))?;
         out.push(Json::object([
             ("subjectCommonName", opt_str(c.common_name())),
             ("issuerCommonName", opt_str(c.issuer_common_name())),
@@ -93,10 +96,7 @@ pub fn inspect_certificate(pem: &str) -> Result<Json, String> {
                         .map(|s| s.id()),
                 ),
             ),
-            (
-                "spkiSha256",
-                Json::str(hex(HashAlg::Sha256.digest(c.spki_der()).as_bytes())),
-            ),
+            ("spkiSha256", Json::str(hex(spki_sha256.as_bytes()))),
         ]));
     }
     Ok(Json::Array(out))
@@ -395,7 +395,7 @@ pub fn check_config(cfg: &Json) -> Result<Json, String> {
     let policies = certificate_policies(cfg)?;
     let built: ironsocketlayer::Result<(Json, Json, Json, Json)> = match side {
         "client" => (|| {
-            let pin = PeerVerification::pin_spki(b"check-config");
+            let pin = PeerVerification::pin_spki(b"check-config")?;
             let mut c = match text(cfg, "intent") {
                 Some(i) => ClientConfig::for_intent(i, &policy, RootStore::new())?,
                 None => ClientConfig::new(profile.unwrap_or(Profile::Default), RootStore::new())?,
@@ -476,9 +476,9 @@ pub fn check_config(cfg: &Json) -> Result<Json, String> {
             if let Some(a) = text(cfg, "clientAuth") {
                 s.client_auth = match a {
                     "none" => ClientAuth::None,
-                    "optional" => ClientAuth::Optional(roots()),
-                    "required" => ClientAuth::Required(roots()),
-                    "on-demand" => ClientAuth::OnDemand(roots()),
+                    "optional" => ClientAuth::Optional(roots()?),
+                    "required" => ClientAuth::Required(roots()?),
+                    "on-demand" => ClientAuth::OnDemand(roots()?),
                     _ => {
                         return Err(ironsocketlayer::Error::new(
                             ironsocketlayer::ErrorKind::InvalidConfig,

@@ -556,7 +556,7 @@ mod tests {
         // A connection that sends nothing, held open.
         let _stalled = connect();
         let mut config = ClientConfig::new(Profile::Default, RootStore::new()).unwrap();
-        config.verification = PeerVerification::pin_spki(key.spki());
+        config.verification = PeerVerification::pin_spki(key.spki()).unwrap();
         let started = std::time::Instant::now();
         let mut tls = TlsStream::connect_with(
             connect(),

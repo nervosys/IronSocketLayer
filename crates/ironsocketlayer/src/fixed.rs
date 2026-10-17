@@ -510,10 +510,10 @@ impl<'a> Connection<'a> {
             .ok_or(Error::new(ErrorKind::InvalidState, "no negotiated suite"))
     }
     fn hash(&self) -> Result<Output> {
-        Ok(match self.hash_alg()? {
+        match self.hash_alg()? {
             HashAlg::Sha256 => self.hash256.peek(),
             HashAlg::Sha384 => self.hash384.peek(),
-        })
+        }
     }
     fn add(&mut self, message: &[u8]) {
         self.hash256.update(message);
@@ -1294,7 +1294,7 @@ impl<'a> Connection<'a> {
             self.retried = true;
             self.retry_fingerprint = Some(fingerprint);
             self.add(message);
-            self.rollup();
+            self.rollup()?;
             let sid = self.session_id;
             let sid_len = self.session_id_len;
             self.send_message(2, |w| {
@@ -1554,7 +1554,7 @@ impl<'a> Connection<'a> {
             self.group = group;
             self.retried = true;
             self.storage.private_key.zeroize();
-            self.rollup();
+            self.rollup()?;
             self.add(message);
             self.client_hello()?;
             return self.transition(State::WaitServerHello);
@@ -1617,14 +1617,15 @@ impl<'a> Connection<'a> {
         self.master = Some(hs.into_master()?);
         Ok(())
     }
-    fn rollup(&mut self) {
+    fn rollup(&mut self) -> Result<()> {
         for hash in [&mut self.hash256, &mut self.hash384] {
             let alg = hash.alg();
-            let digest = hash.peek();
+            let digest = hash.peek()?;
             *hash = Hash::new(alg);
             hash.update(&[254, 0, 0, alg.len() as u8]);
             hash.update(digest.as_bytes());
         }
+        Ok(())
     }
     fn select_alpn(&mut self, offered: Option<&[u8]>) -> Result<()> {
         let Some(offered) = offered else {
@@ -1952,7 +1953,7 @@ impl<'a> Connection<'a> {
                 sha256,
                 check_names,
             } => {
-                let hash = HashAlg::Sha256.digest(cert.spki_der());
+                let hash = HashAlg::Sha256.digest(cert.spki_der())?;
                 let mut matches = false;
                 for pin in sha256 {
                     matches |= ic_core::ct::verify(pin, hash.as_bytes());
@@ -2355,7 +2356,7 @@ fn hello_fingerprint(body: &[u8], ext: Extensions<'_>) -> Result<Output> {
             h.update(bytes);
         }
     }
-    Ok(h.finish())
+    h.finish()
 }
 fn cv_input(server: bool, hash: &[u8], out: &mut [u8; 146]) -> usize {
     let context = if server {

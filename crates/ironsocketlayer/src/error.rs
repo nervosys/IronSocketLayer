@@ -435,6 +435,19 @@ impl From<ironpki::Error> for Error {
     }
 }
 
+impl Error {
+    /// REQ-ERR-002: a random source's refusal. `Entropy`, which is worth retrying,
+    /// unless IronCrypto refused because of the module's state: a module in
+    /// its error state stays there, and retrying would loop.
+    pub(crate) fn entropy(e: ic_core::Error, context: &'static str) -> Self {
+        let kind = match Self::from(e).kind() {
+            ErrorKind::FipsModule => ErrorKind::FipsModule,
+            _ => ErrorKind::Entropy,
+        };
+        Error::new(kind, context)
+    }
+}
+
 impl From<ic_core::Error> for Error {
     fn from(e: ic_core::Error) -> Self {
         use ic_core::ErrorKind as K;

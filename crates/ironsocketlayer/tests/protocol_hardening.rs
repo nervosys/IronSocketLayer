@@ -87,7 +87,7 @@ fn raw_handshake(peer: &mut impl Peer) -> Raw {
         .unwrap()
         .into_handshake(shared.get())
         .unwrap();
-    let h1 = th.peek();
+    let h1 = th.peek().unwrap();
     let c_hs = hs.client_traffic(h1.as_bytes()).unwrap();
     let s_hs = hs.server_traffic(h1.as_bytes()).unwrap();
     let mut sread = Protector::new(SUITE, &s_hs).unwrap();
@@ -109,7 +109,7 @@ fn raw_handshake(peer: &mut impl Peer) -> Raw {
         }
     }
     assert!(done, "server flight incomplete");
-    let h2 = th.peek();
+    let h2 = th.peek().unwrap();
     let master = hs.into_master().unwrap();
     let c_ap = master.client_traffic(h2.as_bytes()).unwrap();
     let fin = key_schedule::finished_mac(HashAlg::Sha256, c_hs.as_bytes(), h2.as_bytes()).unwrap();
@@ -806,7 +806,7 @@ fn raw_before_client_finished(peer: &mut impl Peer) -> (Protector, Protector) {
         .unwrap()
         .into_handshake(shared.get())
         .unwrap();
-    let h1 = th.peek();
+    let h1 = th.peek().unwrap();
     let c_hs = hs.client_traffic(h1.as_bytes()).unwrap();
     let s_hs = hs.server_traffic(h1.as_bytes()).unwrap();
     let mut sread = Protector::new(SUITE, &s_hs).unwrap();
@@ -822,7 +822,7 @@ fn raw_before_client_finished(peer: &mut impl Peer) -> (Protector, Protector) {
             th.update(&m);
         }
     }
-    let h2 = th.peek();
+    let h2 = th.peek().unwrap();
     let s_ap = hs
         .into_master()
         .unwrap()

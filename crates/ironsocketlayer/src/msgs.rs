@@ -1312,7 +1312,10 @@ mod tests {
     #[test]
     fn hrr_random_is_the_hash_rfc8446_defines() {
         assert_eq!(
-            HashAlg::Sha256.digest(b"HelloRetryRequest").as_bytes(),
+            HashAlg::Sha256
+                .digest(b"HelloRetryRequest")
+                .unwrap()
+                .as_bytes(),
             &HRR_RANDOM[..]
         );
     }

@@ -79,7 +79,7 @@ impl KemKeyPair {
     pub fn generate(rng: &mut dyn RandomSource) -> Result<Self> {
         ic_hpke::KeyPair::generate(rng)
             .map(Self)
-            .map_err(|_| Error::new(ErrorKind::Entropy, "HPKE key generation"))
+            .map_err(|e| Error::entropy(e, "HPKE key generation"))
     }
 
     /// From a 32-byte X25519 private key.

@@ -977,7 +977,7 @@ fn client_without_identity_under_optional_and_required_auth() {
 }
 
 fn pin(spki: &[u8], check_names: bool) -> PeerVerification {
-    match PeerVerification::pin_spki(spki) {
+    match PeerVerification::pin_spki(spki).unwrap() {
         PeerVerification::PinnedSpki { sha256, .. } => PeerVerification::PinnedSpki {
             sha256,
             check_names,

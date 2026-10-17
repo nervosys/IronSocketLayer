@@ -339,8 +339,7 @@ fn system_clock() -> u64 {
 
 #[cfg(feature = "std")]
 fn os_rng() -> Result<Box<dyn RandomSource + Send>> {
-    let rng = ic_drbg::Rng::from_os()
-        .map_err(|_| Error::new(ErrorKind::Entropy, "OS entropy unavailable"))?;
+    let rng = ic_drbg::Rng::from_os().map_err(|e| Error::entropy(e, "OS entropy unavailable"))?;
     Ok(Box::new(rng))
 }
 
@@ -374,15 +373,16 @@ pub enum PeerVerification {
 }
 
 impl PeerVerification {
-    /// Pin a single `SubjectPublicKeyInfo`.
-    pub fn pin_spki(spki_der: &[u8]) -> Self {
-        let d = HashAlg::Sha256.digest(spki_der);
+    /// Pin a single `SubjectPublicKeyInfo`. Refused once IronCrypto is in
+    /// its error state, since the pin is the key's SHA-256 hash.
+    pub fn pin_spki(spki_der: &[u8]) -> Result<Self> {
+        let d = HashAlg::Sha256.digest(spki_der)?;
         let mut h = [0u8; 32];
         h.copy_from_slice(d.as_bytes());
-        Self::PinnedSpki {
+        Ok(Self::PinnedSpki {
             sha256: alloc::vec![h],
             check_names: false,
-        }
+        })
     }
 
     /// Stable identifier for reports.
@@ -905,7 +905,7 @@ impl ClientConfig {
     /// A configuration that accepts exactly one server public key.
     pub fn pinned(profile: Profile, spki_der: &[u8]) -> Result<Self> {
         let mut c = Self::new(profile, RootStore::new())?;
-        c.verification = PeerVerification::pin_spki(spki_der);
+        c.verification = PeerVerification::pin_spki(spki_der)?;
         Ok(c)
     }
 

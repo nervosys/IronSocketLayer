@@ -91,7 +91,7 @@ fn server_hello(flight: &[u8]) -> ServerHello {
 fn bind(ch: &mut ClientHello, i: usize, psk: &[u8], hash: HashAlg, external: bool) {
     let msg = msgs::frame(HandshakeType::ClientHello, &ch.encode().unwrap()).unwrap();
     let cut = msg.len() - ch.psk.as_ref().unwrap().binders_len();
-    let th = hash.digest(&msg[..cut]);
+    let th = hash.digest(&msg[..cut]).unwrap();
     let stage = EarlyStage::new(hash, Some(psk)).unwrap();
     let binder = if external {
         stage.external_binder(th.as_bytes())

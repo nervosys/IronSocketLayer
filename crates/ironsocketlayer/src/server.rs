@@ -659,7 +659,7 @@ impl ServerHs {
         if client_age_ms.abs_diff(server_age_ms) > u64::from(policy.max_skew_ms) + 1000 {
             return Ok(false);
         }
-        let key = crate::crypto::HashAlg::Sha256.digest(binder);
+        let key = crate::crypto::HashAlg::Sha256.digest(binder)?;
         let mut k = [0u8; 32];
         k.copy_from_slice(key.as_bytes());
         let expires = now + u64::from(policy.max_skew_ms) / 1000 + 2;

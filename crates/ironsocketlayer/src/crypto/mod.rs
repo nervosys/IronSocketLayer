@@ -68,7 +68,7 @@ impl HashAlg {
     }
 
     /// Hash `data` in one call.
-    pub fn digest(self, data: &[u8]) -> Output {
+    pub fn digest(self, data: &[u8]) -> Result<Output> {
         let mut h = Hash::new(self);
         h.update(data);
         h.finish()
@@ -176,18 +176,18 @@ impl Hash {
         }
     }
 
-    /// Finish.
-    pub fn finish(self) -> Output {
+    /// Finish. Refused once IronCrypto is in its error state.
+    pub fn finish(self) -> Result<Output> {
         let mut out = Output::zeros(self.alg().len());
         match self {
-            Self::Sha256(h) => out.bytes[..32].copy_from_slice(h.finalize().as_ref()),
-            Self::Sha384(h) => out.bytes[..48].copy_from_slice(h.finalize().as_ref()),
+            Self::Sha256(h) => out.bytes[..32].copy_from_slice(h.finalize()?.as_ref()),
+            Self::Sha384(h) => out.bytes[..48].copy_from_slice(h.finalize()?.as_ref()),
         }
-        out
+        Ok(out)
     }
 
     /// The digest so far, leaving the running state intact.
-    pub fn peek(&self) -> Output {
+    pub fn peek(&self) -> Result<Output> {
         self.clone().finish()
     }
 }
@@ -201,14 +201,14 @@ pub fn hmac(alg: HashAlg, key: &[u8], parts: &[&[u8]]) -> Result<Output> {
             for p in parts {
                 m.update(p);
             }
-            out.bytes[..32].copy_from_slice(m.finalize().as_ref());
+            out.bytes[..32].copy_from_slice(m.finalize()?.as_ref());
         }
         HashAlg::Sha384 => {
             let mut m = ic_mac::HmacSha384::new(key)?;
             for p in parts {
                 m.update(p);
             }
-            out.bytes[..48].copy_from_slice(m.finalize().as_ref());
+            out.bytes[..48].copy_from_slice(m.finalize()?.as_ref());
         }
     }
     Ok(out)
@@ -418,7 +418,14 @@ impl AeadKey {
             AeadImpl::Aes256(k) => k.open_detached(nonce, aad, in_out, tag),
             AeadImpl::ChaCha(k) => k.open_detached(nonce, aad, in_out, tag),
         };
-        r.map_err(|_| Error::new(ErrorKind::BadRecordMac, "aead authentication failed"))
+        // REQ-ERR-002: a module that cannot open anything is not the peer's
+        // fault, and no record of the peer's is called forged for it.
+        r.map_err(|e| match Error::from(e).kind() {
+            ErrorKind::FipsModule => {
+                Error::new(ErrorKind::FipsModule, "aead refused by the module")
+            }
+            _ => Error::new(ErrorKind::BadRecordMac, "aead authentication failed"),
+        })
     }
 }
 
@@ -544,7 +551,7 @@ impl core::fmt::Debug for SecretVec {
 /// Fill `out` from `rng`.
 pub fn fill_random(rng: &mut dyn ic_core::traits::RandomSource, out: &mut [u8]) -> Result<()> {
     rng.fill(out)
-        .map_err(|_| Error::new(ErrorKind::Entropy, "random source failed"))
+        .map_err(|e| Error::entropy(e, "random source failed"))
 }
 
 #[cfg(test)]

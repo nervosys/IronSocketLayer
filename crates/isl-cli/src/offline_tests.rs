@@ -64,7 +64,7 @@ fn inspect_reports_names_validity_and_the_pin() {
     assert_eq!(l.get("expired").unwrap().as_bool(), Some(false));
     assert_eq!(
         l.get("spkiSha256").unwrap().as_str().unwrap(),
-        hex(HashAlg::Sha256.digest(&spki).as_bytes())
+        hex(HashAlg::Sha256.digest(&spki).unwrap().as_bytes())
     );
     assert!(format!("{:?}", l.get("dnsNames").unwrap()).contains("api.test"));
     assert_eq!(certs[1].get("isCa").unwrap().as_bool(), Some(true));
