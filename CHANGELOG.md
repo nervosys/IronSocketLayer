@@ -3,6 +3,21 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## 0.7.1 (not released)
+
+A certificate check that a failed IronCrypto module refused is reported as
+the module's failure. Requires IronPKI 0.4.1. No API change.
+
+### Fixed
+- REQ-ERR-002: IronPKI 0.4.1's `module-state` is `error:fips-module`
+  (`recovery:fix-environment`, not retryable, not the peer's fault). Before,
+  IronPKI reported such a refusal as a bad signature, an unsigned OCSP
+  response, a bad CRL or an earlier candidate's failure, which became
+  `error:decrypt-error`, `error:bad-certificate-status` and the like here:
+  the peer blamed for the local module. A connection cannot start in the
+  error state, so this is reached only by a module that fails during a
+  handshake.
+
 ## 0.7.0 (2026-10-16)
 
 Moves onto IronCrypto 0.3 and IronPKI 0.4. Requires IronCrypto 0.3.1 or

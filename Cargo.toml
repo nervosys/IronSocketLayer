@@ -13,7 +13,7 @@ members = [
 exclude = ["bench", "fuzz", "embedded"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-or-later"
@@ -27,8 +27,8 @@ categories = ["cryptography", "network-programming", "no-std"]
 publish = true
 
 [workspace.dependencies]
-isl-ontology = { path = "crates/isl-ontology", version = "0.7.0", default-features = false }
-ironsocketlayer = { path = "crates/ironsocketlayer", version = "0.7.0", default-features = false }
+isl-ontology = { path = "crates/isl-ontology", version = "0.7.1", default-features = false }
+ironsocketlayer = { path = "crates/ironsocketlayer", version = "0.7.1", default-features = false }
 
 # IronCrypto supplies every cryptographic primitive. Nothing in this workspace
 # implements a cipher, hash, MAC, KDF, key agreement, KEM or signature itself.
@@ -62,7 +62,7 @@ ic-json = { path = "../IronCrypto/crates/ic-json", version = "0.3.1" }
 
 # IronPKI is the certificate layer: parsing, path validation, CRLs, OCSP
 # responses and issuance. It was this crate's x509 module until 0.4.0.
-ironpki = { path = "../IronPKI", version = "0.4.0", default-features = false }
+ironpki = { path = "../IronPKI", version = "0.4.1", default-features = false }
 
 # IronPKI names IronCrypto by version alone, so that it builds anywhere. In
 # this workspace IronCrypto is the checkout beside it, and without this the

@@ -429,6 +429,8 @@ impl From<ironpki::Error> for Error {
             K::InvalidConfig => ErrorKind::InvalidConfig,
             K::CapacityExceeded => ErrorKind::CapacityExceeded,
             K::Crypto => ErrorKind::Crypto,
+            // REQ-ERR-002: IronPKI's word for a module that refused.
+            K::ModuleState => ErrorKind::FipsModule,
             _ => ErrorKind::Internal,
         };
         Error::new(kind, e.context())
@@ -470,6 +472,20 @@ impl From<ic_core::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ-ERR-002: a certificate check the module refused is the module's
+    /// failure, not the certificate's or the peer's.
+    #[test]
+    fn a_module_refusal_in_certificate_checks_is_the_modules() {
+        let e = Error::from(ironpki::Error::new(
+            ironpki::ErrorKind::ModuleState,
+            "refused",
+        ));
+        assert_eq!(e.kind(), ErrorKind::FipsModule);
+        assert_eq!(e.recovery(), Recovery::FixEnvironment);
+        assert!(!e.kind().retryable());
+        assert!(!e.kind().peer_fault());
+    }
 
     #[test]
     fn identifiers_are_unique_and_namespaced() {

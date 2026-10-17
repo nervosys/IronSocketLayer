@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "ironpki"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "ironsocketlayer"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -243,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "isl-ontology"
-version = "0.7.0"
+version = "0.7.1"
 
 [[package]]
 name = "jobserver"
