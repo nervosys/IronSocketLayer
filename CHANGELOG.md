@@ -3,7 +3,7 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## 0.7.0 (not released)
+## 0.7.0 (2026-10-16)
 
 Moves onto IronCrypto 0.3 and IronPKI 0.4. Requires IronCrypto 0.3.1 or
 later, below 0.4. Breaking: IronCrypto's types appear in this crate's

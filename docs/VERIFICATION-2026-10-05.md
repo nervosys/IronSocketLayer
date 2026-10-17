@@ -620,3 +620,30 @@ Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
 77,535 runs, `tls_client` 18,502, `fixed_server` 149,452, `fixed_client`
 43,554, `pki` 665,035, `pki_differential` 406,852.
 
+### Release 0.7.0
+
+IronCrypto 0.3.1 (published 2026-10-16 from 0bc08d0) and IronPKI 0.4.0
+(published 2026-10-16 from 8007558): hashes, MACs and key pins return a
+`Result`, and REQ-ERR-002 makes a refusal for the module's state
+`error:fips-module` wherever it arises. Run on the release tree in a clean
+worktree, against worktrees of the published IronCrypto v0.3.1 and IronPKI
+v0.4.0. On Windows: 480 tests passed (479 and `tests/error_state.rs`);
+fmt, clippy, the Cortex-M4 `no_std` build and the Rust 1.88 build passed;
+`openssl_interop` (14), `openssl_fixed` (5), `openssl_cnsa2` (1) and
+`openssl_cnsa1` (1) passed against OpenSSL 3.5.7. On Linux (WSL Debian, rustc 1.99.0):
+480 passed. The QEMU Cortex-M4 run passed: largest session stack 36,208
+bytes, 548 more than 0.6.0's, no allocation after initialization.
+IronEvidence reads `docs/controls.json`.
+
+Live interop: 4 of 6 passed. The two Encrypted Client Hello tests with
+Cloudflare passed every TLS assertion -- ECH accepted; with an unknown key,
+`error:ech-rejected`, the `ech_required` alert and retry configurations,
+and ECH accepted on retry -- and failed on the HTTP body, which was
+`502 Bad Gateway` from `crypto.cloudflare.com/cdn-cgi/trace`. curl got the
+same 502 from that address throughout, over about ten minutes, and 200
+from `cloudflare.com/cdn-cgi/trace`. Cloudflare's own report of the
+connection (`sni=encrypted`) was therefore not seen for this release.
+
+Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
+194,937 runs, `tls_client` 68,634, `fixed_server` 208,272, `fixed_client`
+82,341, `pki` 1,523,887, `pki_differential` 477,633.
