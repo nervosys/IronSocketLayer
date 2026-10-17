@@ -647,3 +647,28 @@ connection (`sni=encrypted`) was therefore not seen for this release.
 Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
 194,937 runs, `tls_client` 68,634, `fixed_server` 208,272, `fixed_client`
 82,341, `pki` 1,523,887, `pki_differential` 477,633.
+
+### Release 0.7.1
+
+IronPKI 0.4.1 (published 2026-10-17 from 9568beb): a refusal by the module
+in a certificate, CRL or OCSP check is its `module-state`, which ends the
+check, where 0.4.0 took it for a bad signature, an unsigned response or one
+candidate's failure. REQ-ERR-002 now maps it to `error:fips-module`. Run on
+the release tree in a clean worktree, against worktrees of the published
+IronCrypto v0.3.1 and IronPKI v0.4.1. On Windows: 481 tests passed (480 and
+the mapping's unit test); fmt, clippy, the Cortex-M4 `no_std` build and the
+Rust 1.88 build passed; `openssl_interop` (14), `openssl_fixed` (5),
+`openssl_cnsa2` (1) and `openssl_cnsa1` (1) passed against OpenSSL 3.5.7.
+On Linux (WSL Debian, rustc 1.99.0): 481 passed. The QEMU Cortex-M4 run
+passed: largest session stack 36,208 bytes, as in 0.7.0, no allocation
+after initialization. IronEvidence reads `docs/controls.json`.
+
+Live interop: 4 of 6 passed. The two Encrypted Client Hello tests with
+Cloudflare again passed every TLS assertion and failed on the HTTP body,
+`502 Bad Gateway` from `crypto.cloudflare.com/cdn-cgi/trace`, which curl
+also got. Cloudflare's report of the connection was not seen for this
+release either.
+
+Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
+203,765 runs, `tls_client` 70,478, `fixed_server` 285,704, `fixed_client`
+138,380, `pki` 2,564,663, `pki_differential` 754,720.

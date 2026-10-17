@@ -3,7 +3,7 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## 0.7.1 (not released)
+## 0.7.1 (2026-10-17)
 
 A certificate check that a failed IronCrypto module refused is reported as
 the module's failure. Requires IronPKI 0.4.1. No API change.
