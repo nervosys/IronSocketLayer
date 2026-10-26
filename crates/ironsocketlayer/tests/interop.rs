@@ -130,6 +130,10 @@ fn session_resumption_with_cloudflare() {
     assert_eq!(second.group, Some(NamedGroup::X25519MlKem768));
 }
 
+/// Cloudflare's ECH test host. `crypto.cloudflare.com`, used until 0.7.1,
+/// has answered every request with `502 Bad Gateway` since 2026-10-16.
+const ECH_HOST: &str = "cloudflare-ech.com";
+
 /// Fetch a host's ECHConfigList from its DNS HTTPS record, over DNS-over-HTTPS
 /// with this crate's own client.
 fn fetch_ech_config(host: &str) -> Vec<u8> {
@@ -189,15 +193,10 @@ fn get_with(
 #[test]
 #[ignore = "needs the network"]
 fn encrypted_client_hello_with_cloudflare() {
-    let list = fetch_ech_config("crypto.cloudflare.com");
+    let list = fetch_ech_config(ECH_HOST);
     let mut config = ClientConfig::new(Profile::Default, roots()).unwrap();
     config.ech_configs = Some(list);
-    let (body, report) = get_with(
-        "crypto.cloudflare.com",
-        "/cdn-cgi/trace",
-        "text/plain",
-        config,
-    );
+    let (body, report) = get_with(ECH_HOST, "/cdn-cgi/trace", "text/plain", config);
     assert_eq!(report.ech, "ech:accepted", "{}", report.to_json());
     assert!(report.has(Property::EncryptedClientHello));
     // Cloudflare's own view of the connection.
@@ -210,8 +209,7 @@ fn encrypted_client_hello_with_cloudflare() {
 fn cloudflare_rejects_an_unknown_ech_key_and_its_retry_configs_work() {
     use ironsocketlayer::ech::EchServer;
     use ironsocketlayer::Connection;
-    let real = ironsocketlayer::ech::parse_config_list(&fetch_ech_config("crypto.cloudflare.com"))
-        .unwrap();
+    let real = ironsocketlayer::ech::parse_config_list(&fetch_ech_config(ECH_HOST)).unwrap();
     // Same public name and config id, but a key Cloudflare does not hold.
     let fake = EchServer::generate(
         real[0].config_id,
@@ -222,8 +220,8 @@ fn cloudflare_rejects_an_unknown_ech_key_and_its_retry_configs_work() {
     .unwrap();
     let mut config = ClientConfig::new(Profile::Default, roots()).unwrap();
     config.ech_configs = Some(fake.config_list().to_vec());
-    let mut conn = Connection::client(Arc::new(config), "crypto.cloudflare.com").unwrap();
-    let mut sock = TcpStream::connect(("crypto.cloudflare.com", 443)).unwrap();
+    let mut conn = Connection::client(Arc::new(config), ECH_HOST).unwrap();
+    let mut sock = TcpStream::connect((ECH_HOST, 443)).unwrap();
     sock.set_read_timeout(Some(Duration::from_secs(15)))
         .unwrap();
     let mut buf = vec![0u8; 32 * 1024];
@@ -251,12 +249,7 @@ fn cloudflare_rejects_an_unknown_ech_key_and_its_retry_configs_work() {
 
     let mut config = ClientConfig::new(Profile::Default, roots()).unwrap();
     config.ech_configs = Some(retry);
-    let (body, report) = get_with(
-        "crypto.cloudflare.com",
-        "/cdn-cgi/trace",
-        "text/plain",
-        config,
-    );
+    let (body, report) = get_with(ECH_HOST, "/cdn-cgi/trace", "text/plain", config);
     assert_eq!(report.ech, "ech:accepted");
     assert!(body.contains("sni=encrypted"), "{body}");
 }

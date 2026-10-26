@@ -219,7 +219,7 @@ $ isl recommend intent:harvest-now-decrypt-later --json
 $ isl ontology show group:x25519mlkem768
 $ isl explain error:unknown-ca
 $ isl probe example.com:443 --profile post-quantum --json
-$ isl probe crypto.cloudflare.com --ech
+$ isl probe cloudflare-ech.com --ech
 $ isl serve --cert chain.pem --key key.pem --port 8443
 $ isl inspect cert.pem                      # names, validity, SPKI pin; no network
 $ isl verify chain.pem --roots ca.pem --name api.example

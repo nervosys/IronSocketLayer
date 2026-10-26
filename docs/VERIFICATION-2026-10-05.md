@@ -672,3 +672,14 @@ release either.
 Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
 203,765 runs, `tls_client` 70,478, `fixed_server` 285,704, `fixed_client`
 138,380, `pki` 2,564,663, `pki_differential` 754,720.
+
+Rerun 2026-10-25. `crypto.cloudflare.com` still answered `502` (24 tries
+over four hours after the release, and again on the 25th), so the two ECH tests
+were pointed at Cloudflare's other ECH test host, `cloudflare-ech.com`,
+whose ECH configuration comes from its DNS HTTPS record as before. Live
+interop then passed 6 of 6, on the published 0.7.1 tree against worktrees
+of IronCrypto v0.3.1 and IronPKI v0.4.1, with the changed test file the
+only difference. Cloudflare reported `sni=encrypted` and `tls=TLSv1.3`, and
+with an unknown key it rejected ECH and sent retry configurations that were
+then accepted. With the ECH configuration removed, the first test failed
+on `ech:not-offered`.

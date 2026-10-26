@@ -3,6 +3,12 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
+## Unreleased
+
+The Encrypted Client Hello interop tests and the README's `isl probe --ech`
+example use `cloudflare-ech.com`. `crypto.cloudflare.com` has answered every
+request with `502 Bad Gateway` since 2026-10-16. No change to the library.
+
 ## 0.7.1 (2026-10-17)
 
 A certificate check that a failed IronCrypto module refused is reported as
