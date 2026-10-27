@@ -4,18 +4,18 @@ version = 4
 
 [[package]]
 name = "ic-cipher"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-core"
-version = "0.3.1"
+version = "0.3.2"
 
 [[package]]
 name = "ic-drbg"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "ic-ec"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "ic-fips"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -54,14 +54,14 @@ dependencies = [
 
 [[package]]
 name = "ic-hash"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-hpke"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -73,11 +73,11 @@ dependencies = [
 
 [[package]]
 name = "ic-json"
-version = "0.3.1"
+version = "0.3.2"
 
 [[package]]
 name = "ic-kdf"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "ic-lms"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mac"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-cipher",
  "ic-core",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mldsa"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "ic-mlkem"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -120,21 +120,21 @@ dependencies = [
 
 [[package]]
 name = "ic-ontology"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-pkix"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
 ]
 
 [[package]]
 name = "ic-rsa"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
  "ic-hash",
@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "ic-sig"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
  "ic-ec",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "ic-slhdsa"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ic-core",
  "ic-hash",
