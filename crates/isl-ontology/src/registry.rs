@@ -82,6 +82,29 @@ const fn advisory(
     }
 }
 
+/// The status of an entry built on an algorithm IronCrypto leaves out of a
+/// build with `--cfg ic_approved_only` (X25519, Ed25519, ChaCha20-Poly1305,
+/// HPKE). Implemented otherwise.
+const APPROVED_ONLY: ImplStatus = if cfg!(ic_approved_only) {
+    ImplStatus::Excluded
+} else {
+    ImplStatus::Implemented
+};
+
+/// Why, in that build.
+const APPROVED_ONLY_REASON: &str = if cfg!(ic_approved_only) {
+    "This build was compiled with --cfg ic_approved_only, in which IronCrypto leaves out every algorithm FIPS approved mode does not permit, this one's included. A configuration that names it is refused."
+} else {
+    ""
+};
+
+/// Why ECH, in that build.
+const APPROVED_ONLY_ECH_REASON: &str = if cfg!(ic_approved_only) {
+    "This build was compiled with --cfg ic_approved_only, in which IronCrypto leaves out HPKE and X25519. A client configuration with ech_configs is refused; a GREASE encrypted_client_hello, random bytes that use no algorithm, is still sent."
+} else {
+    ""
+};
+
 const S128: Strength = Strength {
     classical: 128,
     quantum: 64,
@@ -285,6 +308,8 @@ pub static REGISTRY: &[Entry] = &[
         name: "TLS_CHACHA20_POLY1305_SHA256",
         kind: Kind::CipherSuite,
         code: 0x1303,
+        status: APPROVED_ONLY,
+        status_reason: APPROVED_ONLY_REASON,
         summary: "ChaCha20-Poly1305 with SHA-256; constant-time and fast without AES hardware.",
         fips: FipsStatus::NotApproved,
         strength: S256,
@@ -364,6 +389,8 @@ pub static REGISTRY: &[Entry] = &[
         name: "x25519",
         kind: Kind::NamedGroup,
         code: 0x001d,
+        status: APPROVED_ONLY,
+        status_reason: APPROVED_ONLY_REASON,
         summary: "ECDHE over Curve25519; the most widely deployed classical group.",
         fips: FipsStatus::NotApproved,
         strength: ECC128,
@@ -466,6 +493,8 @@ pub static REGISTRY: &[Entry] = &[
         name: "X25519MLKEM768",
         kind: Kind::NamedGroup,
         code: 0x11ec,
+        status: APPROVED_ONLY,
+        status_reason: APPROVED_ONLY_REASON,
         summary: "Hybrid X25519 + ML-KEM-768; the default post-quantum group on the public Internet.",
         fips: FipsStatus::NotApproved,
         post_quantum: true,
@@ -474,7 +503,6 @@ pub static REGISTRY: &[Entry] = &[
         constraints: &[HYBRID_ORDER, X25519_ZERO, KEM_ENCAPS_CHECK, ONE_SHOT_EPHEMERAL],
         edges: &[built("ic:ml-kem-768"), built("ic:x25519"), supersedes("group:x25519")],
         notes: "Client share: ML-KEM ek (1184) || X25519 (32). Server share: ciphertext (1088) || X25519 (32). Secret: ML-KEM secret || X25519 secret. Because the approved ML-KEM secret comes first, SP 800-56Cr2 can be read to permit this combination in approved mode, treating the X25519 secret as auxiliary input; that is an argument, not an approval, and profile:fips-140-3 does not rely on it.",
-        ..Entry::BASE
     },
     Entry {
         id: "group:secp384r1mlkem1024",
@@ -639,6 +667,8 @@ pub static REGISTRY: &[Entry] = &[
         name: "ed25519",
         kind: Kind::SignatureScheme,
         code: 0x0807,
+        status: APPROVED_ONLY,
+        status_reason: APPROVED_ONLY_REASON,
         summary: "EdDSA over edwards25519; deterministic, small and fast.",
         fips: FipsStatus::NotApproved,
         strength: ECC128,
@@ -746,8 +776,8 @@ pub static REGISTRY: &[Entry] = &[
     Entry { id: "ext:signature-algorithms-cert", name: "signature_algorithms_cert", kind: Kind::Extension, code: 50, summary: "Signature schemes accepted in certificates, when different from CertificateVerify.", ..Entry::BASE },
     Entry { id: "ext:key-share", name: "key_share", kind: Kind::Extension, code: 51, summary: "Ephemeral key-exchange shares.", constraints: &[VALIDATE_SHARE, critical("one-share-per-group", "Reject a ClientHello with two shares for the same group, or a server share for a group the client did not offer.", "RFC 8446 §4.2.8: either is illegal_parameter and signals a confused or hostile peer.")], ..Entry::BASE },
     Entry { id: "ext:quic-transport-parameters", name: "quic_transport_parameters", kind: Kind::Extension, code: 57, summary: "QUIC transport parameters, carried in ClientHello and EncryptedExtensions.", standards: &["RFC 9001", "RFC 9000"], constraints: &[critical("required-under-quic", "Abort with missing_extension if a QUIC peer omits it; never send it over TCP.", "RFC 9001 §8.2.")], ..Entry::BASE },
-    Entry { id: "ext:encrypted-client-hello", name: "encrypted_client_hello", kind: Kind::Extension, code: 0xfe0d, summary: "Encrypts the inner ClientHello, hiding SNI from the network.", status: ImplStatus::Implemented, standards: &["RFC 9849", "RFC 9180"], constraints: &[critical("never-fall-back-to-plaintext-sni", "If ECH is configured and cannot be used, fail; never send the real name in the clear instead.", "A silent fallback reveals exactly what ECH was meant to hide, to an observer who can simply block ECH."), critical("abort-on-rejection", "When the server does not confirm ECH, authenticate it as the public name, then abort with ech_required and retry with its retry_configs.", "Continuing would send the application's data to the public-name server."), serious("fetch-configs-authentically", "Obtain the ECHConfigList over an authenticated channel (DNS-over-HTTPS or DNSSEC).", "An attacker who substitutes the configuration can decrypt the inner hello.")], notes: "Client: set ClientConfig::ech_configs to the ECHConfigList from the host's DNS HTTPS record (isl probe --ech fetches it over DNS-over-HTTPS). Server: ServerConfig::ech with ech::EchServer. HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-128/256-GCM and ChaCha20-Poly1305. The inner hello carries no resumption PSK.", edges: &[built("ic:x25519"), built("ic:hkdf-sha2-256")], ..Entry::BASE },
-    Entry { id: "ext:ech-outer-extensions", name: "ech_outer_extensions", kind: Kind::Extension, code: 0xfd00, summary: "Inside an encoded inner ClientHello, refers to extensions copied from the outer one.", status: ImplStatus::Implemented, standards: &["RFC 9849"], constraints: &[critical("references-must-resolve", "Every referenced extension must appear in the outer hello, in order, and never encrypted_client_hello itself.", "Otherwise the server's reconstructed inner hello differs from the client's, or loops.")], notes: "The server expands references; this client does not compress.", edges: &[pairs("ext:encrypted-client-hello")], ..Entry::BASE },
+    Entry { id: "ext:encrypted-client-hello", name: "encrypted_client_hello", kind: Kind::Extension, code: 0xfe0d, summary: "Encrypts the inner ClientHello, hiding SNI from the network.", status: APPROVED_ONLY, status_reason: APPROVED_ONLY_ECH_REASON, standards: &["RFC 9849", "RFC 9180"], constraints: &[critical("never-fall-back-to-plaintext-sni", "If ECH is configured and cannot be used, fail; never send the real name in the clear instead.", "A silent fallback reveals exactly what ECH was meant to hide, to an observer who can simply block ECH."), critical("abort-on-rejection", "When the server does not confirm ECH, authenticate it as the public name, then abort with ech_required and retry with its retry_configs.", "Continuing would send the application's data to the public-name server."), serious("fetch-configs-authentically", "Obtain the ECHConfigList over an authenticated channel (DNS-over-HTTPS or DNSSEC).", "An attacker who substitutes the configuration can decrypt the inner hello.")], notes: "Client: set ClientConfig::ech_configs to the ECHConfigList from the host's DNS HTTPS record (isl probe --ech fetches it over DNS-over-HTTPS). Server: ServerConfig::ech with ech::EchServer. HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-128/256-GCM and ChaCha20-Poly1305. The inner hello carries no resumption PSK.", edges: &[built("ic:x25519"), built("ic:hkdf-sha2-256")], ..Entry::BASE },
+    Entry { id: "ext:ech-outer-extensions", name: "ech_outer_extensions", kind: Kind::Extension, code: 0xfd00, summary: "Inside an encoded inner ClientHello, refers to extensions copied from the outer one.", status: APPROVED_ONLY, status_reason: APPROVED_ONLY_ECH_REASON, standards: &["RFC 9849"], constraints: &[critical("references-must-resolve", "Every referenced extension must appear in the outer hello, in order, and never encrypted_client_hello itself.", "Otherwise the server's reconstructed inner hello differs from the client's, or loops.")], notes: "The server expands references; this client does not compress.", edges: &[pairs("ext:encrypted-client-hello")], ..Entry::BASE },
     // --- alerts ---------------------------------------------------------------
     Entry { id: "alert:close-notify", name: "close_notify", kind: Kind::Alert, code: 0, summary: "Orderly closure; data after it is not accepted.", constraints: &[serious("detect-truncation", "Treat end of stream without close_notify as a possible truncation attack.", "An attacker can cut a response short and the application will not know.")], ..Entry::BASE },
     Entry { id: "alert:unexpected-message", name: "unexpected_message", kind: Kind::Alert, code: 10, summary: "A message arrived that the state machine does not permit.", ..Entry::BASE },

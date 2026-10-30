@@ -182,7 +182,11 @@ impl Profile {
     }
 
     /// Cipher suites, in preference order.
+    /// None for a profile this build does not provide ([`Self::available`]).
     pub const fn suites(self) -> &'static [CipherSuite] {
+        if !self.available() {
+            return &[];
+        }
         use CipherSuite as C;
         match self {
             Self::Default => &[
@@ -201,7 +205,11 @@ impl Profile {
     }
 
     /// Key exchange groups, in preference order.
+    /// None for a profile this build does not provide ([`Self::available`]).
     pub const fn groups(self) -> &'static [NamedGroup] {
+        if !self.available() {
+            return &[];
+        }
         use NamedGroup as G;
         match self {
             Self::Default => &[G::X25519MlKem768, G::X25519, G::Secp256r1, G::Secp384r1],
@@ -218,7 +226,11 @@ impl Profile {
     }
 
     /// Signature schemes accepted from the peer (handshake and certificates).
+    /// None for a profile this build does not provide ([`Self::available`]).
     pub const fn schemes(self) -> &'static [SignatureScheme] {
+        if !self.available() {
+            return &[];
+        }
         use SignatureScheme as S;
         match self {
             Self::Default => &[
@@ -304,12 +316,17 @@ impl Profile {
 
     /// Whether this build can provide the profile at all. `REQ-CFG-004`.
     ///
-    /// Every profile is available in this build. The check stays so that a
-    /// build without an algorithm a profile needs refuses it rather than
-    /// substituting, as this build did for CNSA 2.0 before IronCrypto had
-    /// ML-DSA-87.
+    /// A build without an algorithm a profile needs refuses the profile
+    /// rather than substituting another, or narrowing it to what remains, as
+    /// this build did for CNSA 2.0 before IronCrypto had ML-DSA-87.
+    ///
+    /// Every profile is available in the default build. In a build with
+    /// `--cfg ic_approved_only`, where IronCrypto leaves out X25519, Ed25519
+    /// and ChaCha20-Poly1305, the default and post-quantum profiles, which
+    /// name them, are not; the FIPS 140-3, CNSA 1.0, CNSA 2.0 and DAL-A
+    /// profiles, which use only approved algorithms, are. `REQ-APPR-001`.
     pub const fn available(self) -> bool {
-        true
+        !(cfg!(ic_approved_only) && matches!(self, Self::Default | Self::PostQuantum))
     }
 
     /// How many key shares a client sends in its first flight. Two for the
@@ -931,6 +948,13 @@ impl ClientConfig {
     /// Check the configuration.
     pub fn validate(&self) -> Result<()> {
         self.common.validate()?;
+        // REQ-APPR-003: refused here, not when the first connection starts.
+        if cfg!(ic_approved_only) && self.ech_configs.is_some() {
+            return Err(Error::new(
+                ErrorKind::InvalidConfig,
+                "ECH needs HPKE over X25519, which this build, compiled with --cfg ic_approved_only, leaves out; refusing rather than send the server name in the clear",
+            ));
+        }
         // REQ-CFG-007.
         if self.common.profile.is_cnsa() {
             if self.early_data {

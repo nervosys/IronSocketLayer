@@ -13,14 +13,17 @@ use ironsocketlayer::enums::{
 use ironsocketlayer::ErrorKind;
 use isl_ontology::{Kind, Relation};
 
-/// Cipher suites the record layer implements.
+/// Cipher suites the record layer implements. A build with
+/// `--cfg ic_approved_only` has no ChaCha20-Poly1305 (REQ-APPR-002).
 const IMPLEMENTED_SUITES: &[CipherSuite] = &[
     CipherSuite::TlsAes128GcmSha256,
     CipherSuite::TlsAes256GcmSha384,
+    #[cfg(not(ic_approved_only))]
     CipherSuite::TlsChaCha20Poly1305Sha256,
 ];
 
-/// Extensions the handshake implements.
+/// Extensions the handshake implements. A build with
+/// `--cfg ic_approved_only` has no HPKE, so no ECH (REQ-APPR-003).
 const IMPLEMENTED_EXTENSIONS: &[ExtensionType] = &[
     ExtensionType::ServerName,
     ExtensionType::SupportedGroups,
@@ -35,7 +38,9 @@ const IMPLEMENTED_EXTENSIONS: &[ExtensionType] = &[
     ExtensionType::PskKeyExchangeModes,
     ExtensionType::StatusRequest,
     ExtensionType::RecordSizeLimit,
+    #[cfg(not(ic_approved_only))]
     ExtensionType::EncryptedClientHello,
+    #[cfg(not(ic_approved_only))]
     ExtensionType::EchOuterExtensions,
     ExtensionType::PostHandshakeAuth,
     ExtensionType::EarlyData,

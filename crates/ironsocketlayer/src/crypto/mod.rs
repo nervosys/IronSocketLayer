@@ -354,6 +354,7 @@ impl AeadAlg {
 enum AeadImpl {
     Aes128(ic_cipher::Aes128Gcm),
     Aes256(ic_cipher::Aes256Gcm),
+    #[cfg(not(ic_approved_only))]
     ChaCha(ic_cipher::ChaCha20Poly1305),
 }
 
@@ -378,7 +379,10 @@ impl AeadKey {
         let inner = match alg {
             AeadAlg::Aes128Gcm => AeadImpl::Aes128(ic_cipher::Aes128Gcm::new(key)?),
             AeadAlg::Aes256Gcm => AeadImpl::Aes256(ic_cipher::Aes256Gcm::new(key)?),
+            #[cfg(not(ic_approved_only))]
             AeadAlg::ChaCha20Poly1305 => AeadImpl::ChaCha(ic_cipher::ChaCha20Poly1305::new(key)?),
+            #[cfg(ic_approved_only)]
+            AeadAlg::ChaCha20Poly1305 => return Err(excluded()),
         };
         Ok(Self { alg, inner })
     }
@@ -399,6 +403,7 @@ impl AeadKey {
         match &self.inner {
             AeadImpl::Aes128(k) => k.seal_detached(nonce, aad, in_out, tag)?,
             AeadImpl::Aes256(k) => k.seal_detached(nonce, aad, in_out, tag)?,
+            #[cfg(not(ic_approved_only))]
             AeadImpl::ChaCha(k) => k.seal_detached(nonce, aad, in_out, tag)?,
         }
         Ok(())
@@ -416,6 +421,7 @@ impl AeadKey {
         let r = match &self.inner {
             AeadImpl::Aes128(k) => k.open_detached(nonce, aad, in_out, tag),
             AeadImpl::Aes256(k) => k.open_detached(nonce, aad, in_out, tag),
+            #[cfg(not(ic_approved_only))]
             AeadImpl::ChaCha(k) => k.open_detached(nonce, aad, in_out, tag),
         };
         // REQ-ERR-002: a module that cannot open anything is not the peer's
@@ -447,6 +453,8 @@ pub enum HeaderProtectionKey {
     /// AES-256 in ECB on the sample.
     Aes256(Box<ic_cipher::Aes256>),
     /// ChaCha20 keyed by the HP key, counter and nonce from the sample.
+    /// Not in a build with `--cfg ic_approved_only`.
+    #[cfg(not(ic_approved_only))]
     ChaCha20(Box<[u8; 32]>),
 }
 
@@ -458,6 +466,7 @@ impl core::fmt::Debug for HeaderProtectionKey {
 
 impl Drop for HeaderProtectionKey {
     fn drop(&mut self) {
+        #[cfg(not(ic_approved_only))]
         if let Self::ChaCha20(k) = self {
             k.zeroize();
         }
@@ -476,11 +485,14 @@ impl HeaderProtectionKey {
         Ok(match alg {
             AeadAlg::Aes128Gcm => Self::Aes128(Box::new(ic_cipher::Aes128::new(key)?)),
             AeadAlg::Aes256Gcm => Self::Aes256(Box::new(ic_cipher::Aes256::new(key)?)),
+            #[cfg(not(ic_approved_only))]
             AeadAlg::ChaCha20Poly1305 => {
                 let mut k = Box::new([0u8; 32]);
                 k.copy_from_slice(key);
                 Self::ChaCha20(k)
             }
+            #[cfg(ic_approved_only)]
+            AeadAlg::ChaCha20Poly1305 => return Err(excluded()),
         })
     }
 
@@ -497,6 +509,7 @@ impl HeaderProtectionKey {
         match self {
             Self::Aes128(k) => k.encrypt_block(&mut block)?,
             Self::Aes256(k) => k.encrypt_block(&mut block)?,
+            #[cfg(not(ic_approved_only))]
             Self::ChaCha20(k) => {
                 let counter = u32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
                 let mut m = [0u8; 16];
@@ -546,6 +559,17 @@ impl core::fmt::Debug for SecretVec {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "SecretVec({} bytes)", self.0.len())
     }
+}
+
+/// The error for an algorithm IronCrypto leaves out of a build with
+/// `--cfg ic_approved_only`. A configuration that names one is refused before
+/// a handshake starts; this is the backstop. `REQ-APPR-002`.
+#[cfg(ic_approved_only)]
+pub(crate) fn excluded() -> Error {
+    Error::new(
+        ErrorKind::InvalidConfig,
+        "algorithm not in this build: it was compiled with --cfg ic_approved_only",
+    )
 }
 
 /// Fill `out` from `rng`.

@@ -3,11 +3,45 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## Unreleased
+## 0.7.2 (not released)
 
-The Encrypted Client Hello interop tests and the README's `isl probe --ech`
-example use `cloudflare-ech.com`. `crypto.cloudflare.com` has answered every
-request with `502 Bad Gateway` since 2026-10-16. No change to the library.
+IronSocketLayer builds, and is checked, with IronCrypto's
+`--cfg ic_approved_only`, in which only the FIPS-approved algorithms exist.
+Requires IronCrypto 0.3.2 or later, below 0.4, the first with that cfg. No
+API change in the default build. See docs/APPROVED-ONLY.md. Not a FIPS 140-3
+validation.
+
+### Added
+- REQ-APPR-001: in that build `profile:default` and `profile:post-quantum`,
+  which name X25519, Ed25519 and ChaCha20-Poly1305, are unavailable: refused
+  with `error:invalid-config`, offering nothing, never narrowed. The ontology
+  says `unavailable` and why, and `recommend` and `for_intent` refuse an
+  intent that selects one. The FIPS 140-3, CNSA 1.0, CNSA 2.0 and DAL-A
+  profiles are unchanged.
+- REQ-APPR-002: ChaCha20-Poly1305, X25519, X25519MLKEM768 and Ed25519 are not
+  implemented there, and the ontology reports them `excluded`. Naming one in
+  a configuration, or loading or generating an Ed25519 key, is
+  `error:invalid-config`; an Ed25519 key in a peer's certificate is
+  `error:unsupported-certificate`. Wire code points and enum variants remain.
+- REQ-APPR-003: no HPKE there, so a client configuration with
+  `ech_configs` is refused at validation, and no ECH server key can be made.
+  GREASE is still sent.
+- `scripts/approved-only.sh` and a CI job: clippy, `tests/approved_only.rs`
+  and the ontology, agreement, FIPS, CNSA, error-state and traceability tests
+  in that build, and its Cortex-M4 `no_std` build.
+
+### Fixed
+- REQ-ERR-003: a signing key the IronCrypto module refused, because it is in
+  its error state or (in the approved-only build) has not run its
+  self-tests, is `error:fips-module`. Before, loading reported it as an
+  invalid P-256, P-384 or P-521 scalar or a rejected RSA key
+  (`error:invalid-config`), and generation retried 64 times and reported
+  `error:entropy`.
+
+### Changed
+- The Encrypted Client Hello interop tests and the README's `isl probe --ech`
+  example use `cloudflare-ech.com`. `crypto.cloudflare.com` has answered every
+  request with `502 Bad Gateway` since 2026-10-16.
 
 ## 0.7.1 (2026-10-17)
 

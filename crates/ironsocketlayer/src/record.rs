@@ -33,15 +33,18 @@ pub fn suite_params(suite: CipherSuite) -> Option<(AeadAlg, HashAlg)> {
     Some(match suite {
         CipherSuite::TlsAes128GcmSha256 => (AeadAlg::Aes128Gcm, HashAlg::Sha256),
         CipherSuite::TlsAes256GcmSha384 => (AeadAlg::Aes256Gcm, HashAlg::Sha384),
+        #[cfg(not(ic_approved_only))]
         CipherSuite::TlsChaCha20Poly1305Sha256 => (AeadAlg::ChaCha20Poly1305, HashAlg::Sha256),
         _ => return None,
     })
 }
 
-/// Suites this build implements, default preference order.
+/// Suites this build implements, default preference order. Without
+/// ChaCha20-Poly1305 in a build with `--cfg ic_approved_only`. `REQ-APPR-002`.
 pub const IMPLEMENTED_SUITES: &[CipherSuite] = &[
     CipherSuite::TlsAes128GcmSha256,
     CipherSuite::TlsAes256GcmSha384,
+    #[cfg(not(ic_approved_only))]
     CipherSuite::TlsChaCha20Poly1305Sha256,
 ];
 

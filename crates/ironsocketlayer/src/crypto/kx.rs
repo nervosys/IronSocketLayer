@@ -19,7 +19,10 @@
 //! Requirement trace: `REQ-KX-001` (reject invalid peer shares),
 //! `REQ-KX-002` (reject an all-zero X25519 output, RFC 8446 §7.4.2),
 //! `REQ-KX-003` (ephemeral private keys are zeroized), `REQ-KX-004` (hybrid
-//! component order).
+//! component order), `REQ-APPR-002` (in a build with `--cfg ic_approved_only`,
+//! IronCrypto leaves X25519 out, and so this build leaves out X25519 and
+//! X25519MLKEM768: neither is implemented, and a configuration naming one
+//! is refused).
 
 use alloc::vec::Vec;
 
@@ -35,8 +38,10 @@ pub type SharedSecret = super::SecretVec;
 
 /// Groups this build can negotiate, in the default preference order.
 pub const IMPLEMENTED_GROUPS: &[NamedGroup] = &[
+    #[cfg(not(ic_approved_only))]
     NamedGroup::X25519MlKem768,
     NamedGroup::SecP256r1MlKem768,
+    #[cfg(not(ic_approved_only))]
     NamedGroup::X25519,
     NamedGroup::Secp256r1,
     NamedGroup::Secp384r1,
@@ -74,16 +79,26 @@ pub fn ic_ids(group: NamedGroup) -> &'static [&'static str] {
 
 /// Whether the group resists a quantum adversary (has an ML-KEM component).
 pub fn is_post_quantum(group: NamedGroup) -> bool {
-    pure_kem_of(group).is_some() || hybrid_of(group).is_some()
+    is_hybrid(group)
+        || matches!(
+            group,
+            NamedGroup::MlKem512 | NamedGroup::MlKem768 | NamedGroup::MlKem1024
+        )
 }
 
 /// Whether the group is a hybrid of classical and post-quantum.
+///
+/// What the group is, whether or not this build implements it.
 pub fn is_hybrid(group: NamedGroup) -> bool {
-    hybrid_of(group).is_some()
+    matches!(
+        group,
+        NamedGroup::X25519MlKem768 | NamedGroup::SecP256r1MlKem768 | NamedGroup::SecP384r1MlKem1024
+    )
 }
 
 #[derive(Clone, Copy)]
 enum Ec {
+    #[cfg(not(ic_approved_only))]
     X25519,
     P256,
     P384,
@@ -93,7 +108,9 @@ enum Ec {
 impl Ec {
     const fn private_len(self) -> usize {
         match self {
-            Self::X25519 | Self::P256 => 32,
+            #[cfg(not(ic_approved_only))]
+            Self::X25519 => 32,
+            Self::P256 => 32,
             Self::P384 => 48,
             Self::P521 => 66,
         }
@@ -101,6 +118,7 @@ impl Ec {
 
     const fn public_len(self) -> usize {
         match self {
+            #[cfg(not(ic_approved_only))]
             Self::X25519 => 32,
             Self::P256 => 65,
             Self::P384 => 97,
@@ -110,7 +128,9 @@ impl Ec {
 
     const fn secret_len(self) -> usize {
         match self {
-            Self::X25519 | Self::P256 => 32,
+            #[cfg(not(ic_approved_only))]
+            Self::X25519 => 32,
+            Self::P256 => 32,
             Self::P384 => 48,
             Self::P521 => 66,
         }
@@ -118,6 +138,7 @@ impl Ec {
 
     fn public_key(self, sk: &[u8], out: &mut [u8]) -> ic_core::Result<()> {
         match self {
+            #[cfg(not(ic_approved_only))]
             Self::X25519 => ic_ec::X25519::public_key(sk, out),
             Self::P256 => ic_ec::EcdhP256::public_key(sk, out),
             Self::P384 => ic_ec::EcdhP384::public_key(sk, out),
@@ -134,13 +155,18 @@ impl Ec {
                 "key share has the wrong length",
             ));
         }
-        if !matches!(self, Self::X25519) && peer.first() != Some(&0x04) {
+        #[cfg(not(ic_approved_only))]
+        let nist = !matches!(self, Self::X25519);
+        #[cfg(ic_approved_only)]
+        let nist = true;
+        if nist && peer.first() != Some(&0x04) {
             return Err(Error::new(
                 ErrorKind::IllegalParameter,
                 "key share is not an uncompressed point",
             ));
         }
         let r = match self {
+            #[cfg(not(ic_approved_only))]
             Self::X25519 => ic_ec::X25519::agree(sk, peer, out),
             Self::P256 => ic_ec::EcdhP256::agree(sk, peer, out),
             Self::P384 => ic_ec::EcdhP384::agree(sk, peer, out),
@@ -183,6 +209,7 @@ impl Ec {
 
 fn ec_of(group: NamedGroup) -> Option<Ec> {
     Some(match group {
+        #[cfg(not(ic_approved_only))]
         NamedGroup::X25519 => Ec::X25519,
         NamedGroup::Secp256r1 => Ec::P256,
         NamedGroup::Secp384r1 => Ec::P384,
@@ -495,6 +522,7 @@ fn pure_kem_of(group: NamedGroup) -> Option<Kem> {
 /// shares and the secret (only in X25519MLKEM768). `REQ-KX-004`.
 fn hybrid_of(group: NamedGroup) -> Option<(Ec, Kem, bool)> {
     match group {
+        #[cfg(not(ic_approved_only))]
         NamedGroup::X25519MlKem768 => Some((Ec::X25519, Kem::K768, true)),
         NamedGroup::SecP256r1MlKem768 => Some((Ec::P256, Kem::K768, false)),
         NamedGroup::SecP384r1MlKem1024 => Some((Ec::P384, Kem::K1024, false)),

@@ -327,6 +327,12 @@ mod tests {
             recommend("intent:nope", &Policy::default()).unwrap_err(),
             NoRecommendation::UnknownIntent
         );
-        assert!(recommend("https-client", &Policy::default()).is_ok());
+        // The prefix may be left off. With a FIPS policy, so that the
+        // profile exists in a build with `--cfg ic_approved_only` too.
+        let fips = Policy {
+            require_fips: true,
+            ..Policy::default()
+        };
+        assert!(recommend("https-client", &fips).is_ok());
     }
 }

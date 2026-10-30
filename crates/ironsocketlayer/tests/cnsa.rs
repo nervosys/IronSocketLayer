@@ -209,6 +209,8 @@ fn the_cnsa_profiles_refuse_what_their_tls_profiles_forbid() {
     for (profile, p, kind, accepted) in [
         (Profile::Cnsa1, &pki, KeyKind::EcdsaP384, true),
         (Profile::Cnsa1, &pki, KeyKind::EcdsaP256, false),
+        // No Ed25519 key can be made with --cfg ic_approved_only.
+        #[cfg(not(ic_approved_only))]
         (Profile::Cnsa1, &pki, KeyKind::Ed25519, false),
         (Profile::Cnsa1, &pki, KeyKind::MlDsa87, false),
         (Profile::Fips140_3, &pki, KeyKind::EcdsaP256, true),

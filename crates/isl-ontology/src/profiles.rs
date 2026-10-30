@@ -172,14 +172,30 @@ pub const DAL_A_SIGSCHEMES: &[&str] = &["sigscheme:ecdsa-secp384r1-sha384"];
 
 const NOT_VALIDATED: &str = "IronCrypto implements the FIPS 140-3 operational discipline but is NOT CMVP-validated. This profile restricts IronSocketLayer to approved algorithms and routes them through the ic_fips gate; it does not make a deployment FIPS-validated.";
 
+/// The status of a profile that needs an algorithm IronCrypto leaves out of a
+/// build with `--cfg ic_approved_only`: unavailable there, and refused, never
+/// narrowed to what remains.
+const NEEDS_UNAPPROVED: ProfileStatus = if cfg!(ic_approved_only) {
+    ProfileStatus::Unavailable
+} else {
+    ProfileStatus::Available
+};
+
+/// Why, in that build.
+const NEEDS_UNAPPROVED_REASON: &str = if cfg!(ic_approved_only) {
+    "This build was compiled with --cfg ic_approved_only, which leaves out X25519, Ed25519 and ChaCha20-Poly1305; this profile names them. Use profile:fips-140-3, profile:cnsa-1, profile:cnsa-2 or profile:dal-a if the task allows, and do not substitute without asking."
+} else {
+    ""
+};
+
 /// Every profile.
 pub static PROFILES: &[Profile] = &[
     Profile {
         id: "profile:default",
         name: "Default",
         summary: "Modern Internet interoperability with hybrid post-quantum key exchange preferred.",
-        status: ProfileStatus::Available,
-        status_reason: "",
+        status: NEEDS_UNAPPROVED,
+        status_reason: NEEDS_UNAPPROVED_REASON,
         suites: DEFAULT_SUITES,
         groups: DEFAULT_GROUPS,
         sigschemes: DEFAULT_SIGSCHEMES,
@@ -194,8 +210,8 @@ pub static PROFILES: &[Profile] = &[
         id: "profile:post-quantum",
         name: "Post-quantum",
         summary: "Refuses any session whose key exchange is not post-quantum.",
-        status: ProfileStatus::Available,
-        status_reason: "",
+        status: NEEDS_UNAPPROVED,
+        status_reason: NEEDS_UNAPPROVED_REASON,
         suites: POST_QUANTUM_SUITES,
         groups: POST_QUANTUM_GROUPS,
         sigschemes: POST_QUANTUM_SIGSCHEMES,

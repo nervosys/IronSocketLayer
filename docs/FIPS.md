@@ -81,6 +81,16 @@ the X25519 secret as auxiliary input. That is an argument, not an approval, and
 the FIPS profile does not rely on it. It uses SecP256r1MLKEM768 for
 post-quantum key exchange instead, in which every component is approved.
 
+## A build with only the approved algorithms
+
+The profiles above refuse non-approved algorithms at configuration time;
+the algorithms are still in the program. Built with IronCrypto's
+`--cfg ic_approved_only`, they are not: ChaCha20-Poly1305, X25519, Ed25519
+and HPKE are left out, `profile:default` and `profile:post-quantum` are
+unavailable, and ECH is refused. The module comes up in approved mode and
+serves nothing until `enable_fips()` has run its self-tests. See
+[APPROVED-ONLY.md](APPROVED-ONLY.md). This is still not a validation.
+
 ## What a validation would still need
 
 * IronCrypto's own CMVP submission, with ACVP testing of each algorithm.

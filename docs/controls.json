@@ -2,7 +2,7 @@
   "schema": "ironsecurity-controls/1",
   "project": "IronSocketLayer",
   "description": "TLS 1.3 and QUIC-TLS for the IronSecurity stack, in Rust over IronCrypto, with certificate validation by IronPKI and machine-readable reports of what each connection established. A library; it is not an information system.",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "fipsValidated": false,
   "controls": [
     {

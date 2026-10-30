@@ -72,7 +72,7 @@ pins the peer's public key instead, which is stricter and easier to provision.
 
 Named in the ontology but not implemented: X448, Ed448 and the
 other groups and schemes marked so there. TLS 1.2 is excluded by design.
-IronSocketLayer 0.7 needs IronCrypto 0.3.1 or later, below 0.4, and IronPKI 0.4 (0.4.1 from 0.7.1).
+IronSocketLayer 0.7 needs IronCrypto 0.3.1 or later, below 0.4 (0.3.2 from 0.7.2), and IronPKI 0.4 (0.4.1 from 0.7.1).
 
 ## Evidence that it interoperates
 
@@ -267,7 +267,10 @@ DO-178C certification.** What they provide:
   build a connection unless IronCrypto's module is operational in approved mode
   (`ironsocketlayer::policy::enable_fips()`), check every negotiated algorithm
   through `ic_fips::check`, and record the service indicators in the session
-  report. See [docs/FIPS.md](docs/FIPS.md).
+  report. See [docs/FIPS.md](docs/FIPS.md). Built with IronCrypto's
+  `--cfg ic_approved_only`, the program contains only the approved algorithms;
+  the profiles that need others are refused, not narrowed. See
+  [docs/APPROVED-ONLY.md](docs/APPROVED-ONLY.md).
 * **DO-178C DAL-A**: the `dal-a` profile narrows the protocol to one suite, one
   group, one scheme and mandatory mutual authentication. The code carries 260
   tagged low-level requirements traced to high-level requirements and to their

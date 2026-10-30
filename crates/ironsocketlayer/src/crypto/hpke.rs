@@ -12,35 +12,42 @@
 //! sequence, checked here against Appendix A.1.1), `REQ-HPKE-002` (an
 //! all-zero DH output is refused), `REQ-HPKE-003` (a context never reuses a
 //! nonce: `ic-hpke` refuses at the last sequence number, and this adapter
-//! keeps no sequence of its own).
+//! keeps no sequence of its own), `REQ-APPR-003` (in a build with
+//! `--cfg ic_approved_only`, IronCrypto leaves HPKE out: no key pair or
+//! context can be made, and every setup is refused).
 
 use alloc::vec::Vec;
 
 use ic_core::traits::RandomSource;
 
-use crate::error::{Error, ErrorKind, Result};
+use crate::error::Result;
+#[cfg(not(ic_approved_only))]
+use crate::error::{Error, ErrorKind};
 
 /// `DHKEM(X25519, HKDF-SHA256)`.
-pub const KEM_X25519_SHA256: u16 = ic_hpke::KEM_ID;
+pub const KEM_X25519_SHA256: u16 = 0x0020;
 /// `HKDF-SHA256`.
-pub const KDF_HKDF_SHA256: u16 = ic_hpke::KDF_ID;
+pub const KDF_HKDF_SHA256: u16 = 0x0001;
 /// `AES-128-GCM`.
-pub const AEAD_AES_128_GCM: u16 = ic_hpke::Aead::Aes128Gcm.id();
+pub const AEAD_AES_128_GCM: u16 = 0x0001;
 /// `AES-256-GCM`.
-pub const AEAD_AES_256_GCM: u16 = ic_hpke::Aead::Aes256Gcm.id();
+pub const AEAD_AES_256_GCM: u16 = 0x0002;
 /// `ChaCha20-Poly1305`.
-pub const AEAD_CHACHA20_POLY1305: u16 = ic_hpke::Aead::ChaCha20Poly1305.id();
+pub const AEAD_CHACHA20_POLY1305: u16 = 0x0003;
 
 /// Length of an X25519 encapsulated key.
-pub const ENC_LEN: usize = ic_hpke::ENC_LEN;
+pub const ENC_LEN: usize = 32;
 
+#[cfg(not(ic_approved_only))]
 const TAG_LEN: usize = ic_hpke::TAG_LEN;
 
+#[cfg(not(ic_approved_only))]
 /// The HPKE AEAD with this identifier, if implemented.
 pub fn aead_for(id: u16) -> Option<ic_hpke::Aead> {
     ic_hpke::Aead::from_id(id)
 }
 
+#[cfg(not(ic_approved_only))]
 fn aead(id: u16) -> Result<ic_hpke::Aead> {
     aead_for(id).ok_or(Error::new(
         ErrorKind::HandshakeFailure,
@@ -48,6 +55,7 @@ fn aead(id: u16) -> Result<ic_hpke::Aead> {
     ))
 }
 
+#[cfg(not(ic_approved_only))]
 /// Map IronCrypto's error for a value the peer supplied (a public key or an
 /// encapsulation): it is the peer's parameter that is wrong.
 fn peer_error(e: ic_core::Error) -> Error {
@@ -65,15 +73,18 @@ fn peer_error(e: ic_core::Error) -> Error {
     }
 }
 
+#[cfg(not(ic_approved_only))]
 /// A key pair for the receiving side.
 pub struct KemKeyPair(ic_hpke::KeyPair);
 
+#[cfg(not(ic_approved_only))]
 impl core::fmt::Debug for KemKeyPair {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("KemKeyPair(x25519)")
     }
 }
 
+#[cfg(not(ic_approved_only))]
 impl KemKeyPair {
     /// Generate a fresh key pair.
     pub fn generate(rng: &mut dyn RandomSource) -> Result<Self> {
@@ -98,15 +109,18 @@ impl KemKeyPair {
     }
 }
 
+#[cfg(not(ic_approved_only))]
 /// An established HPKE context.
 pub struct Context(ic_hpke::Context);
 
+#[cfg(not(ic_approved_only))]
 impl core::fmt::Debug for Context {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "hpke::Context(seq {})", self.0.sequence())
     }
 }
 
+#[cfg(not(ic_approved_only))]
 /// `SetupBaseS`: encapsulate to `pk_r`, returning `enc` and the sender context.
 pub fn setup_sender(
     pk_r: &[u8],
@@ -118,6 +132,7 @@ pub fn setup_sender(
     Ok((enc.to_vec(), Context(ctx)))
 }
 
+#[cfg(not(ic_approved_only))]
 /// `SetupBaseR`: decapsulate `enc` with `key`, returning the receiver context.
 pub fn setup_receiver(enc: &[u8], key: &KemKeyPair, info: &[u8], aead_id: u16) -> Result<Context> {
     ic_hpke::setup_receiver(enc, &key.0, info, aead(aead_id)?)
@@ -125,6 +140,7 @@ pub fn setup_receiver(enc: &[u8], key: &KemKeyPair, info: &[u8], aead_id: u16) -
         .map_err(peer_error)
 }
 
+#[cfg(not(ic_approved_only))]
 impl Context {
     /// Encrypt `pt` with `aad`, returning ciphertext followed by the tag.
     pub fn seal(&mut self, aad: &[u8], pt: &[u8]) -> Result<Vec<u8>> {
@@ -164,9 +180,102 @@ impl Context {
     }
 }
 
-#[cfg(test)]
+/// Without HPKE, in a build with `--cfg ic_approved_only`: no value of the
+/// types below can exist, so the methods on them cannot be reached.
+#[cfg(ic_approved_only)]
+#[derive(Debug)]
+enum Never {}
+
+/// Which HPKE AEAD identifiers this build implements: none, in a build with
+/// `--cfg ic_approved_only`. `REQ-APPR-003`.
+#[cfg(ic_approved_only)]
+pub fn aead_for(_id: u16) -> Option<()> {
+    None
+}
+
+/// A key pair for the receiving side; none can be made in this build.
+#[cfg(ic_approved_only)]
+#[derive(Debug)]
+pub struct KemKeyPair(Never);
+
+#[cfg(ic_approved_only)]
+impl KemKeyPair {
+    /// Refused: this build has no HPKE.
+    pub fn generate(_rng: &mut dyn RandomSource) -> Result<Self> {
+        Err(super::excluded())
+    }
+
+    /// Refused: this build has no HPKE.
+    pub fn from_private(_sk: &[u8]) -> Result<Self> {
+        Err(super::excluded())
+    }
+
+    /// The public key.
+    pub fn public(&self) -> &[u8; 32] {
+        match self.0 {}
+    }
+}
+
+/// An established HPKE context; none can be made in this build.
+#[cfg(ic_approved_only)]
+#[derive(Debug)]
+pub struct Context(Never);
+
+/// Refused: this build has no HPKE.
+#[cfg(ic_approved_only)]
+pub fn setup_sender(
+    _pk_r: &[u8],
+    _info: &[u8],
+    _aead_id: u16,
+    _rng: &mut dyn RandomSource,
+) -> Result<(Vec<u8>, Context)> {
+    Err(super::excluded())
+}
+
+/// Refused: this build has no HPKE.
+#[cfg(ic_approved_only)]
+pub fn setup_receiver(
+    _enc: &[u8],
+    key: &KemKeyPair,
+    _info: &[u8],
+    _aead_id: u16,
+) -> Result<Context> {
+    match key.0 {}
+}
+
+#[cfg(ic_approved_only)]
+impl Context {
+    /// Unreachable: no context exists in this build.
+    pub fn seal(&mut self, _aad: &[u8], _pt: &[u8]) -> Result<Vec<u8>> {
+        match self.0 {}
+    }
+
+    /// Unreachable: no context exists in this build.
+    pub fn open(&mut self, _aad: &[u8], _ct: &[u8]) -> Result<Vec<u8>> {
+        match self.0 {}
+    }
+
+    /// Unreachable: no context exists in this build.
+    pub fn sequence(&self) -> u64 {
+        match self.0 {}
+    }
+}
+
+#[cfg(all(test, not(ic_approved_only)))]
 mod tests {
     use super::*;
+
+    /// The code points are written out so that a build without HPKE has
+    /// them too; here they must match IronCrypto's.
+    #[test]
+    fn code_points_match_ironcrypto() {
+        assert_eq!(KEM_X25519_SHA256, ic_hpke::KEM_ID);
+        assert_eq!(KDF_HKDF_SHA256, ic_hpke::KDF_ID);
+        assert_eq!(AEAD_AES_128_GCM, ic_hpke::Aead::Aes128Gcm.id());
+        assert_eq!(AEAD_AES_256_GCM, ic_hpke::Aead::Aes256Gcm.id());
+        assert_eq!(AEAD_CHACHA20_POLY1305, ic_hpke::Aead::ChaCha20Poly1305.id());
+        assert_eq!(ENC_LEN, ic_hpke::ENC_LEN);
+    }
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len())

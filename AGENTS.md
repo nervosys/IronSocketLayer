@@ -33,9 +33,12 @@ unavailable profile; it never falls back.
 
 ## When the answer is "unavailable", stop
 
-Every profile is available in this build, including `profile:cnsa-2`
+Every profile is available in the default build, including `profile:cnsa-2`
 (ML-KEM-1024, ML-DSA-87, AES-256, with the FIPS gate on). A build without an
-algorithm a profile needs reports it unavailable instead. If `recommend`
+algorithm a profile needs reports it unavailable instead: built with
+IronCrypto's `--cfg ic_approved_only` ([docs/APPROVED-ONLY.md](docs/APPROVED-ONLY.md)),
+`profile:default` and `profile:post-quantum` are unavailable, and so is every
+intent that selects them unless the policy asks for FIPS. If `recommend`
 returns `unavailable` or `impossible`, report it to the user. **Do not substitute another profile.** Falling back is the downgrade
 attack, performed by the agent itself.
 

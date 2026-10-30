@@ -169,9 +169,11 @@ impl MlDsa {
 pub const OID_P521: &[u8] = &[0x2b, 0x81, 0x04, 0x00, 0x23];
 
 /// Every scheme this build can verify, in the default preference order.
+/// Without Ed25519 in a build with `--cfg ic_approved_only`. `REQ-APPR-002`.
 pub const VERIFY_SCHEMES: &[SignatureScheme] = &[
     SignatureScheme::MlDsa65,
     SignatureScheme::MlDsa87,
+    #[cfg(not(ic_approved_only))]
     SignatureScheme::Ed25519,
     SignatureScheme::EcdsaSecp256r1Sha256,
     SignatureScheme::EcdsaSecp384r1Sha384,
@@ -419,9 +421,20 @@ fn verify_p521(pk: &[u8], message: &[u8], signature: &[u8]) -> Result<()> {
     ic_ec::p521::EcdsaP521Sha512::verify(pk, message, &fixed).map_err(verify_failed)
 }
 
+#[cfg(not(ic_approved_only))]
 #[inline(never)]
 fn verify_ed25519(pk: &[u8], message: &[u8], signature: &[u8]) -> Result<()> {
     ic_ec::Ed25519::verify(pk, message, signature).map_err(verify_failed)
+}
+
+/// An Ed25519 key arrives as data, from a certificate; this build cannot
+/// check its signatures. `REQ-APPR-002`.
+#[cfg(ic_approved_only)]
+fn verify_ed25519(_: &[u8], _: &[u8], _: &[u8]) -> Result<()> {
+    Err(Error::new(
+        ErrorKind::UnsupportedCertificate,
+        "Ed25519 is not in this build: it was compiled with --cfg ic_approved_only",
+    ))
 }
 
 #[inline(never)]
@@ -462,6 +475,7 @@ enum KeyImpl {
     P256(Zeroizing<[u8; 32]>),
     P384(Zeroizing<[u8; 48]>),
     P521(Zeroizing<[u8; 66]>),
+    #[cfg(not(ic_approved_only))]
     Ed25519(Box<ic_ec::Ed25519Key>),
     Rsa(Box<ic_rsa::RsaPrivateKey>),
     /// The expanded secret key; `SecretVec` zeroizes it.
@@ -479,6 +493,16 @@ pub struct SigningKey {
 impl core::fmt::Debug for SigningKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "SigningKey({})", self.kind_id())
+    }
+}
+
+/// A key IronCrypto refused. The module refusing (its error state, or, in a
+/// build with `--cfg ic_approved_only`, self-tests not yet run) is
+/// `error:fips-module`; anything else is the key's fault. `REQ-ERR-003`.
+fn key_error(e: ic_core::Error, what: &'static str) -> Error {
+    match e.kind() {
+        ic_core::ErrorKind::ModuleErrorState | ic_core::ErrorKind::SelfTestFailed => Error::from(e),
+        _ => Error::new(ErrorKind::InvalidConfig, what),
     }
 }
 
@@ -570,6 +594,7 @@ fn sign_p521(sk: &[u8; 66], message: &[u8], out: &mut [u8]) -> Result<usize> {
     ecdsa_der_into::<{ ic_pkix::ecdsa_signature::max_der_len(132) }>(&sig, out)
 }
 
+#[cfg(not(ic_approved_only))]
 #[inline(never)]
 fn sign_ed25519(key: &ic_ec::Ed25519Key, message: &[u8], out: &mut [u8]) -> Result<usize> {
     let sig = out
@@ -625,6 +650,7 @@ impl SigningKey {
             KeyImpl::P256(sk) => sign_p256(sk.get(), message, out),
             KeyImpl::P384(sk) => sign_p384(sk.get(), message, out),
             KeyImpl::P521(sk) => sign_p521(sk.get(), message, out),
+            #[cfg(not(ic_approved_only))]
             KeyImpl::Ed25519(k) => sign_ed25519(k, message, out),
             KeyImpl::Rsa(k) => sign_rsa_pss(k, scheme, message, rng, out),
             KeyImpl::MlDsa(p, sk) => {
@@ -682,7 +708,7 @@ impl SigningKey {
                 // From the primes, so a file whose CRT values disagree with them
                 // cannot produce a faulty signature that leaks the factorization.
                 let key = ic_rsa::RsaPrivateKey::from_primes(prime1, prime2, public_exponent)
-                    .map_err(|_| Error::new(ErrorKind::InvalidConfig, "rsa key rejected"))?;
+                    .map_err(|e| key_error(e, "rsa key rejected"))?;
                 Self::rsa(key)
             }
             ic_pkix::PrivateKeyInfo::X25519(_) => Err(Error::new(
@@ -756,7 +782,7 @@ impl SigningKey {
         let sk = copy_fixed::<32>(scalar)?;
         let mut pk = [0u8; 65];
         ic_ec::EcdsaP256Sha256::public_key(sk.get(), &mut pk)
-            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "invalid P-256 scalar"))?;
+            .map_err(|e| key_error(e, "invalid P-256 scalar"))?;
         Ok(Self {
             spki: ec_spki(ic_pkix::oid::P256, &pk)?,
             inner: KeyImpl::P256(sk),
@@ -768,7 +794,7 @@ impl SigningKey {
         let sk = copy_fixed::<48>(scalar)?;
         let mut pk = [0u8; 97];
         ic_ec::EcdsaP384Sha384::public_key(sk.get(), &mut pk)
-            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "invalid P-384 scalar"))?;
+            .map_err(|e| key_error(e, "invalid P-384 scalar"))?;
         Ok(Self {
             spki: ec_spki(ic_pkix::oid::P384, &pk)?,
             inner: KeyImpl::P384(sk),
@@ -780,17 +806,26 @@ impl SigningKey {
         let sk = copy_fixed::<66>(scalar)?;
         let mut pk = [0u8; 133];
         ic_ec::p521::EcdsaP521Sha512::public_key(sk.get(), &mut pk)
-            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "invalid P-521 scalar"))?;
+            .map_err(|e| key_error(e, "invalid P-521 scalar"))?;
         Ok(Self {
             spki: ec_spki(OID_P521, &pk)?,
             inner: KeyImpl::P521(sk),
         })
     }
 
+    /// An Ed25519 key from its 32-byte seed. Refused, with
+    /// `error:invalid-config`, in a build with `--cfg ic_approved_only`.
+    /// `REQ-APPR-002`.
+    #[cfg(ic_approved_only)]
+    pub fn ed25519(_seed: &[u8]) -> Result<Self> {
+        Err(super::excluded())
+    }
+
     /// An Ed25519 key from its 32-byte seed.
+    #[cfg(not(ic_approved_only))]
     pub fn ed25519(seed: &[u8]) -> Result<Self> {
-        let key = ic_ec::Ed25519Key::from_seed(seed)
-            .map_err(|_| Error::new(ErrorKind::InvalidConfig, "invalid Ed25519 seed"))?;
+        let key =
+            ic_ec::Ed25519Key::from_seed(seed).map_err(|e| key_error(e, "invalid Ed25519 seed"))?;
         let mut alg = Vec::new();
         push_tlv(&mut alg, der::OID, ic_pkix::oid::ED25519);
         let spki = spki_from_parts(&alg, key.public_key())?;
@@ -850,6 +885,11 @@ impl SigningKey {
     /// Generate a fresh key of the given kind. Used by tests and by agents
     /// provisioning ephemeral identities.
     pub fn generate(kind: KeyKind, rng: &mut dyn RandomSource) -> Result<Self> {
+        // REQ-APPR-002: refused once, not retried as if unlucky.
+        #[cfg(ic_approved_only)]
+        if kind == KeyKind::Ed25519 {
+            return Err(super::excluded());
+        }
         let mut seed = SecretVec::new(alloc::vec![0u8; 66]);
         for _ in 0..64 {
             super::fill_random(rng, seed.get_mut())?;
@@ -879,8 +919,11 @@ impl SigningKey {
                     r
                 }
             };
-            if let Ok(key) = r {
-                return Ok(key);
+            match r {
+                Ok(key) => return Ok(key),
+                // REQ-ERR-003: a module that refuses refuses every attempt.
+                Err(e) if e.kind() == ErrorKind::FipsModule => return Err(e),
+                Err(_) => {}
             }
         }
         Err(Error::new(ErrorKind::Entropy, "could not generate a key"))
@@ -897,6 +940,7 @@ impl SigningKey {
             KeyImpl::P256(_) => "key:ecdsa-p256",
             KeyImpl::P384(_) => "key:ecdsa-p384",
             KeyImpl::P521(_) => "key:ecdsa-p521",
+            #[cfg(not(ic_approved_only))]
             KeyImpl::Ed25519(_) => "key:ed25519",
             KeyImpl::Rsa(_) => "key:rsa",
             KeyImpl::MlDsa(p, _) => p.kind_id(),
@@ -911,6 +955,7 @@ impl SigningKey {
             KeyImpl::P256(_) => &[S::EcdsaSecp256r1Sha256],
             KeyImpl::P384(_) => &[S::EcdsaSecp384r1Sha384],
             KeyImpl::P521(_) => &[S::EcdsaSecp521r1Sha512],
+            #[cfg(not(ic_approved_only))]
             KeyImpl::Ed25519(_) => &[S::Ed25519],
             KeyImpl::Rsa(_) => &[
                 S::RsaPssRsaeSha256,
@@ -971,6 +1016,7 @@ impl SigningKey {
                 ic_ec::p521::EcdsaP521Sha512::sign(sk.get(), message, &mut sig)?;
                 ecdsa_der(&sig)
             }
+            #[cfg(not(ic_approved_only))]
             KeyImpl::Ed25519(k) => {
                 let mut sig = alloc::vec![0u8; 64];
                 k.sign(message, &mut sig)?;
@@ -1020,6 +1066,7 @@ impl ic_core::sig::Signer for SigningKey {
             KeyImpl::P256(_) => &[A::EcdsaP256Sha256],
             KeyImpl::P384(_) => &[A::EcdsaP384Sha384],
             KeyImpl::P521(_) => &[A::EcdsaP521Sha512],
+            #[cfg(not(ic_approved_only))]
             KeyImpl::Ed25519(_) => &[A::Ed25519],
             KeyImpl::Rsa(_) => &[A::RsaPssSha256, A::RsaPssSha384, A::RsaPssSha512],
             KeyImpl::MlDsa(MlDsa::P44, _) => &[A::MlDsa44],

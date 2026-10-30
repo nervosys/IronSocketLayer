@@ -13,15 +13,16 @@ use ironsocketlayer::config::{ClientAuth, ClientConfig, PeerVerification, Profil
 use ironsocketlayer::crypto::sign::KeyKind;
 use ironsocketlayer::enums::{NamedGroup, SignatureScheme};
 use ironsocketlayer::report::Property;
+use ironsocketlayer::x509::RootStore;
 use ironsocketlayer::ErrorKind;
 
 #[test]
 fn the_fips_gate_refuses_then_admits_and_reports_indicators() {
-    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
-
     // 1. Module not in approved mode: FIPS profiles do not build a connection.
+    // (With --cfg ic_approved_only the module starts in approved mode but
+    // refuses everything, a key included, until its self-tests have run.)
     for profile in [Profile::Fips140_3, Profile::Cnsa1] {
-        let cfg = ClientConfig::new(profile, pki.roots()).unwrap();
+        let cfg = ClientConfig::new(profile, RootStore::new()).unwrap();
         assert_eq!(
             cfg.validate().unwrap_err().kind(),
             ErrorKind::FipsModule,
@@ -32,20 +33,21 @@ fn the_fips_gate_refuses_then_admits_and_reports_indicators() {
     // 2. Bring the module up in approved mode.
     let report = ironsocketlayer::policy::enable_fips().unwrap();
     assert_eq!(report.failed, 0);
+    let pki = Pki::new(KeyKind::EcdsaP256, "server.test");
 
-    // 3. A non-approved algorithm smuggled into a FIPS profile is refused.
+    // 3. A non-approved algorithm smuggled into a FIPS profile is refused:
+    // by the gate, or, with --cfg ic_approved_only, as not in the build.
+    let refusal = if cfg!(ic_approved_only) {
+        ErrorKind::InvalidConfig
+    } else {
+        ErrorKind::PolicyViolation
+    };
     let mut bad = ClientConfig::new(Profile::Fips140_3, pki.roots()).unwrap();
     bad.common.groups.push(NamedGroup::X25519);
-    assert_eq!(
-        bad.validate().unwrap_err().kind(),
-        ErrorKind::PolicyViolation
-    );
+    assert_eq!(bad.validate().unwrap_err().kind(), refusal);
     let mut bad = ClientConfig::new(Profile::Fips140_3, pki.roots()).unwrap();
     bad.common.schemes.push(SignatureScheme::Ed25519);
-    assert_eq!(
-        bad.validate().unwrap_err().kind(),
-        ErrorKind::PolicyViolation
-    );
+    assert_eq!(bad.validate().unwrap_err().kind(), refusal);
 
     // 4. The FIPS profile connects, and every indicator is approved.
     let (c, s) = connect(

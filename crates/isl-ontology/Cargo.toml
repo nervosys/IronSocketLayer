@@ -18,3 +18,9 @@ default = ["std"]
 std = []
 
 [dependencies]
+
+[lints.rust]
+# IronCrypto's `ic_approved_only` (in `RUSTFLAGS`) leaves out every algorithm
+# FIPS approved mode does not permit; this crate follows it. See
+# docs/APPROVED-ONLY.md.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ic_approved_only)"] }

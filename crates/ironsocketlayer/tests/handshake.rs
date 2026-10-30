@@ -421,7 +421,8 @@ fn the_post_quantum_profile_refuses_a_classical_only_peer() {
 #[test]
 fn every_profile_is_available_in_this_build() {
     // REQ-CFG-004's refusal applies only to a build that lacks an algorithm a
-    // profile needs; this build lacks none (CNSA 2.0 was the last).
+    // profile needs; the default build lacks none (CNSA 2.0 was the last). A
+    // build with --cfg ic_approved_only lacks some: tests/approved_only.rs.
     for p in Profile::ALL {
         assert!(p.available(), "{p:?}");
     }
