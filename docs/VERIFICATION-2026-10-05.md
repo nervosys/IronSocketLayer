@@ -683,3 +683,41 @@ only difference. Cloudflare reported `sni=encrypted` and `tls=TLSv1.3`, and
 with an unknown key it rejected ECH and sent retry configurations that were
 then accepted. With the ECH configuration removed, the first test failed
 on `ech:not-offered`.
+
+### Release 0.7.2
+
+The build with IronCrypto's `--cfg ic_approved_only` (docs/APPROVED-ONLY.md),
+REQ-APPR-001 to 003, and REQ-ERR-003: a key the module refuses is
+`error:fips-module`. Requires IronCrypto 0.3.2. Run on the release tree in a
+clean worktree, against worktrees of the published IronCrypto v0.3.2 and of
+IronPKI at dccb525, which differs from the published v0.4.1 only in its lock
+file.
+
+Default build. On Windows: 482 tests passed (481 and the HPKE code-point
+test); fmt, clippy with warnings denied, the Cortex-M4 `no_std` build and
+the Rust 1.88 build passed; `openssl_interop` (14), `openssl_fixed` (5),
+`openssl_cnsa2` (1) and `openssl_cnsa1` (1) passed against OpenSSL 3.5.9.
+On Linux (WSL Debian, rustc 1.99.1): 482 passed. Live interop: 6 of 6. The
+bench harness compiles. The QEMU Cortex-M4 run passed: largest session
+stack 36,208 bytes, as in 0.7.1, no allocation after initialization.
+IronEvidence reads `docs/controls.json` as 0.7.2.
+
+Approved-only build, `scripts/approved-only.sh` with `ISL_OPENSSL=1`, on
+Windows: clippy on every target with warnings denied; 35 tests passed
+(`isl-ontology` 13, `approved_only` 5, `ontology_agreement` 10,
+`traceability` 2, `fips`, `cnsa`, `error_state`, `openssl_cnsa1` and
+`openssl_cnsa2` 1 each); the Cortex-M4 `no_std` build and the Rust 1.88
+build passed. On Linux the same script passed without the OpenSSL tests
+and without the `no_std` build, whose target is not installed there. The
+rest of the suite is written for the default build and was not run in this
+one. Each new requirement's test was seen to fail with its code broken:
+`Profile::available` always true, ChaCha20-Poly1305 left in the suite list,
+the `ech_configs` refusal removed, Ed25519 generation not refused, and the
+key-error mapping removed (in the default build).
+
+Fuzzing, 61 s each under AddressSanitizer, no findings: `tls_server`
+94,200 runs, `tls_client` 32,248, `fixed_server` 144,486, `fixed_client`
+58,312, `pki` 915,743, `pki_differential` 260,716. About half the 0.7.1
+rates, on a busier machine.
+
+None of this is a FIPS 140-3 validation.

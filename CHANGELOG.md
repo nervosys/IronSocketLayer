@@ -3,7 +3,7 @@
 All notable changes to IronSocketLayer. The project is pre-1.0: minor
 versions may change the API.
 
-## 0.7.2 (not released)
+## 0.7.2 (2026-10-29)
 
 IronSocketLayer builds, and is checked, with IronCrypto's
 `--cfg ic_approved_only`, in which only the FIPS-approved algorithms exist.
